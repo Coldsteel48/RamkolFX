@@ -39,16 +39,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(kissfft)
 
-# Absolute path to the bundled default HRTF SOFA file (see
-# data/hrtf/README.md), baked in as the fallback when the
-# RAMKOLFX_HRTF_SOFA environment variable isn't set.
-set(RAMKOLFX_DEFAULT_HRTF_SOFA_PATH "${CMAKE_SOURCE_DIR}/data/hrtf/default.sofa")
-configure_file(
-    src/hrtf_default_path.hpp.in
-    ${CMAKE_CURRENT_BINARY_DIR}/generated/hrtf_default_path.hpp
-    @ONLY
-)
-
 # Full switchable HRTF catalog (see data/hrtf/README.md): the bundled MIT
 # KEMAR default, the bundled SADIE II / HUTUBS / SONICOM subjects
 # (Apache-2.0 / CC BY 4.0 / MIT respectively, all safe to redistribute -

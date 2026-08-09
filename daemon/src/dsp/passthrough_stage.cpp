@@ -10,26 +10,13 @@
 
 #include <cstring>
 
+#include "dsp/seven_one_channel.hpp"
+
 namespace ramkolfx
 {
 
 namespace
 {
-
-// 7.1 channel order used throughout the pipeline (matches the SPA channel
-// positions set on the virtual sink stream).
-enum SevenOneChannel : uint32
-{
-    FL = 0,
-    FR = 1,
-    FC = 2,
-    LFE = 3,
-    RL = 4,
-    RR = 5,
-    SL = 6,
-    SR = 7,
-    SevenOneChannelCount = 8,
-};
 
 constexpr float CenterGain = 0.707f;
 constexpr float SurroundGain = 0.5f;

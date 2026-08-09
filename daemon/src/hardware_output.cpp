@@ -82,8 +82,19 @@ bool HardwareOutput::Start()
     // Confirmed live: setting the virtual sink as default silently moved
     // this stream onto it, closing the loop for real. dont-reconnect is
     // what makes the pin actually stick across default-sink changes.
-    pw_properties_set(Props, PW_KEY_TARGET_OBJECT, TargetNodeName.c_str());
-    pw_properties_set(Props, PW_KEY_NODE_DONT_RECONNECT, "true");
+    //
+    // TargetNodeName can be empty (AudioEngine found no real hardware sink
+    // at all yet - see ResolveInitialOutputDevice). Leaving target.object
+    // unset in that case, rather than set to "", matters: ConnectStream()
+    // below also skips PW_STREAM_FLAG_AUTOCONNECT whenever there's no
+    // target, so the stream is created but stays unlinked instead of
+    // AUTOCONNECT resolving "no target" as "default sink" - which could be
+    // the virtual sink itself, the exact loop pinning exists to prevent.
+    if (!TargetNodeName.empty())
+    {
+        pw_properties_set(Props, PW_KEY_TARGET_OBJECT, TargetNodeName.c_str());
+        pw_properties_set(Props, PW_KEY_NODE_DONT_RECONNECT, "true");
+    }
 
     Stream = pw_stream_new_simple(Loop, "RamkolFX Output", Props, &StreamEvents, this);
     if (!Stream)
@@ -143,11 +154,15 @@ bool HardwareOutput::ReconnectOnLoopThread()
     // Same reasoning as Start(): target.object is only an initial-link
     // hint, dont-reconnect is what keeps WirePlumber's default-device
     // policy from relinking this stream onto the new default sink instead.
-    pw_properties* Props =
-        pw_properties_new(PW_KEY_TARGET_OBJECT, TargetNodeName.c_str(), PW_KEY_NODE_DONT_RECONNECT,
-                           "true", nullptr);
-    pw_stream_update_properties(Stream, &Props->dict);
-    pw_properties_free(Props);
+    // Same empty-TargetNodeName handling as Start() too - see its comment.
+    if (!TargetNodeName.empty())
+    {
+        pw_properties* Props =
+            pw_properties_new(PW_KEY_TARGET_OBJECT, TargetNodeName.c_str(), PW_KEY_NODE_DONT_RECONNECT,
+                               "true", nullptr);
+        pw_stream_update_properties(Stream, &Props->dict);
+        pw_properties_free(Props);
+    }
 
     return ConnectStream();
 }
@@ -167,12 +182,19 @@ bool HardwareOutput::ConnectStream()
     const spa_pod* Params[1];
     Params[0] = spa_format_audio_raw_build(&Builder, SPA_PARAM_EnumFormat, &Info);
 
-    // AUTOCONNECT combined with the PW_KEY_TARGET_OBJECT property above
-    // links to that specific named node rather than "whatever is default".
-    const auto Flags = static_cast<enum pw_stream_flags>(
-        PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS);
+    // AUTOCONNECT combined with the PW_KEY_TARGET_OBJECT property set in
+    // Start()/ReconnectOnLoopThread() links to that specific named node
+    // rather than "whatever is default". Omitted when TargetNodeName is
+    // empty (no target.object was set) so the stream stays unlinked
+    // instead of AUTOCONNECT falling back to the default sink.
+    uint32 Flags = PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS;
+    if (!TargetNodeName.empty())
+    {
+        Flags |= PW_STREAM_FLAG_AUTOCONNECT;
+    }
 
-    int Result = pw_stream_connect(Stream, PW_DIRECTION_OUTPUT, PW_ID_ANY, Flags, Params, 1);
+    int Result = pw_stream_connect(Stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
+                                    static_cast<enum pw_stream_flags>(Flags), Params, 1);
     if (Result < 0)
     {
         fprintf(stderr, "[ramkolfxd] failed to connect hardware output stream: %s\n",

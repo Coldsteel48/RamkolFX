@@ -20,6 +20,12 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
 find_package(OpenGL REQUIRED)
 
+# Used at startup to look up already-installed system fonts per script
+# (CJK, Thai, Cyrillic, ...) so the UI can render non-Latin text using
+# whatever font the user's own desktop/locale already provides, instead
+# of bundling a font file and taking on its license terms - see main.cpp.
+pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+
 include(FetchContent)
 FetchContent_Declare(
     imgui
@@ -57,4 +63,5 @@ target_link_libraries(ramkolfx-gui PRIVATE
     imgui
     PkgConfig::SDL2
     OpenGL::GL
+    PkgConfig::FONTCONFIG
 )

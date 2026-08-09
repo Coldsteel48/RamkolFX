@@ -16,6 +16,7 @@
 #include <pipewire/extensions/metadata.h>
 #include <pipewire/pipewire.h>
 #include <spa/utils/dict.h>
+#include <spa/utils/json.h>
 
 #include "virtual_sink.hpp"
 
@@ -338,6 +339,37 @@ std::optional<std::string> DeviceRegistry::PickAnyDevice() const
         }
     }
     return Picked ? std::make_optional(Picked->Name) : std::nullopt;
+}
+
+std::optional<std::string> DeviceRegistry::GetPreviousDefaultSinkName() const
+{
+    if (!bCapturedPreviousDefaultSink || PreviousDefaultSinkValue.empty())
+    {
+        return std::nullopt;
+    }
+
+    // Value is JSON of the shape { "name": "alsa_output..." } - same shape
+    // ClaimVirtualSinkAsDefault() writes, and what `wpctl set-default`
+    // writes too.
+    char NameBuffer[256];
+    const int Length = spa_json_str_object_find(PreviousDefaultSinkValue.c_str(), PreviousDefaultSinkValue.size(),
+                                                  "name", NameBuffer, sizeof(NameBuffer));
+    if (Length <= 0)
+    {
+        return std::nullopt;
+    }
+
+    std::string Name(NameBuffer, static_cast<size_t>(Length));
+    if (Name == VirtualSink::NodeName)
+    {
+        // A previous instance of this daemon crashed before it could
+        // restore the real default sink, so the "previous" value captured
+        // above is actually our own earlier claim, not a real device.
+        // Using it would loop our own output back into our own capture -
+        // exactly what pinning by node name exists to prevent.
+        return std::nullopt;
+    }
+    return Name;
 }
 
 } // namespace ramkolfx

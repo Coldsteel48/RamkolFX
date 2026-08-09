@@ -46,7 +46,8 @@ three genuinely different signal paths (`SpatialMode`: `Off` / `Basic` /
   commercially, unlike the CIPIC/ARI/Listen/RWTH Aachen mirrors, which
   were deliberately avoided for exactly that reason.
   The daemon also watches a user-writable directory
-  (`$XDG_CONFIG_HOME/ramkolfx/hrtf` by default, or `RAMKOLFX_HRTF_DIR`)
+  (`$XDG_CONFIG_HOME/ramkolfx/hrtf` by default, plus `RAMKOLFX_HRTF_DIR`
+  if set — an extra directory, not a replacement)
   and appends any `.sofa` files found there to the catalog, prefixed
   `(user) `, picking up additions/removals live via inotify — unlike the
   bundled entries, files placed there are never redistributed or license-
@@ -273,10 +274,12 @@ without rebuilding:
 
 1. Drop the `.sofa` file into `$XDG_CONFIG_HOME/ramkolfx/hrtf` (falls
    back to `~/.config/ramkolfx/hrtf`, created automatically on first
-   run), or point `RAMKOLFX_HRTF_DIR` at a directory of your choice.
-2. That's it — the daemon watches the directory via inotify and adds it
-   to the HRTF catalog live, prefixed `(user) `, no restart needed. It'll
-   show up in the GUI's HRTF dropdown (or is selectable via the
+   run). If you'd rather also use a directory of your own choosing, set
+   `RAMKOLFX_HRTF_DIR` — the daemon watches it in addition to the default
+   location, not instead of it.
+2. That's it — the daemon watches both directories via inotify and adds
+   files to the HRTF catalog live, prefixed `(user) `, no restart needed.
+   They'll show up in the GUI's HRTF dropdown (or are selectable via the
    `SetHrtfFile` control opcode) alongside the bundled entries.
 
 Matching is purely by `.sofa` extension (case-insensitive); files aren't

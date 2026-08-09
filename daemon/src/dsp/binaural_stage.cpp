@@ -15,6 +15,7 @@
 #include <numbers>
 
 #include "binaural_voice.hpp"
+#include "dsp/seven_one_channel.hpp"
 #include "hrtf_gain_normalization.hpp"
 #include "synthetic_hrtf.hpp"
 
@@ -43,26 +44,9 @@ constexpr float VirtualSpeakerGain = 2.0f / static_cast<float>(BinauralStage::Vi
 // existed.
 constexpr float TargetPeakTap = 0.7f;
 
-// Raw 7.1 input channel order, matching the layout VirtualSink captures
-// (same as AmbisonicsStage/PassthroughStage).
-enum SevenOneChannel : uint32
-{
-    FL = 0,
-    FR = 1,
-    FC = 2,
-    LFE = 3,
-    RL = 4,
-    RR = 5,
-    SL = 6,
-    SR = 7,
-    SevenOneChannelCount = 8,
-};
-
-// Maps SpeakerLayout::SpeakerChannel index (0..6, non-LFE order FL,FR,FC,
-// RL,RR,SL,SR) to its frame offset within the 8-channel interleaved 7.1
-// layout above - used by the near-field path to de-interleave one source
-// at a time. Same mapping audio_engine.cpp keeps its own local copy of.
-constexpr uint32 SpeakerToFrameIndex[SpeakerLayout::SpeakerCount] = {FL, FR, FC, RL, RR, SL, SR};
+// SevenOneChannel and SpeakerToFrameIndex (used by the near-field path to
+// de-interleave one source at a time) come from dsp/seven_one_channel.hpp -
+// shared with AmbisonicsStage/PassthroughStage/AudioEngine.
 
 // Prepends IntDelay zero samples to Taps, approximating the inter-aural
 // time difference libmysofa reports separately from the FIR itself with

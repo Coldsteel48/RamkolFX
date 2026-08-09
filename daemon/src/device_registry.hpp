@@ -88,6 +88,19 @@ public:
     // Safe to call from any thread.
     std::optional<std::string> PickAnyDevice() const;
 
+    // Returns the node.name of the real hardware sink that was configured
+    // as the system default before this daemon claimed the virtual sink
+    // (see ClaimVirtualSinkAsDefault/PreviousDefaultSinkValue) - a useful
+    // fallback target when PickAnyDevice() finds nothing (e.g. the
+    // registry sync raced a slow hardware probe), without risking
+    // AUTOCONNECT resolving to the live "default", which is always our own
+    // virtual sink while this daemon runs. Returns nullopt if no previous
+    // default was captured, it fails to parse, or - guarding the case
+    // where an earlier instance of this daemon crashed before
+    // RestorePreviousDefaultSink() could run - it names our own virtual
+    // sink. Safe to call from any thread.
+    std::optional<std::string> GetPreviousDefaultSinkName() const;
+
     // pw_registry callback trampoline targets; not for external use.
     void HandleGlobalAdded(uint32 Id, const char* Type, const spa_dict* Props);
     void HandleGlobalRemoved(uint32 Id);

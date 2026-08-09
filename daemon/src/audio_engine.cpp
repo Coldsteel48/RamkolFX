@@ -31,10 +31,11 @@
 #include "dsp/hrtf_deck.hpp"
 #include "dsp/hw_eq_stage.hpp"
 #include "dsp/passthrough_stage.hpp"
+#include "dsp/seven_one_channel.hpp"
 #include "hardware_output.hpp"
-#include "hrtf_default_path.hpp"
 #include "single_instance_lock.hpp"
 #include "virtual_sink.hpp"
+#include "xdg_paths.hpp"
 
 namespace ramkolfx
 {
@@ -50,31 +51,9 @@ namespace
 // what AudioEngine will ever actually pass to Process().
 constexpr uint32 MaxScratchFrames = MaxProcessFrames;
 
-// Last-resort fallback, only reached if DeviceRegistry hasn't discovered
-// any real hardware sink at all by the time Run() picks an initial output
-// device (see ResolveInitialOutputDevice) - normally that never happens,
-// since a persisted choice or an auto-picked live sink both win first.
-constexpr const char* TestOutputNodeName = "alsa_output.usb-SteelSeries_Arctis_7P_-00.analog-stereo";
-
-// Raw 7.1 input channel order, matching the layout VirtualSink captures
-// (same convention duplicated locally in ambisonics_stage.cpp and
-// passthrough_stage.cpp).
-enum SevenOneChannel : uint32
-{
-    FL = 0,
-    FR = 1,
-    FC = 2,
-    LFE = 3,
-    RL = 4,
-    RR = 5,
-    SL = 6,
-    SR = 7,
-};
-
-// Maps SpeakerLayout::SpeakerChannel index (0..6, non-LFE order FL,FR,FC,
-// RL,RR,SL,SR) to its frame offset within the 8-channel interleaved 7.1
-// layout above.
-constexpr uint32 SpeakerToFrameIndex[SpeakerCount] = {FL, FR, FC, RL, RR, SL, SR};
+// SevenOneChannel and SpeakerToFrameIndex come from
+// dsp/seven_one_channel.hpp - shared with every DSP stage that reads this
+// same interleaved 7.1 layout.
 
 // Test noise amplitude: loud enough to clearly identify a speaker, quiet
 // enough not to be unpleasant or risk clipping once decoded/summed.
@@ -107,17 +86,47 @@ std::string AudioEngine::ResolveInitialOutputDevice(const std::optional<Persiste
         return *Picked;
     }
 
-    fprintf(stderr, "[ramkolfxd] no output devices found, falling back to '%s'\n", TestOutputNodeName);
-    return TestOutputNodeName;
+    // Nothing enumerated yet (e.g. the registry sync raced a slow hardware
+    // probe) - fall back to whatever was the system's real default sink
+    // before this daemon claimed the virtual sink for itself. Target by
+    // name even though it isn't confirmed present in Devices: PipeWire
+    // resolves target.object once a matching node appears, same as a
+    // persisted device name would. GetPreviousDefaultSinkName() already
+    // refuses to hand back our own virtual sink (see its doc comment), so
+    // this can't reintroduce the loopback AUTOCONNECT-to-"default" would.
+    if (const std::optional<std::string> PreviousDefault = Devices->GetPreviousDefaultSinkName())
+    {
+        return *PreviousDefault;
+    }
+
+    // Last resort: no real hardware sink is known at all, and no usable
+    // previous default was captured either, so there is no device name to
+    // fall back to. Normally unreachable.
+    fprintf(stderr, "[ramkolfxd] no output devices found\n");
+    return {};
 }
 
-std::string AudioEngine::ResolveHrtfSofaPath()
+void AudioEngine::ResolveHrtfSofaPath(std::string& OutPath, HrtfSourceKind& OutKind) const
 {
     if (const char* Override = std::getenv("RAMKOLFX_HRTF_SOFA"))
     {
-        return Override;
+        OutPath = Override;
+        OutKind = HrtfSourceKind::SofaFile;
+        return;
     }
-    return DefaultHrtfSofaPath;
+
+    // RuntimeHrtfCatalog is already filtered down to entries that exist on
+    // disk and ordered with imported (user) files ahead of the bundled set
+    // (see RebuildHrtfCatalog), so its first entry is always a safe default
+    // that prefers whatever the user has imported over the bundled one.
+    // Locked like every other RuntimeHrtfCatalog access - see
+    // HrtfCatalogMutex's doc comment.
+    std::lock_guard<std::mutex> Lock(HrtfCatalogMutex);
+    if (!RuntimeHrtfCatalog.empty())
+    {
+        OutPath = RuntimeHrtfCatalog.front().Path;
+        OutKind = RuntimeHrtfCatalog.front().Kind;
+    }
 }
 
 std::vector<HrtfCatalogEntry> AudioEngine::BuildHrtfCatalog()
@@ -140,59 +149,63 @@ std::vector<HrtfCatalogEntry> AudioEngine::BuildHrtfCatalog()
     return Result;
 }
 
-std::string AudioEngine::ResolveUserHrtfDirectory()
+std::vector<std::string> AudioEngine::ResolveUserHrtfDirectories()
 {
-    std::string Directory;
+    std::vector<std::string> Directories = {XdgConfigHome() + "/ramkolfx/hrtf"};
+
+    // RAMKOLFX_HRTF_DIR adds a second directory rather than replacing the
+    // default one, so files dropped into the normal XDG location are never
+    // silently stopped from showing up just because this is set. Compared
+    // via weakly_canonical rather than a raw string match so a trailing
+    // slash, relative path, or symlink pointing at the same physical
+    // directory as the default doesn't add it a second time (neither
+    // directory need exist yet at this point - weakly_canonical handles
+    // that, unlike std::filesystem::equivalent).
     if (const char* Override = std::getenv("RAMKOLFX_HRTF_DIR"); Override && *Override)
     {
-        Directory = Override;
-    }
-    else
-    {
-        std::string ConfigDir;
-        if (const char* XdgConfigHome = std::getenv("XDG_CONFIG_HOME"); XdgConfigHome && *XdgConfigHome)
+        std::error_code Ignored;
+        const bool bSameAsDefault = std::filesystem::weakly_canonical(Override, Ignored) ==
+                                     std::filesystem::weakly_canonical(Directories[0], Ignored);
+        if (!bSameAsDefault)
         {
-            ConfigDir = XdgConfigHome;
+            Directories.emplace_back(Override);
         }
-        else if (const char* Home = std::getenv("HOME"); Home && *Home)
-        {
-            ConfigDir = std::string(Home) + "/.config";
-        }
-        else
-        {
-            ConfigDir = "/tmp"; // last resort; matches SettingsStore's own /tmp fallback
-        }
-        Directory = ConfigDir + "/ramkolfx/hrtf";
     }
 
     std::error_code Ignored;
-    std::filesystem::create_directories(Directory, Ignored);
-    return Directory;
+    for (const std::string& Directory : Directories)
+    {
+        std::filesystem::create_directories(Directory, Ignored);
+    }
+    return Directories;
 }
 
-std::vector<HrtfCatalogEntry> AudioEngine::ScanUserHrtfDirectory(const std::string& DirectoryPath)
+std::vector<HrtfCatalogEntry> AudioEngine::ScanUserHrtfDirectories(const std::vector<std::string>& DirectoryPaths)
 {
     std::vector<HrtfCatalogEntry> Entries;
-    std::error_code Ignored;
-    for (const std::filesystem::directory_entry& DirEntry :
-         std::filesystem::directory_iterator(DirectoryPath, Ignored))
+    for (const std::string& DirectoryPath : DirectoryPaths)
     {
-        if (!DirEntry.is_regular_file(Ignored))
+        std::error_code Ignored;
+        for (const std::filesystem::directory_entry& DirEntry :
+             std::filesystem::directory_iterator(DirectoryPath, Ignored))
         {
-            continue;
+            if (!DirEntry.is_regular_file(Ignored))
+            {
+                continue;
+            }
+            std::string Extension = DirEntry.path().extension().string();
+            std::transform(Extension.begin(), Extension.end(), Extension.begin(),
+                            [](unsigned char C) { return static_cast<char>(std::tolower(C)); });
+            if (Extension != ".sofa")
+            {
+                continue;
+            }
+            HrtfCatalogEntry Entry;
+            Entry.DisplayName = "(user) " + DirEntry.path().stem().string();
+            Entry.Kind = HrtfSourceKind::SofaFile;
+            Entry.Path = DirEntry.path().string();
+            Entries.push_back(std::move(Entry));
         }
-        std::string Extension = DirEntry.path().extension().string();
-        std::transform(Extension.begin(), Extension.end(), Extension.begin(),
-                        [](unsigned char C) { return static_cast<char>(std::tolower(C)); });
-        if (Extension != ".sofa")
-        {
-            continue;
-        }
-        HrtfCatalogEntry Entry;
-        Entry.DisplayName = "(user) " + DirEntry.path().stem().string();
-        Entry.Kind = HrtfSourceKind::SofaFile;
-        Entry.Path = DirEntry.path().string();
-        Entries.push_back(std::move(Entry));
     }
     std::sort(Entries.begin(), Entries.end(),
               [](const HrtfCatalogEntry& A, const HrtfCatalogEntry& B) { return A.Path < B.Path; });
@@ -201,23 +214,32 @@ std::vector<HrtfCatalogEntry> AudioEngine::ScanUserHrtfDirectory(const std::stri
 
 void AudioEngine::RebuildHrtfCatalog()
 {
-    std::vector<HrtfCatalogEntry> NewCatalog = BuildHrtfCatalog();
-    std::vector<HrtfCatalogEntry> UserEntries = ScanUserHrtfDirectory(UserHrtfDirectory);
-    NewCatalog.insert(NewCatalog.end(), std::make_move_iterator(UserEntries.begin()),
-                       std::make_move_iterator(UserEntries.end()));
+    // Imported (user) files first, then the bundled set, so an imported
+    // file is preferred whenever something picks the catalog's first entry
+    // as a default - see ResolveHrtfSofaPath.
+    std::vector<HrtfCatalogEntry> NewCatalog = ScanUserHrtfDirectories(UserHrtfDirectories);
+    std::vector<HrtfCatalogEntry> BundledEntries = BuildHrtfCatalog();
 
     // HrtfIndex/ActiveHrtfIndex are a single byte on the wire (see
-    // protocol.hpp) - drop excess user entries rather than silently
-    // wrapping or corrupting an index elsewhere.
+    // protocol.hpp) - drop excess user entries (truncating NewCatalog
+    // before appending the bundled set below) rather than silently
+    // wrapping or corrupting an index elsewhere. The bundled/curated set
+    // is never truncated by this.
     constexpr size_t MaxCatalogEntries = 255;
-    if (NewCatalog.size() > MaxCatalogEntries)
+    if (NewCatalog.size() + BundledEntries.size() > MaxCatalogEntries)
     {
+        const size_t MaxUserEntries =
+            BundledEntries.size() < MaxCatalogEntries ? MaxCatalogEntries - BundledEntries.size() : 0;
         fprintf(stderr,
-                "[ramkolfxd] HRTF catalog has %zu entries after scanning %s, truncating to %zu "
-                "(the wire protocol's HrtfIndex is a single byte)\n",
-                NewCatalog.size(), UserHrtfDirectory.c_str(), MaxCatalogEntries);
-        NewCatalog.resize(MaxCatalogEntries);
+                "[ramkolfxd] HRTF catalog has %zu entries after scanning %zu user director%s, "
+                "truncating user entries to %zu (the wire protocol's HrtfIndex is a single byte)\n",
+                NewCatalog.size() + BundledEntries.size(), UserHrtfDirectories.size(),
+                UserHrtfDirectories.size() == 1 ? "y" : "ies", MaxUserEntries);
+        NewCatalog.resize(MaxUserEntries);
     }
+
+    NewCatalog.insert(NewCatalog.end(), std::make_move_iterator(BundledEntries.begin()),
+                       std::make_move_iterator(BundledEntries.end()));
 
     std::lock_guard<std::mutex> Lock(HrtfCatalogMutex);
     const uint8 OldIndex = ActiveHrtfIndex.load(std::memory_order_relaxed);
@@ -327,42 +349,62 @@ int AudioEngine::Run()
     BassEnhancer = std::make_unique<BassEnhancerStage>(BassEnhancerSettingsState,
                                                         static_cast<float>(HardwareOutput::SampleRate));
 
-    // Directory the daemon watches for user-supplied SOFA files - unlike
+    // Directories the daemon watches for user-supplied SOFA files - unlike
     // the bundled catalog, this isn't rebuilt on a timer: the inotify
-    // watch set up below rebuilds it the moment a file is added or
-    // removed, so a running daemon never needs restarting to pick up new
-    // files (see ScanUserHrtfDirectory's doc comment).
-    UserHrtfDirectory = ResolveUserHrtfDirectory();
+    // watches set up below rebuild it the moment a file is added or
+    // removed in any of them, so a running daemon never needs restarting
+    // to pick up new files (see ScanUserHrtfDirectories' doc comment).
+    UserHrtfDirectories = ResolveUserHrtfDirectories();
     RebuildHrtfCatalog();
 
     const int HrtfDirWatchFd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     if (HrtfDirWatchFd < 0)
     {
-        fprintf(stderr, "[ramkolfxd] inotify_init1 failed: %s (user HRTF directory won't auto-refresh)\n",
+        fprintf(stderr, "[ramkolfxd] inotify_init1 failed: %s (user HRTF directories won't auto-refresh)\n",
                 strerror(errno));
-    }
-    else if (inotify_add_watch(HrtfDirWatchFd, UserHrtfDirectory.c_str(),
-                                IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CLOSE_WRITE) < 0)
-    {
-        fprintf(stderr, "[ramkolfxd] failed to watch HRTF directory %s: %s (won't auto-refresh)\n",
-                UserHrtfDirectory.c_str(), strerror(errno));
-        close(HrtfDirWatchFd);
     }
     else
     {
-        // close=true: PipeWire owns closing this fd when the loop (and
-        // therefore this source) is torn down in Teardown(), so no
-        // matching cleanup is needed there - same as the pw_loop_add_signal
-        // sources registered above needing no explicit removal.
-        pw_loop_add_io(Loop, HrtfDirWatchFd, SPA_IO_IN, true, &AudioEngine::OnHrtfDirectoryChanged, this);
+        // One inotify fd, one watch descriptor per directory - the shared
+        // callback below doesn't care which one fired, so a change in
+        // either directory triggers the same full rescan.
+        bool bAnyWatchSucceeded = false;
+        for (const std::string& Directory : UserHrtfDirectories)
+        {
+            if (inotify_add_watch(HrtfDirWatchFd, Directory.c_str(),
+                                   IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CLOSE_WRITE) < 0)
+            {
+                fprintf(stderr, "[ramkolfxd] failed to watch HRTF directory %s: %s (won't auto-refresh)\n",
+                        Directory.c_str(), strerror(errno));
+            }
+            else
+            {
+                bAnyWatchSucceeded = true;
+            }
+        }
+
+        if (bAnyWatchSucceeded)
+        {
+            // close=true: PipeWire owns closing this fd when the loop (and
+            // therefore this source) is torn down in Teardown(), so no
+            // matching cleanup is needed there - same as the pw_loop_add_signal
+            // sources registered above needing no explicit removal.
+            pw_loop_add_io(Loop, HrtfDirWatchFd, SPA_IO_IN, true, &AudioEngine::OnHrtfDirectoryChanged, this);
+        }
+        else
+        {
+            close(HrtfDirWatchFd);
+        }
     }
 
-    // ResolveHrtfSofaPath() (RAMKOLFX_HRTF_SOFA or the bundled default)
-    // picks the initial HRTF source unless a persisted choice overrides it
-    // below. RAMKOLFX_HRTF_SOFA is a lower-level dev/testing override (see
-    // its doc comment) so it always wins over a persisted choice when set.
-    std::string InitialSofaPath = ResolveHrtfSofaPath();
+    // ResolveHrtfSofaPath() (RAMKOLFX_HRTF_SOFA, else the catalog's first
+    // entry - imported files before the bundled set) picks the initial
+    // HRTF source unless a persisted choice overrides it below.
+    // RAMKOLFX_HRTF_SOFA is a lower-level dev/testing override (see its
+    // doc comment) so it always wins over a persisted choice when set.
+    std::string InitialSofaPath;
     HrtfSourceKind InitialHrtfKind = HrtfSourceKind::SofaFile;
+    ResolveHrtfSofaPath(InitialSofaPath, InitialHrtfKind);
 
     bool bAppliedPersistedHrtfChoice = false;
     if (!std::getenv("RAMKOLFX_HRTF_SOFA") && LoadedSettings && !LoadedSettings->ActiveHrtfDisplayName.empty())
@@ -540,8 +582,7 @@ void AudioEngine::HandleVirtualSinkAudio(const float* Interleaved, uint32 Frames
     {
         std::memcpy(InputScratch.data(), Interleaved, sizeof(float) * Frames * VirtualSink::Channels);
     }
-    ApplySpeakerMute(InputScratch.data(), Frames);
-    ApplyNearFieldLoudnessFalloff(InputScratch.data(), Frames);
+    ApplySpeakerGains(InputScratch.data(), Frames);
 
     ActiveStage().Process(InputScratch.data(), VirtualSink::Channels, DspScratch.data(),
                            HardwareOutput::Channels, Frames);
@@ -552,45 +593,37 @@ void AudioEngine::HandleVirtualSinkAudio(const float* Interleaved, uint32 Frames
     StereoMixBuffer.Push(DspScratch.data(), Frames * HardwareOutput::Channels);
 }
 
-void AudioEngine::ApplySpeakerMute(float* Interleaved, uint32 Frames)
+void AudioEngine::ApplySpeakerGains(float* Interleaved, uint32 Frames)
 {
-    bool MuteFlags[SpeakerCount];
-    bool bAnyMuted = false;
-    for (uint32 Speaker = 0; Speaker < SpeakerCount; ++Speaker)
-    {
-        MuteFlags[Speaker] = SharedLayout.IsSpeakerMuted(static_cast<SpeakerLayout::SpeakerChannel>(Speaker));
-        bAnyMuted |= MuteFlags[Speaker];
-    }
-    if (!bAnyMuted)
-    {
-        return;
-    }
-
-    for (uint32 FrameIndex = 0; FrameIndex < Frames; ++FrameIndex)
-    {
-        float* Frame = Interleaved + FrameIndex * VirtualSink::Channels;
-        for (uint32 Speaker = 0; Speaker < SpeakerCount; ++Speaker)
-        {
-            if (MuteFlags[Speaker])
-            {
-                Frame[SpeakerToFrameIndex[Speaker]] = 0.0f;
-            }
-        }
-    }
-}
-
-void AudioEngine::ApplyNearFieldLoudnessFalloff(float* Interleaved, uint32 Frames)
-{
-    if (!bNearFieldEnabled.load(std::memory_order_relaxed))
-    {
-        return;
-    }
+    // Combines mute (gain 0) and near-field loudness falloff (gain 1 when
+    // near-field is off) into one per-speaker gain array and one pass over
+    // the interleaved buffer, rather than each effect snapshotting its own
+    // state and running its own separate frame loop back to back.
+    const bool bNearField = bNearFieldEnabled.load(std::memory_order_relaxed);
 
     float Gains[SpeakerCount];
+    bool bAnyGainNotOne = false;
     for (uint32 Speaker = 0; Speaker < SpeakerCount; ++Speaker)
     {
-        const float Distance = SharedLayout.GetSpeakerDistance(static_cast<SpeakerLayout::SpeakerChannel>(Speaker));
-        Gains[Speaker] = ReferenceSpeakerDistanceMeters / std::max(Distance, MinSpeakerDistanceMeters);
+        const auto Channel = static_cast<SpeakerLayout::SpeakerChannel>(Speaker);
+        if (SharedLayout.IsSpeakerMuted(Channel))
+        {
+            Gains[Speaker] = 0.0f;
+        }
+        else if (bNearField)
+        {
+            const float Distance = SharedLayout.GetSpeakerDistance(Channel);
+            Gains[Speaker] = ReferenceSpeakerDistanceMeters / std::max(Distance, MinSpeakerDistanceMeters);
+        }
+        else
+        {
+            Gains[Speaker] = 1.0f;
+        }
+        bAnyGainNotOne |= (Gains[Speaker] != 1.0f);
+    }
+    if (!bAnyGainNotOne)
+    {
+        return;
     }
 
     for (uint32 FrameIndex = 0; FrameIndex < Frames; ++FrameIndex)

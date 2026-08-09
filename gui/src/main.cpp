@@ -8,6 +8,9 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <string>
+
+#include <fontconfig/fontconfig.h>
 
 #include <SDL.h>
 
@@ -117,6 +120,121 @@ void ApplyPaletteStyle()
     Style.TabRounding = RadiusSmall;
 }
 
+// Asks fontconfig for the file path of whatever font it would actually
+// hand to an app requesting Family (a generic alias like "sans-serif")
+// for Lang (an RFC-3066-ish code such as "ja", or nullptr for "just the
+// default"). This is the same match `fc-match` performs, so it resolves
+// to whatever font the user's own desktop/locale already has installed -
+// no font is bundled with RamkolFX, sidestepping any font-license
+// question entirely. Returns an empty string if fontconfig has nothing
+// suitable (e.g. a minimal container image with no fonts installed).
+std::string FindSystemFont(const char* Family, const char* Lang)
+{
+    FcPattern* Pattern = FcPatternCreate();
+    FcPatternAddString(Pattern, FC_FAMILY, reinterpret_cast<const FcChar8*>(Family));
+
+    FcLangSet* LangSet = nullptr;
+    if (Lang)
+    {
+        LangSet = FcLangSetCreate();
+        FcLangSetAdd(LangSet, reinterpret_cast<const FcChar8*>(Lang));
+        FcPatternAddLangSet(Pattern, FC_LANG, LangSet);
+    }
+
+    FcConfigSubstitute(nullptr, Pattern, FcMatchPattern);
+    FcDefaultSubstitute(Pattern);
+
+    std::string Result;
+    FcResult MatchResult;
+    if (FcPattern* Match = FcFontMatch(nullptr, Pattern, &MatchResult))
+    {
+        FcChar8* File = nullptr;
+        if (FcPatternGetString(Match, FC_FILE, 0, &File) == FcResultMatch && File)
+        {
+            Result = reinterpret_cast<const char*>(File);
+        }
+        FcPatternDestroy(Match);
+    }
+
+    if (LangSet)
+    {
+        FcLangSetDestroy(LangSet);
+    }
+    FcPatternDestroy(Pattern);
+    return Result;
+}
+
+// One script merged into the font atlas on top of the base Latin font,
+// each resolved to its own system font via FindSystemFont() so e.g.
+// Japanese text is rasterized from whatever CJK font is actually
+// installed rather than the base font's (typically empty) coverage of
+// it. Two (or more) of these commonly resolve to the very same physical
+// file - e.g. a single installed Noto Sans CJK file covers ja/ko/zh-cn
+// at once, and the plain Latin "sans-serif" match often already covers
+// Cyrillic/Greek too - but each entry is still loaded with its own
+// distinct glyph range: AddFontFromFileTTF's range parameter controls
+// which codepoints get *baked into the atlas*, not which the underlying
+// file contains, so skipping a script just because its file was already
+// opened for a different, narrower range would silently drop glyphs
+// that file does contain. zh-cn intentionally uses the "common"
+// ~2500-character subset rather than GetGlyphRangesChineseFull()'s
+// ~21000: full coverage bloats the atlas texture and startup time far
+// more than a control-panel app like this one warrants - see Dear
+// ImGui's own font FAQ.
+struct ScriptFallback
+{
+    const char* FontconfigLang;
+    const ImWchar* (ImFontAtlas::*GetRanges)();
+};
+
+constexpr ScriptFallback ScriptFallbacks[] = {
+    {"ja", &ImFontAtlas::GetGlyphRangesJapanese},
+    {"ko", &ImFontAtlas::GetGlyphRangesKorean},
+    {"zh-cn", &ImFontAtlas::GetGlyphRangesChineseSimplifiedCommon},
+    {"th", &ImFontAtlas::GetGlyphRangesThai},
+    {"vi", &ImFontAtlas::GetGlyphRangesVietnamese},
+    {"ru", &ImFontAtlas::GetGlyphRangesCyrillic},
+    {"el", &ImFontAtlas::GetGlyphRangesGreek},
+};
+
+// Builds the font atlas from system fonts found via fontconfig: a base
+// Latin font, plus one merged-in fallback per ScriptFallbacks entry
+// (skipped only when fontconfig has no font at all to offer for that
+// script) - see FindSystemFont() and ScriptFallback's doc comment for
+// why entries resolving to a file already used elsewhere still get
+// loaded again. Falls back to ImGui's built-in bitmap font only if
+// fontconfig can't find any system font whatsoever.
+void LoadFonts(float DpiScale)
+{
+    ImGuiIO& IO = ImGui::GetIO();
+    const float SizePixels = BaseFontSizePixels * DpiScale;
+
+    const std::string BaseFontPath = FindSystemFont("sans-serif", nullptr);
+    if (BaseFontPath.empty())
+    {
+        ImFontConfig FallbackConfig;
+        FallbackConfig.SizePixels = SizePixels;
+        IO.Fonts->AddFontDefault(&FallbackConfig);
+    }
+    else
+    {
+        IO.Fonts->AddFontFromFileTTF(BaseFontPath.c_str(), SizePixels);
+    }
+
+    for (const ScriptFallback& Fallback : ScriptFallbacks)
+    {
+        const std::string Path = FindSystemFont("sans-serif", Fallback.FontconfigLang);
+        if (Path.empty())
+        {
+            continue;
+        }
+
+        ImFontConfig MergeConfig;
+        MergeConfig.MergeMode = true;
+        IO.Fonts->AddFontFromFileTTF(Path.c_str(), SizePixels, &MergeConfig, (IO.Fonts->*Fallback.GetRanges)());
+    }
+}
+
 } // namespace
 
 int main()
@@ -148,9 +266,9 @@ int main()
     ApplyPaletteStyle();
     ImGui::GetStyle().ScaleAllSizes(DpiScale);
 
-    ImFontConfig FontConfig;
-    FontConfig.SizePixels = BaseFontSizePixels * DpiScale;
-    ImGui::GetIO().Fonts->AddFontDefault(&FontConfig);
+    FcInit();
+    LoadFonts(DpiScale);
+    FcFini(); // path lookups are done; AddFontFromFileTTF already read the file bytes it needs
 
     if (!Renderer->Init(Window))
     {

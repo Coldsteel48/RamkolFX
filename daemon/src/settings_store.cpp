@@ -16,6 +16,8 @@
 
 #include <sys/stat.h>
 
+#include "xdg_paths.hpp"
+
 namespace ramkolfx
 {
 
@@ -27,20 +29,7 @@ namespace
 // typically tmpfs), settings need to survive a reboot.
 std::string DefaultSettingsPath()
 {
-    std::string ConfigDir;
-    if (const char* XdgConfigHome = std::getenv("XDG_CONFIG_HOME"); XdgConfigHome && *XdgConfigHome)
-    {
-        ConfigDir = XdgConfigHome;
-    }
-    else if (const char* Home = std::getenv("HOME"); Home && *Home)
-    {
-        ConfigDir = std::string(Home) + "/.config";
-    }
-    else
-    {
-        ConfigDir = "/tmp"; // last resort; matches DefaultControlSocketPath's own /tmp fallback
-    }
-    ConfigDir += "/ramkolfx";
+    std::string ConfigDir = XdgConfigHome() + "/ramkolfx";
     mkdir(ConfigDir.c_str(), 0700);
     return ConfigDir + "/settings.conf";
 }

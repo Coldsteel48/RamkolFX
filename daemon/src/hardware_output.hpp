@@ -37,11 +37,14 @@ public:
     // anything left unwritten is zero-filled by the caller.
     using FillCallback = std::function<uint32(float* Interleaved, uint32 Frames)>;
 
-    // InTargetNodeName: PipeWire node.name of the real hardware sink to
-    // pin to (e.g. "alsa_output.usb-SteelSeries_Arctis_7P_-00.analog-stereo",
-    // see `pw-cli info <sink-id>` or `wpctl status`). Hardcoded by the
-    // caller for now; a future control-protocol command will let the user
-    // pick this live from any compatible stereo sink.
+    // InTargetNodeName: PipeWire node.name of the real hardware sink to pin
+    // to (see `pw-cli info <sink-id>` or `wpctl status`) - see
+    // AudioEngine::ResolveInitialOutputDevice for how the caller picks it.
+    // May be empty if no real hardware sink was known at all yet; Start()
+    // then creates the stream without a target rather than risking
+    // AUTOCONNECT resolving to the default sink (which could be RamkolFX's
+    // own virtual sink). SetTargetNode() is the normal way to (re)pick a
+    // real device live, via the SetOutputDevice control opcode.
     HardwareOutput(pw_loop* InLoop, std::string InTargetNodeName);
     ~HardwareOutput();
 

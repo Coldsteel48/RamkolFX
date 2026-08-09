@@ -10,6 +10,8 @@
 
 #include <cstring>
 
+#include "dsp/seven_one_channel.hpp"
+
 namespace ramkolfx
 {
 
@@ -64,20 +66,6 @@ constexpr float WidthGain = 2.0f;
 constexpr float DecodeNormalization = 0.4805061f;
 
 constexpr float LfeGain = 0.5f; // matches PassthroughStage
-
-// Raw 7.1 input channel order, matching the layout VirtualSink captures.
-enum SevenOneChannel : uint32
-{
-    FL = 0,
-    FR = 1,
-    FC = 2,
-    LFE = 3,
-    RL = 4,
-    RR = 5,
-    SL = 6,
-    SR = 7,
-    SevenOneChannelCount = 8,
-};
 
 } // namespace
 

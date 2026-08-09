@@ -135,7 +135,8 @@ HRIR measurements.
 
 By default this is `$XDG_CONFIG_HOME/ramkolfx/hrtf`, falling back to
 `~/.config/ramkolfx/hrtf` (created automatically on first run). Set
-`RAMKOLFX_HRTF_DIR` to point the daemon at a different directory instead.
+`RAMKOLFX_HRTF_DIR` to have the daemon also watch a second directory —
+it's added alongside the default one, not a replacement for it.
 Files are matched purely by `.sofa` extension (case-insensitive) and
 aren't parsed until selected — a corrupt or non-SOFA file will show up in
 the list but fail gracefully (falling back to silence for that source)
