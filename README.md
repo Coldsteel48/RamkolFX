@@ -7,6 +7,19 @@ an ambisonics sound field and decodes that field to stereo, so positioning
 stays accurate as speakers move and the mix doesn't collapse into six
 separately-panned point sources.
 
+## Table of contents
+
+- [Screenshots](#screenshots)
+- [Install & Run](#install--run)
+- [Status](#status)
+- [Architecture](#architecture)
+- [Directory layout](#directory-layout)
+- [Control protocol](#control-protocol)
+- [Adding your own SOFA files](#adding-your-own-sofa-files)
+- [Engineering approach](#engineering-approach)
+- [Roadmap](#roadmap)
+- [License](#license)
+
 ## Screenshots
 
 > **Note:** the GUI is a convenience for exercising the daemon during
