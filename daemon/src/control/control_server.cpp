@@ -9,6 +9,7 @@
 #include "control_server.hpp"
 
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -96,24 +97,126 @@ void ControlServer::Stop()
     {
         AcceptThread.join();
     }
+
+    // No new clients can appear now (the accept thread is gone). Wake
+    // every client thread blocked in recv() - shutdown() makes it return
+    // 0 - then wait for each to finish whatever command it's running.
+    std::lock_guard<std::mutex> Lock(ClientsMutex);
+    for (const std::unique_ptr<Client>& Entry : Clients)
+    {
+        shutdown(Entry->Fd, SHUT_RDWR);
+    }
+    for (const std::unique_ptr<Client>& Entry : Clients)
+    {
+        Entry->Thread.join();
+        close(Entry->Fd);
+    }
+    Clients.clear();
     unlink(SocketPath.c_str());
+}
+
+void ControlServer::ReapFinishedClients()
+{
+    for (auto It = Clients.begin(); It != Clients.end();)
+    {
+        if ((*It)->bDone.load(std::memory_order_acquire))
+        {
+            (*It)->Thread.join();
+            close((*It)->Fd);
+            It = Clients.erase(It);
+        }
+        else
+        {
+            ++It;
+        }
+    }
 }
 
 void ControlServer::AcceptLoop()
 {
+    using Clock = std::chrono::steady_clock;
+    constexpr auto RetryDelay = std::chrono::milliseconds(100);
+    constexpr auto StillFailingLogInterval = std::chrono::seconds(30);
+
+    // Copied once: Stop() resets the member to -1 from another thread.
+    const int Listener = ListenFd;
+
+    // Failure log throttling: a lasting failure retries every RetryDelay,
+    // so it's logged when it starts, as a summary every
+    // StillFailingLogInterval, and when it clears - not on every attempt.
+    int FailingErrno = 0; // 0 = not currently failing
+    unsigned long FailuresTotal = 0;
+    unsigned long FailuresSinceLog = 0;
+    Clock::time_point LastFailureLog;
+
     while (bRunning.load(std::memory_order_relaxed))
     {
-        int ClientFd = accept(ListenFd, nullptr, nullptr);
+        int ClientFd = accept4(Listener, nullptr, nullptr, SOCK_CLOEXEC);
         if (ClientFd < 0)
         {
-            break; // listen socket closed (Stop() was called) or a real error
+            const int Error = errno;
+            if (!bRunning.load(std::memory_order_relaxed))
+            {
+                break; // Stop() shut the listen socket down
+            }
+            if (Error == EINTR || Error == ECONNABORTED)
+            {
+                continue; // harmless: retry right away
+            }
+            // Anything else (typically EMFILE/ENFILE - out of fds) is
+            // usually temporary, and giving up here would leave the daemon
+            // running but unreachable for good. Free what we can, back
+            // off, and keep accepting.
+            ++FailuresTotal;
+            ++FailuresSinceLog;
+            const Clock::time_point Now = Clock::now();
+            if (Error != FailingErrno)
+            {
+                fprintf(stderr, "[ramkolfxd] control socket accept failed: %s (retrying)\n", strerror(Error));
+                FailingErrno = Error;
+                FailuresSinceLog = 0;
+                LastFailureLog = Now;
+            }
+            else if (Now - LastFailureLog >= StillFailingLogInterval)
+            {
+                fprintf(stderr, "[ramkolfxd] control socket accept still failing: %s (%lu attempts in the last %llds)\n",
+                        strerror(Error), FailuresSinceLog,
+                        static_cast<long long>(
+                            std::chrono::duration_cast<std::chrono::seconds>(Now - LastFailureLog).count()));
+                FailuresSinceLog = 0;
+                LastFailureLog = Now;
+            }
+            {
+                std::lock_guard<std::mutex> Lock(ClientsMutex);
+                ReapFinishedClients();
+            }
+            std::this_thread::sleep_for(RetryDelay);
+            continue;
         }
-        std::thread(&ControlServer::HandleClient, this, ClientFd).detach();
+
+        if (FailingErrno != 0)
+        {
+            fprintf(stderr, "[ramkolfxd] control socket accept recovered after %lu failed attempts\n",
+                    FailuresTotal);
+            FailingErrno = 0;
+            FailuresTotal = 0;
+        }
+
+        std::lock_guard<std::mutex> Lock(ClientsMutex);
+        // Each GUI reconnect is a new client, so finished ones are cleaned
+        // up here rather than piling up until Stop().
+        ReapFinishedClients();
+        auto NewClient = std::make_unique<Client>();
+        NewClient->Fd = ClientFd;
+        Client& Ref = *NewClient;
+        Clients.push_back(std::move(NewClient));
+        Ref.Thread = std::thread(&ControlServer::HandleClient, this, std::ref(Ref));
     }
 }
 
-void ControlServer::HandleClient(int ClientFd)
+void ControlServer::HandleClient(Client& InClient)
 {
+    const int ClientFd = InClient.Fd;
     std::vector<uint8> Buffer;
     uint8 Chunk[512];
 
@@ -161,7 +264,9 @@ void ControlServer::HandleClient(int ClientFd)
         }
     }
 
-    close(ClientFd);
+    // Not closed here - see Client. Joined and closed by
+    // ReapFinishedClients() or Stop().
+    InClient.bDone.store(true, std::memory_order_release);
 }
 
 } // namespace ramkolfx
