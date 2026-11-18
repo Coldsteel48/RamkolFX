@@ -10,6 +10,6 @@ cp -r /src/packaging/alpine/APKBUILD /work/
 mkdir -p /var/cache/distfiles && cp /src/dist/RamkolFX-$VER.tar.gz /var/cache/distfiles/
 # abuild builds with the full tree available under $srcdir/RamkolFX-$VER via the tarball itself.
 chown -R builder /work /var/cache/distfiles
-su builder -c 'cd /work && abuild-keygen -a -n && abuild checksum && abuild -r'
+su builder -c 'cd /work && abuild-keygen -a -i -n && abuild checksum && abuild -r'
 cp /home/builder/packages/work/*/ramkolfx-*.apk /src/dist/
 cp /home/builder/.abuild/*.rsa.pub /src/dist/ramkolfx-alpine-key.rsa.pub
