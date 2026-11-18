@@ -73,6 +73,12 @@ default, use `pavucontrol`, `wpctl`, or
 own output stream is pinned to the real sink it's configured with, so
 claiming the virtual sink as default can't feed back into itself.
 
+State lives in `$XDG_CONFIG_HOME/ramkolfx` (default `~/.config/ramkolfx`):
+`settings.conf` (spatial mode per device, speaker layout, EQ curve, output
+device, HRTF choice), `presets.conf` (your EQ presets and their device/app
+bindings), `gui_prefs.conf` (GUI-only display choices), and `hrtf/` for
+your own SOFA files. All are plain `key=value` text.
+
 ## Status
 
 Pipeline runs end-to-end with three selectable spatialization paths,
@@ -135,7 +141,10 @@ active.
             ▼
    DSP stage  (PassthroughStage / AmbisonicsStage / BinauralStage,
                selected live by SpatialMode)
-            │
+            │  stereo
+            ▼
+   10-band EQ  →  bass enhancer  (HwEqStage, BassEnhancerStage; curve
+            │                     switched by named presets / bindings)
             ▼
    real hardware output  (via a PipeWire playback stream)
 
@@ -148,10 +157,16 @@ active.
 - The daemon captures from that virtual sink, runs it through whichever
   DSP stage `SpatialMode` selects, and plays the result out through a
   second PipeWire stream pinned to a specific real hardware sink.
+- The daemon also tracks which apps are playing into the virtual sink, so
+  it can switch the EQ to a preset bound to the playing app or to the
+  current output device.
 - The **GUI control app** (`ramkolfx-gui`, Dear ImGui + SDL2/OpenGL3)
   talks to the daemon over the Unix socket to switch spatial mode,
-  reposition virtual speakers, and adjust EQ/bass live, across two tabs
-  ("Spatial Audio & Speakers" and "Equalizer & Bass").
+  reposition virtual speakers, adjust EQ/bass live, and manage EQ presets
+  and their device/app bindings, across two tabs ("Spatial Audio &
+  Speakers" and "Equalizer & Bass").
+
+For a per-class map of the code, see [docs/classes.md](docs/classes.md).
 
 ## Directory layout
 
@@ -162,7 +177,12 @@ active.
 - `gui/` — `ramkolfx-gui`: Dear ImGui + SDL2/OpenGL3 control app (build
   with `-DRAMKOLFX_BUILD_GUI=ON`). Talks to the daemon only over the Unix
   control socket — no PipeWire dependency.
-- `docs/` — reserved for design notes as the DSP work lands.
+- `tests/` — unit tests (CTest, `./build.sh test`) for the protocol,
+  preset store, auto-switching and settings persistence; `tests/e2e/` holds
+  the end-to-end tests that drive a real daemon on a live PipeWire session.
+- `docs/` — design notes ([EQ presets](docs/eq-presets-plan.md),
+  [near-field distance](docs/near-field-distance-plan.md)), the
+  [per-class overview](docs/classes.md), and screenshots.
 
 ## Control protocol
 
@@ -221,8 +241,8 @@ touching the rest of the pipeline.
 8. ONNX-based automatic EQ preset selection / genre auto-detect (also a
    disabled placeholder in the GUI today)
 9. GUI polish aimed at non-audio-engineer users — two-tab layout
-   (Spatial Audio & Speakers / Equalizer & Bass) has landed; ongoing
-   refinement (current branch: `feature/gui-redesign`)
+   (Spatial Audio & Speakers / Equalizer & Bass) and the preset cards have
+   landed; ongoing refinement
 
 ## License
 

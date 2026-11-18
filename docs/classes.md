@@ -2,7 +2,7 @@
 
 A map of every meaningful class/struct in the codebase, grouped by module, with
 responsibilities, key interfaces, and collaborators. Generated from the source
-under `common/`, `daemon/`, and `gui/`.
+under `common/`, `daemon/`, `gui/`, and `tests/`.
 
 ## Ownership chain (top level)
 
@@ -15,12 +15,22 @@ main (daemon) -> AudioEngine -> {
   HrtfDeck (Advanced) -> CrossfadingSlot<BinauralStage> -> BinauralStage -> {
     AmbisonicsStage (fallback), HrtfLoader, PartitionedConvolver[],
     BinauralVoice[] -> CrossfadingSlot<BinauralVoiceFilter> -> BinauralVoiceFilter -> PartitionedConvolver
-  }
+  },
+  HwEqStage -> CrossfadingSlot<GraphicEqFilter> -> GraphicEqFilter -> Biquad[],
+  BassEnhancerStage -> CrossfadingSlot<BassEnhancerFilter> -> BassEnhancerFilter -> Biquad,
+  PresetStore + EqPresetCatalog (named EQ presets and their bindings),
+  AppActivityTracker + AutoSwitchController (EQ preset auto-switching)
 }
 
 main (gui) -> IRenderer + App -> ControlClient (talks to AudioEngine's ControlServer
-  over the Unix socket using protocol.hpp), rendering via DrawPositionDial
+  over the Unix socket using protocol.hpp), rendering via DrawPositionDial and
+  the ui_widgets.hpp helpers
 ```
+
+Signal path per block (`AudioEngine::HandleVirtualSinkAudio`): captured 7.1 ->
+speaker gains (mute / near-field loudness) -> active `DspStage` (Off/Basic/
+Advanced) -> `HwEqStage` -> `BassEnhancerStage` -> stereo ring buffer ->
+`HardwareOutput`.
 
 ---
 
@@ -30,8 +40,8 @@ Shared code linked into both `ramkolfxd` (daemon) and `ramkolfx-gui`.
 
 ### Protocol types & free functions
 - **File:** `common/include/ramkolfx/protocol.hpp` (+ `protocol.cpp`)
-- **Responsibility:** Defines the daemon's binary control-socket wire protocol — a fixed 3-byte header (opcode + big-endian u16 length), request `Command`s, response `Status`, and free encode/decode functions for each message type. No class/object state; purely protocol structs (`Opcode`, `SpatialMode`, `MessageHeader`, `Command`, `Status`, `AudioDeviceInfo`) plus `Encode*`/`Decode*` free functions.
-- **Key interface:** `TryReadHeader`, `DecodeCommand`, `DecodeStatusResponse`, `DecodeErrorResponse`, `DecodeDeviceListResponse`, `DecodeHrtfCatalogResponse`, `EncodeStatusResponse`, `EncodeErrorResponse`, `EncodeDeviceListResponse`, `EncodeHrtfCatalogResponse`, `Encode*Request` family, `DefaultControlSocketPath`.
+- **Responsibility:** Defines the daemon's binary control-socket wire protocol — a fixed 3-byte header (opcode + big-endian u16 length), request `Command`s, response `Status`, and free encode/decode functions for each message type. No class/object state; purely protocol structs (`Opcode`, `SpatialMode`, `MessageHeader`, `Command`, `Status`, `AudioDeviceInfo`, `EqBand`/`EqFilterType`, `BassEnhancerSettings`, `EqPresetInfo`, `EqPresetSource`, `ContentStreamInfo`) plus `Encode*`/`Decode*` free functions. `Status` carries the active EQ preset and why it's active (manual / device / app), the current device's bound preset, and `EqRevision` / `PresetCatalogRevision` counters that tell a client to re-fetch the curve or the preset list after a change made elsewhere. List responses share one encode/decode template.
+- **Key interface:** `TryReadHeader`, `DecodeCommand`, `DecodeStatusResponse`, `Decode*Response` / `Encode*Response` per response type (device list, HRTF catalog, HW EQ state, bass enhancer state, EQ preset catalog, content streams), the `Encode*Request` family, `DefaultControlSocketPath`, and two name validators shared by daemon and GUI: `NormalizePresetName` (trim + length + no control characters) and `IsValidTargetName` (app/device names that end up in config files).
 - **Collaborators:** Used by `ControlServer`/`AudioEngine` (daemon side, decodes requests + encodes responses) and `ControlClient` (GUI side, encodes requests + decodes responses).
 
 ### `RingBuffer<T>`
@@ -46,28 +56,47 @@ Shared code linked into both `ramkolfxd` (daemon) and `ramkolfx-gui`.
 
 ### `AudioEngine`
 - **File:** `daemon/src/audio_engine.hpp` (+ `.cpp`)
-- **Responsibility:** Top-level owner of the entire daemon pipeline — PipeWire main loop, virtual sink (capture), all three DSP stages, hardware output (playback), control socket, device registry, settings persistence, and the runtime HRTF catalog. Dispatches captured 7.1 audio to whichever `DspStage` the current `SpatialMode` selects, bridging capture/playback via `RingBuffer`.
+- **Responsibility:** Top-level owner of the entire daemon pipeline — PipeWire main loop, virtual sink (capture), all three DSP stages plus the HW EQ and bass enhancer, hardware output (playback), control socket, device registry, settings and preset persistence, and the runtime HRTF catalog. Dispatches captured 7.1 audio to whichever `DspStage` the current `SpatialMode` selects, bridging capture/playback via `RingBuffer`. Also runs EQ preset auto-switching on a 250ms main-loop timer (which also flushes batched `settings.conf` saves) and remembers the spatial mode per output device.
 - **Key public methods:** `Run`, `Stop`.
-- **Key private machinery:** `HandleVirtualSinkAudio`, `HandleHardwareOutputRequest`, `HandleControlCommand`, `PersistCurrentSettings`, `ApplySpeakerMute`, `ApplyNearFieldLoudnessFalloff`, `FillTestNoise`, `ActiveStage`, `ResolveInitialOutputDevice`, `ResolveHrtfSofaPath`, `BuildHrtfCatalog`, `ResolveUserHrtfDirectory`, `ScanUserHrtfDirectory`, `RebuildHrtfCatalog`, `OnHrtfDirectoryChanged`.
-- **Collaborators:** Owns `SingleInstanceLock`, `VirtualSink`, `HardwareOutput`, `ControlServer`, `DeviceRegistry`, `SettingsStore`, `SpeakerLayout` (`SharedLayout`), `PassthroughStage` (Off), `AmbisonicsStage` (Basic), `HrtfDeck` (Advanced), and a `RingBuffer<float>`. Instantiated directly by `daemon/src/main.cpp`.
+- **Key private machinery:** `HandleVirtualSinkAudio`, `HandleHardwareOutputRequest`, `HandleControlCommand`, `HandlePresetCommand`, `HandleBindCommand`, `EvaluateAutoSwitch` / `OnAutoSwitchTimer`, `ApplyEqCurve`, `CaptureEqState`, `ApplyDeviceSpatialMode`, `PersistCurrentSettings` / `FlushSettingsIfDirty`, `BuildStatus`, `ApplySpeakerGains`, `FillTestNoise`, `ActiveStage`, `ResolveInitialOutputDevice`, `ResolveHrtfSofaPath`, `BuildHrtfCatalog`, `ResolveUserHrtfDirectories`, `ScanUserHrtfDirectories`, `RebuildHrtfCatalog`, `OnHrtfDirectoryChanged`, `Teardown`.
+- **Threading:** commands arrive on `ControlServer`'s per-client threads, the auto-switch timer and inotify callbacks on the main loop, audio on PipeWire's realtime threads. Lock order is documented in `audio_engine.hpp` (`SettingsSaveMutex` -> `AutoSwitchMutex` -> `PresetMutex` -> `HwEqMutex` -> `BassEnhancerMutex`). On shutdown `bStopping` refuses commands that would wait on the stopped main loop, so joining the client threads can't hang.
+- **Collaborators:** Owns `SingleInstanceLock`, `VirtualSink`, `HardwareOutput`, `ControlServer`, `DeviceRegistry`, `SettingsStore`, `PresetStore` + `EqPresetCatalog`, `AppActivityTracker` + `AutoSwitchController`, `SpeakerLayout` (`SharedLayout`), `PassthroughStage` (Off), `AmbisonicsStage` (Basic), `HrtfDeck` (Advanced), `HwEqStage`, `BassEnhancerStage`, and a `RingBuffer<float>`. Instantiated directly by `daemon/src/main.cpp`.
 
 ### `ControlServer`
 - **File:** `daemon/src/control/control_server.hpp` (+ `.cpp`)
-- **Responsibility:** Unix domain socket server implementing the control protocol; accepts multiple concurrent clients, each on its own detached thread, dispatching decoded commands to an injected handler.
-- **Key interface:** `SetCommandHandler`, `Start`, `Stop` (private `AcceptLoop`, `HandleClient`).
+- **Responsibility:** Unix domain socket server implementing the control protocol; accepts multiple concurrent clients, each on its own thread, dispatching decoded commands to an injected handler. Client threads are tracked, not detached: `Stop()` shuts every client socket down and joins all threads, so no handler runs once it returns; finished clients are reaped on the next accept. The accept loop retries transient errors (e.g. out of fds) instead of giving up, with throttled logging.
+- **Key interface:** `SetCommandHandler`, `Start`, `Stop` (private `AcceptLoop`, `HandleClient`, `ReapFinishedClients`).
 - **Collaborators:** Owned by `AudioEngine`, which supplies its `CommandHandler` (bound to `AudioEngine::HandleControlCommand`); consumed by the GUI's `ControlClient` over the socket path from `protocol.hpp`.
 
 ### `DeviceRegistry`
 - **File:** `daemon/src/device_registry.hpp` (+ `.cpp`)
-- **Responsibility:** Maintains a live map of real hardware playback sinks by listening to PipeWire registry global add/remove events on its own context/core connection; also claims the RamkolFX virtual sink as the system default output once the session's "default" metadata object appears.
-- **Key interface:** `Start`, `WaitForInitialSync`, `GetDevices`, `HasDevice`, `PickAnyDevice`; PipeWire trampoline targets `HandleGlobalAdded`/`HandleGlobalRemoved`.
-- **Collaborators:** Owned by `AudioEngine`; feeds `AudioDeviceInfo` results into `AudioEngine`'s device commands and `HardwareOutput`'s target selection.
+- **Responsibility:** Maintains a live map of real hardware playback sinks by listening to PipeWire registry global add/remove events on its own context/core connection; also claims the RamkolFX virtual sink as the system default output once the session's "default" metadata object appears, and restores the previous default on shutdown. Additionally tracks playback streams (`Stream/Output/Audio` nodes, bound for their running state and `application.name`) and the links between nodes, so it can report which apps are currently routed into the virtual sink — the input to EQ preset auto-switching.
+- **Key interface:** `Start`, `WaitForInitialSync`, `GetDevices`, `HasDevice`, `PickAnyDevice`, `GetPreviousDefaultSinkName`, `RestorePreviousDefaultSink`, `GetContentStreams`; PipeWire trampoline targets `HandleGlobalAdded`/`HandleGlobalRemoved`/`HandleStreamInfo`/`HandleMetadataProperty`.
+- **Collaborators:** Owned by `AudioEngine`; feeds `AudioDeviceInfo` results into `AudioEngine`'s device commands and `HardwareOutput`'s target selection, and `ContentStreamInfo` into `GetContentStreams` and `EvaluateAutoSwitch`.
 
 ### `SettingsStore` (+ `PersistedSettings`)
 - **File:** `daemon/src/settings_store.hpp` (+ `.cpp`)
-- **Responsibility:** Loads/saves `PersistedSettings` (spatial mode, per-speaker layout, near-field toggle, output device, active HRTF display name) as a small text file under `$XDG_CONFIG_HOME/ramkolfx`, crash-safe via temp-file + rename.
-- **Key interface:** `Load`, `Save`.
-- **Collaborators:** Owned by `AudioEngine`, called on startup (`Run`) and after mutating control commands (`PersistCurrentSettings`).
+- **Responsibility:** Loads/saves `PersistedSettings` (spatial mode, per-speaker layout, near-field toggle, output device, active HRTF display name, HW EQ curve, bass enhancer, active preset name/modified flag, and the spatial mode remembered per output device) as `settings.conf` under `$XDG_CONFIG_HOME/ramkolfx`, via `KeyValueFile` / `WriteFileAtomically`. Also hosts `ApplyRememberedSpatialMode`, the pure per-device spatial-mode rule.
+- **Key interface:** `Load`, `Save`, `ApplyRememberedSpatialMode` (free function).
+- **Collaborators:** Owned by `AudioEngine`, called on startup (`Run`) and from `PersistCurrentSettings`, which the auto-switch timer runs at most once per tick when state is dirty.
+
+### `KeyValueFile` / `WriteFileAtomically`
+- **File:** `daemon/src/key_value_file.hpp` (+ `.cpp`)
+- **Responsibility:** The flat `key=value`-per-line format both config files use. Getters fall back to the caller's default for missing or unparseable keys, so older or partly corrupt files still load field by field; `GetCount` clamps indexed-entry counts to the file's size. `WriteFileAtomically` writes a temp file, fsyncs it, renames it over the target and fsyncs the directory.
+- **Key interface:** `Load`, `GetString`/`GetLong`/`GetFloat`/`GetBool`/`GetCount`, `WriteFileAtomically`.
+- **Collaborators:** Used by `SettingsStore` and `PresetStore`.
+
+### `PresetStore` / `EqPresetCatalog` (+ `EqPreset`)
+- **File:** `daemon/src/preset_store.hpp` (+ `.cpp`)
+- **Responsibility:** Named EQ presets (a full HW EQ curve plus bass enhancer settings). `EqPresetCatalog` is the in-memory catalog — read-only built-ins (Flat, Bass Boost, Vocal) in front of the user presets — plus the device and app bindings; deleting a preset drops every binding to it. `PresetStore` persists the user presets and bindings to `presets.conf`. See `docs/eq-presets-plan.md`.
+- **Key interface:** `EqPresetCatalog::Find`, `Save`, `Remove`, `BindDevice`, `BindApp`, `DeviceBinding`, `AppBinding`, `Infos`, `ToFileContents`; `PresetStore::Load`, `Save`; `BuiltInEqPresets`, `WriteEqCurve`/`ReadEqCurve`.
+- **Collaborators:** Owned by `AudioEngine` (`PresetFile`, `PresetCatalog`, under `PresetMutex`); read by `AutoSwitchController`. Part of the `ramkolfx_presets` static library shared with the unit tests.
+
+### `AppActivityTracker` / `ResolveAutoSwitchTarget` / `AutoSwitchController` (+ `AutoSwitchTarget`, `EqState`)
+- **File:** `daemon/src/preset_auto_switch.hpp` (+ `.cpp`)
+- **Responsibility:** EQ preset auto-switching, kept free of locking and PipeWire so it's unit-testable. `AppActivityTracker` records when each app started playing, with a 2s grace period after it stops. `ResolveAutoSwitchTarget` is the rule: the most recently started bound app wins, else the output device's binding, else manual. `AutoSwitchController` is the edge-triggered state machine: it applies a binding only when the resolved target changes, snapshots the sound on the way into a binding and restores it on the way out, treats re-picking or saving over the binding's own preset as maintaining it, and keeps the current sound when the binding in effect is explicitly removed.
+- **Key interface:** `AppActivityTracker::Update`; `ResolveAutoSwitchTarget`; `AutoSwitchController::Evaluate`, `OnPresetChosenByHand`, `TakeManualControl`, `OnBindingRemoved`, `Source`/`SourceApp`.
+- **Collaborators:** Owned by `AudioEngine` (`AppActivity`, `AutoSwitch`), driven by `EvaluateAutoSwitch` and the preset/bind command handlers.
 
 ### `SingleInstanceLock`
 - **File:** `daemon/src/single_instance_lock.hpp` (+ `.cpp`)
@@ -83,7 +112,7 @@ Shared code linked into both `ramkolfxd` (daemon) and `ramkolfx-gui`.
 
 ### `HardwareOutput`
 - **File:** `daemon/src/hardware_output.hpp` (+ `.cpp`)
-- **Responsibility:** Wraps a PipeWire playback stream that sends the final processed stereo mix to a specific pinned hardware sink (by node name, not "default"), avoiding feedback loops with the virtual sink; supports live retargeting.
+- **Responsibility:** Wraps a PipeWire playback stream that sends the final processed stereo mix to a specific pinned hardware sink (by node name, not "default"), avoiding feedback loops with the virtual sink; supports live retargeting (a blocking invoke onto the main loop). The target name is guarded by `TargetMutex` and returned by value, since control threads change it while the main loop reads it.
 - **Key interface:** `SetFillCallback`, `Start`, `SetTargetNode`, `GetTargetNodeName`, `HandleProcess` (PW trampoline).
 - **Collaborators:** Owned by `AudioEngine`, which supplies the callback bound to `HandleHardwareOutputRequest`; retargeted via `AudioEngine`'s output-device handling, informed by `DeviceRegistry`.
 
@@ -188,21 +217,50 @@ Widely-shared discriminator (`SofaFile` / `SyntheticSphericalHead`) across `Bina
 - **Responsibility:** CMake-generated bundled list of HRTF sources (`DisplayName`, `HrtfSourceKind Kind`, `Path`) that Advanced mode can switch between; `AudioEngine` filters/extends it at runtime (`BuildHrtfCatalog`/`ScanUserHrtfDirectory`/`RebuildHrtfCatalog`) into `RuntimeHrtfCatalog`.
 - **Collaborators:** Consumed by `AudioEngine` to drive `GetHrtfCatalog`/`SetHrtfFile` control commands and `HrtfDeck::SwitchTo`.
 
+### `HwEqStage`
+- **File:** `daemon/src/dsp/hw_eq_stage.hpp` (+ `.cpp`)
+- **Responsibility:** The 10-band HW EQ, applied unconditionally after the active spatial `DspStage` on the final stereo signal (not one of the three switchable modes). Wraps `GraphicEqFilter` in a `CrossfadingSlot` so retuning a band — including continuous slider drags and whole preset switches — never clicks.
+- **Key interface:** `Process`, `SetBands`, `CollectGarbage`.
+- **Collaborators:** Owned by `AudioEngine` (`HwEq`); `SetBands` called from `SetHwEqBand` and `ApplyEqCurve` (presets, auto-switching).
+
+### `GraphicEqFilter` / `DefaultHwEqBands`
+- **File:** `daemon/src/dsp/graphic_eq_filter.hpp` (+ `.cpp`)
+- **Responsibility:** Cascaded 10-band stereo EQ — one `Biquad` chain per channel, one section per `EqBand` (peaking/shelf/pass/notch). The default curve (ISO centers, 0dB) is an exact identity, so no bypass flag is needed. `DefaultHwEqBands` seeds fresh settings and the built-in presets.
+- **Key interface:** `Process`; `DefaultHwEqBands`.
+- **Collaborators:** Lives inside `HwEqStage`'s `CrossfadingSlot`; `DefaultHwEqBands` also used by `PresetStore` and `SettingsStore`.
+
+### `Biquad`
+- **File:** `daemon/src/dsp/biquad.hpp` (+ `.cpp`)
+- **Responsibility:** One second-order IIR section (RBJ cookbook coefficients, Direct Form II Transposed), one channel's state. Clamps frequency and Q to safe ranges.
+- **Key interface:** `SetCoefficients`, per-sample processing.
+- **Collaborators:** Used by `GraphicEqFilter` and `BassEnhancerFilter`.
+
+### `BassEnhancerStage` / `BassEnhancerFilter`
+- **File:** `daemon/src/dsp/bass_enhancer_stage.hpp`, `bass_enhancer_filter.hpp` (+ `.cpp`)
+- **Responsibility:** Psychoacoustic "virtual bass" for headphones, applied after `HwEqStage`. `BassEnhancerFilter` isolates the mono sub-bass below the cutoff, drives it through a tanh waveshaper to synthesize harmonics, high-passes the fundamental back out and blends the harmonics into both channels. `BassEnhancerStage` wraps it in a `CrossfadingSlot` for click-free retuning, same as `HwEqStage`.
+- **Key interface:** `BassEnhancerStage::Process`, `SetSettings`, `CollectGarbage`.
+- **Collaborators:** Owned by `AudioEngine` (`BassEnhancer`); settings from `SetBassEnhancer` and `ApplyEqCurve`.
+
 ---
 
 ## Module: `gui` (`gui/src/`)
 
 ### `App`
 - **File:** `gui/src/app.hpp` (+ `.cpp`)
-- **Responsibility:** Owns the control connection (`ControlClient`) and draws the entire ImGui UI each frame — status polling, device/HRTF-catalog polling, throttled position-drag sending, mirror-mode UX, reconnect handling.
-- **Key interface:** `Tick` (private `DrawUI`).
-- **Collaborators:** Owns `ControlClient Client`; holds `Status LastStatus`, `std::vector<AudioDeviceInfo> Devices`, `std::vector<std::string> HrtfCatalog` from `protocol.hpp`; calls `DrawPositionDial` inside `DrawUI`. Instantiated by `gui/src/main.cpp`.
+- **Responsibility:** Owns the control connection (`ControlClient`) and draws the entire ImGui UI each frame across two tabs — "Spatial Audio & Speakers" (mode pill, output device, speaker dial, mute/solo, test noise) and "Equalizer & Bass" (bass enhancer, EQ preset card with the per-device binding toggle, app preset card, 10-band EQ). Handles status polling, device/HRTF-catalog polling, throttled position-drag sending, mirror-mode UX and reconnects; re-fetches the EQ curve or the preset catalog when `Status::EqRevision` / `PresetCatalogRevision` change, and polls content streams while the Equalizer tab is showing.
+- **Key interface:** `Tick` (private `DrawUI`, `DrawSpatialTab`, `DrawEqTab`, `DrawPresetControls`, `DrawAppPresetCard`, `Apply`, `RefreshEqState`, `RefreshPresetCatalog`, `RefreshContentStreams`, `MarkDisconnected`).
+- **Collaborators:** Owns `ControlClient Client`; holds `Status LastStatus`, devices, HRTF catalog, EQ bands, bass settings, the preset catalog and content streams from `protocol.hpp`; draws with `DrawPositionDial` and the `ui_widgets.hpp` helpers; persists local UX choices via `gui_prefs.hpp`. Instantiated by `gui/src/main.cpp`.
 
 ### `ControlClient`
 - **File:** `gui/src/control_client.hpp` (+ `.cpp`)
-- **Responsibility:** Thin synchronous wrapper around the daemon's Unix control socket, called directly on the render thread (sub-ms local RTT). Handles connect/disconnect and one request/response round trip per public method, closing the connection on any failure.
-- **Key interface:** `Connect`, `Disconnect`, `IsConnected`, `RequestStatus`, `SetSpatialMode`, `SetSpeakerAzimuth`, `SetSpeakerDistance`, `SetNearFieldEnabled`, `ResetSpeakerPositions`, `SetOutputDevice`, `SetSpeakerMute`, `SetTestNoiseEnabled`, `RequestDevices`, `RequestHrtfCatalog`, `SetHrtfFile`.
+- **Responsibility:** Thin synchronous wrapper around the daemon's Unix control socket, called directly on the render thread (sub-ms local RTT, with send/receive timeouts). Handles connect/disconnect and one request/response round trip per public method, all through one `RequestDecoded` helper; a reply it can't decode closes the connection.
+- **Key interface:** `Connect`, `Disconnect`, `IsConnected`, `RequestStatus`, `SetSpatialMode`, `SetSpeakerAzimuth`, `SetSpeakerDistance`, `SetNearFieldEnabled`, `ResetSpeakerPositions`, `SetOutputDevice`, `SetSpeakerMute`, `SetTestNoiseEnabled`, `RequestDevices`, `RequestHrtfCatalog`, `SetHrtfFile`, `SetHwEqBand`, `RequestHwEqState`, `SetBassEnhancer`, `RequestBassEnhancerState`, `RequestEqPresetCatalog`, `ApplyEqPreset`, `SaveEqPreset`, `DeleteEqPreset`, `BindDevicePreset`, `BindAppPreset`, `RequestContentStreams`.
 - **Collaborators:** Owned by `App`; uses `protocol.hpp`'s encode/decode functions and talks to the daemon's `ControlServer` over `DefaultControlSocketPath()`.
+
+### `ui_widgets.hpp` helpers / `palette` / `GuiPreferences`
+- **Files:** `gui/src/ui_widgets.hpp` (+ `.cpp`), `gui/src/ui_palette.hpp`, `gui/src/gui_prefs.hpp` (+ `.cpp`)
+- **Responsibility:** Custom-drawn widgets as stateless free functions with a DPI `Scale` parameter (`DrawSegmentedPill`, `DrawToggleSwitch`, `DrawEqBandBar`, …); the shared color/radius palette in both `ImU32` and `ImVec4` forms; and GUI-local preferences (mirror mode, advanced EQ/bass editing, last tab) in `gui_prefs.conf`, never sent to the daemon.
+- **Collaborators:** Used by `App` and `DrawPositionDial`; the palette also by `gui/src/main.cpp`'s style setup.
 
 ### `IRenderer` (abstract interface) + OpenGL3 implementation
 - **File:** `gui/src/renderer.hpp` (+ `renderer_opengl3.cpp`)
@@ -214,6 +272,13 @@ Widely-shared discriminator (`SofaFile` / `SyntheticSphericalHead`) across `Bina
 - **File:** `gui/src/position_dial.hpp` (+ `.cpp`)
 - **Responsibility:** Draws a custom top-down dial widget with one draggable handle per virtual 7.1 speaker (angle = azimuth, distance-from-center = distance), doubling each speaker's label as a mute/solo control (click = mute toggle, Ctrl+click = solo); supports a mirror-drag mode for left/right speaker pairs.
 - **Collaborators:** Called from `App::DrawUI`, operating directly on `Status`'s azimuth/distance/mute arrays (`protocol.hpp` types) and reporting back which indices changed for `App` to push via `ControlClient`.
+
+---
+
+## Module: `tests` (`tests/`)
+
+- **Unit tests** (CTest, `./build.sh test`): `protocol_tests`, `preset_store_tests`, `preset_auto_switch_tests`, `settings_store_tests`, built on the header-only `test_harness.hpp` (`TEST`, `CHECK`, `REQUIRE`, `TempPath`). They link the same `ramkolfx_presets` / `ramkolfx_common` libraries the daemon runs — no PipeWire needed.
+- **End-to-end tests** (`tests/e2e/run.sh`, not part of CTest): `e2e/e2e_client.cpp` is a protocol client driven against a fresh `ramkolfxd` per scenario, with a throwaway config directory and silent `pw-play` test streams — preset switching, bindings, per-device spatial mode across a restart, batched saves.
 
 ---
 
