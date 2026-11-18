@@ -48,6 +48,13 @@ struct PersistedSettings
     // to disabled, so upgrading an existing install doesn't suddenly
     // change what playback sounds like.
     BassEnhancerSettings BassEnhancer;
+
+    // Which named EQ preset the curve above came from, and whether it has
+    // been tweaked since (see Status::ActivePresetName). The curve itself
+    // is always saved in full above, so a preset deleted from
+    // presets.conf between runs only loses its name here, never the sound.
+    std::string ActivePresetName;
+    bool bPresetModified = false;
 };
 
 // Loads/saves PersistedSettings as a small text file under
@@ -60,6 +67,9 @@ class SettingsStore
 {
 public:
     SettingsStore();
+
+    // Reads/writes Path instead of the XDG default (used by tests).
+    explicit SettingsStore(std::string Path);
 
     // Returns nullopt if no settings file exists yet, or it couldn't be
     // opened - callers should fall back to built-in defaults in that

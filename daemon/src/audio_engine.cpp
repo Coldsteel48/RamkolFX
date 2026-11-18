@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <ctime>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -349,6 +351,19 @@ int AudioEngine::Run()
     BassEnhancer = std::make_unique<BassEnhancerStage>(BassEnhancerSettingsState,
                                                         static_cast<float>(HardwareOutput::SampleRate));
 
+    {
+        std::lock_guard<std::mutex> Lock(PresetMutex);
+        PresetCatalog = EqPresetCatalog(PresetFile.Load());
+        if (LoadedSettings && PresetCatalog.Find(LoadedSettings->ActivePresetName))
+        {
+            ActivePresetName = LoadedSettings->ActivePresetName;
+            bPresetModified = LoadedSettings->bPresetModified;
+        }
+        // else: no preset was active, or it was deleted from presets.conf
+        // since - the curve itself was restored above either way, it just
+        // no longer has a name.
+    }
+
     // Directories the daemon watches for user-supplied SOFA files - unlike
     // the bundled catalog, this isn't rebuilt on a timer: the inotify
     // watches set up below rebuild it the moment a file is added or
@@ -492,6 +507,24 @@ int AudioEngine::Run()
         return 1;
     }
 
+    // EQ preset auto-switching (docs/eq-presets-plan.md): stream state
+    // arrives as PipeWire events, but the grace period needs a clock, so a
+    // short periodic tick is simpler than reacting to every event. The
+    // same tick flushes settings saves (see bSettingsDirty). Created
+    // before the control server starts, so client threads only ever see
+    // its final value.
+    AutoSwitchTimer = pw_loop_add_timer(Loop, &AudioEngine::OnAutoSwitchTimer, this);
+    if (AutoSwitchTimer)
+    {
+        timespec Interval{0, AutoSwitchTickMs * 1000000L};
+        pw_loop_update_timer(Loop, AutoSwitchTimer, &Interval, &Interval, false);
+    }
+    else
+    {
+        fprintf(stderr, "[ramkolfxd] failed to create auto-switch timer: no EQ auto-switching, "
+                        "settings saved after each command instead\n");
+    }
+
     Server = std::make_unique<ControlServer>(SocketPath);
     Server->SetCommandHandler(
         [this](const Command& InCommand)
@@ -513,6 +546,7 @@ int AudioEngine::Run()
 
 void AudioEngine::Stop()
 {
+    bStopping.store(true); // before the loop stops - see Teardown
     if (MainLoop)
     {
         pw_main_loop_quit(MainLoop);
@@ -521,10 +555,35 @@ void AudioEngine::Stop()
 
 void AudioEngine::Teardown()
 {
+    // Server first: once Stop() returns, every client thread is joined, so
+    // nothing below can race a command - they read AutoSwitchTimer (see
+    // HandleControlCommand) and use everything reset further down.
+    //
+    // Joining can't hang on a command waiting for the (now stopped) main
+    // loop - SetOutputDevice's blocking pw_loop_invoke: PipeWire runs any
+    // invoke still queued when the loop is left (loop_leave flushes the
+    // queues), and one issued after that runs right on the calling thread,
+    // since the loop has no owner any more. bStopping keeps new ones from
+    // starting at all. Deliberately not "keep iterating the loop until
+    // joined": re-entering the loop races exactly that ownerless path for
+    // the loop's lock - confirmed live to deadlock (PipeWire 1.6).
+    bStopping.store(true);
     if (Server)
     {
         Server->Stop();
         Server.reset();
+    }
+    if (AutoSwitchTimer && Loop)
+    {
+        pw_loop_destroy_source(Loop, AutoSwitchTimer);
+        AutoSwitchTimer = nullptr;
+    }
+    // Anything changed since the last timer tick - no command can mark it
+    // dirty any more now that the server is stopped. Needs Output (and the
+    // stages it reads state from), so before those are reset below.
+    if (Output)
+    {
+        FlushSettingsIfDirty();
     }
     if (Devices)
     {
@@ -707,12 +766,35 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
         return EncodeHrtfCatalogResponse(DisplayNames);
     }
 
+    if (InCommand.CommandOpcode == Opcode::GetEqPresetCatalog)
+    {
+        std::lock_guard<std::mutex> Lock(PresetMutex);
+        return EncodeEqPresetCatalogResponse(PresetCatalog.Infos());
+    }
+
+    if (InCommand.CommandOpcode == Opcode::GetContentStreams)
+    {
+        std::vector<ContentStreamInfo> Streams = Devices->GetContentStreams();
+        std::lock_guard<std::mutex> Lock(PresetMutex);
+        for (ContentStreamInfo& Stream : Streams)
+        {
+            Stream.BoundPresetName = PresetCatalog.AppBinding(Stream.AppName);
+        }
+        return EncodeContentStreamListResponse(Streams);
+    }
+
     // Set whenever this command changes state PersistedSettings tracks, so
     // it gets saved to disk below. Left false for read-only commands
     // (GetStatus and the two early-returned Get* above) and for
     // SetTestNoise, which is deliberately not persisted - see
     // PersistedSettings' doc comment.
     bool bPersistedStateChanged = false;
+
+    // Set by commands that can change which binding applies - output
+    // device, bindings themselves, or a deleted preset taking its bindings
+    // with it - so the auto-switch rule re-runs right away below rather
+    // than on the next timer tick, and this response already reflects it.
+    bool bReevaluateAutoSwitch = false;
 
     if (InCommand.CommandOpcode == Opcode::SetSpatialMode)
     {
@@ -759,11 +841,29 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
     }
     else if (InCommand.CommandOpcode == Opcode::SetOutputDevice)
     {
-        bPersistedStateChanged = true;
-        if (!Output->SetTargetNode(InCommand.OutputDeviceName))
+        // Device names end up in the key=value config files, so refuse
+        // ones with control characters (see IsValidTargetName) instead of
+        // letting a newline inject keys. Logged rather than an
+        // ErrorResponse, which would make the GUI drop its connection.
+        if (!IsValidTargetName(InCommand.OutputDeviceName))
         {
-            fprintf(stderr, "[ramkolfxd] failed to switch output device to %s\n",
-                    InCommand.OutputDeviceName.c_str());
+            fprintf(stderr, "[ramkolfxd] SetOutputDevice: invalid device name refused\n");
+        }
+        else if (bStopping.load())
+        {
+            // Reconnecting needs the main loop, which is stopping - see
+            // Teardown for why this matters.
+            fprintf(stderr, "[ramkolfxd] SetOutputDevice: ignored, shutting down\n");
+        }
+        else
+        {
+            bPersistedStateChanged = true;
+            bReevaluateAutoSwitch = true;
+            if (!Output->SetTargetNode(InCommand.OutputDeviceName))
+            {
+                fprintf(stderr, "[ramkolfxd] failed to switch output device to %s\n",
+                        InCommand.OutputDeviceName.c_str());
+            }
         }
     }
     else if (InCommand.CommandOpcode == Opcode::SetSpeakerMute)
@@ -812,34 +912,86 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
     }
     else if (InCommand.CommandOpcode == Opcode::SetHwEqBand)
     {
+        // Held for the whole update: ApplyEqCurve (preset apply and
+        // auto-switch, always under PresetMutex) replaces every band, so
+        // an edit interleaved with it could publish a torn curve to the
+        // DSP, or flag a freshly applied preset as modified by an edit it
+        // overwrote. Serialized, the later of the two simply wins.
+        std::lock_guard<std::mutex> PresetLock(PresetMutex);
+        std::array<EqBand, MaxEqBands> Bands;
         {
             std::lock_guard<std::mutex> Lock(HwEqMutex);
             HwEqBandState[InCommand.BandIndex] = InCommand.Band;
+            Bands = HwEqBandState;
         }
-        HwEq->SetBands(HwEqBandState);
+        HwEq->SetBands(Bands);
+        bPresetModified = !ActivePresetName.empty();
         bPersistedStateChanged = true;
     }
     else if (InCommand.CommandOpcode == Opcode::SetBassEnhancer)
     {
+        std::lock_guard<std::mutex> PresetLock(PresetMutex); // see SetHwEqBand
         {
             std::lock_guard<std::mutex> Lock(BassEnhancerMutex);
             BassEnhancerSettingsState = InCommand.BassEnhancer;
         }
-        BassEnhancer->SetSettings(BassEnhancerSettingsState);
+        BassEnhancer->SetSettings(InCommand.BassEnhancer);
+        bPresetModified = !ActivePresetName.empty();
         bPersistedStateChanged = true;
     }
-    // SetHwEqPreset/SaveHwEqPreset and every Content* EQ opcode decode
-    // successfully (see protocol.cpp) but have no handler yet - they're
-    // Phase 2 (named presets keyed per-output-device and per-app). Falling
-    // through here just returns the current Status, same as any other
-    // unrecognized-but-decodable command.
+    else if (InCommand.CommandOpcode == Opcode::SetHwEqPreset ||
+             InCommand.CommandOpcode == Opcode::SaveHwEqPreset ||
+             InCommand.CommandOpcode == Opcode::DeleteEqPreset)
+    {
+        bPersistedStateChanged = HandlePresetCommand(InCommand);
+        bReevaluateAutoSwitch = InCommand.CommandOpcode == Opcode::DeleteEqPreset;
+    }
+    else if (InCommand.CommandOpcode == Opcode::BindDevicePreset ||
+             InCommand.CommandOpcode == Opcode::BindAppPreset)
+    {
+        HandleBindCommand(InCommand);
+        bReevaluateAutoSwitch = true;
+    }
 
+    if (bReevaluateAutoSwitch)
+    {
+        // One save below covers both this command's own changes and
+        // whatever auto-switch just applied.
+        bPersistedStateChanged |= EvaluateAutoSwitch();
+    }
+
+    if (bPersistedStateChanged)
+    {
+        // Saved by the next timer tick rather than here: slider and dial
+        // drags send a command per frame, and a durable (fsync'd) write per
+        // command would stall this client's reply on a slow disk.
+        bSettingsDirty.store(true);
+        if (!AutoSwitchTimer)
+        {
+            FlushSettingsIfDirty(); // no tick to do it (see Run())
+        }
+    }
+    return EncodeStatusResponse(BuildStatus());
+}
+
+Status AudioEngine::BuildStatus()
+{
     Status OutStatus;
     OutStatus.Mode = Mode.load(std::memory_order_relaxed);
     OutStatus.OutputDeviceName = Output->GetTargetNodeName();
     OutStatus.bTestNoiseEnabled = bTestNoiseEnabled.load(std::memory_order_relaxed);
     OutStatus.ActiveHrtfIndex = ActiveHrtfIndex.load(std::memory_order_relaxed);
     OutStatus.bNearFieldEnabled = bNearFieldEnabled.load(std::memory_order_relaxed);
+    OutStatus.EqRevision = EqRevision.load(std::memory_order_relaxed);
+    OutStatus.PresetCatalogRevision = PresetCatalogRevision.load(std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> Lock(PresetMutex);
+        OutStatus.ActivePresetName = ActivePresetName;
+        OutStatus.bPresetModified = bPresetModified;
+        OutStatus.DevicePresetName = PresetCatalog.DeviceBinding(OutStatus.OutputDeviceName);
+        OutStatus.PresetSource = AutoSwitch.Source();
+        OutStatus.PresetSourceApp = AutoSwitch.SourceApp();
+    }
     for (uint8 i = 0; i < SpeakerCount; ++i)
     {
         OutStatus.SpeakerAzimuthDegrees[i] =
@@ -849,17 +1001,18 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
         OutStatus.SpeakerDistanceMeters[i] =
             SharedLayout.GetSpeakerDistance(static_cast<SpeakerLayout::SpeakerChannel>(i));
     }
-
-    if (bPersistedStateChanged)
-    {
-        PersistCurrentSettings(OutStatus);
-    }
-
-    return EncodeStatusResponse(OutStatus);
+    return OutStatus;
 }
 
-void AudioEngine::PersistCurrentSettings(const Status& CurrentStatus)
+void AudioEngine::PersistCurrentSettings()
 {
+    // Taken before the snapshot is built, not just around the write: a
+    // thread that saves later then always snapshots later, so a slow
+    // earlier save can't land on top of a newer one with stale state. No
+    // other lock is held by any caller, and everything BuildStatus and
+    // the snapshot take nests inside this one.
+    std::lock_guard<std::mutex> SaveLock(SettingsSaveMutex);
+    const Status CurrentStatus = BuildStatus();
     PersistedSettings ToSave;
     ToSave.Mode = CurrentStatus.Mode;
     ToSave.SpeakerAzimuthDegrees = CurrentStatus.SpeakerAzimuthDegrees;
@@ -867,13 +1020,12 @@ void AudioEngine::PersistCurrentSettings(const Status& CurrentStatus)
     ToSave.SpeakerMuted = CurrentStatus.SpeakerMuted;
     ToSave.bNearFieldEnabled = CurrentStatus.bNearFieldEnabled;
     ToSave.OutputDeviceName = CurrentStatus.OutputDeviceName;
+    ToSave.ActivePresetName = CurrentStatus.ActivePresetName;
+    ToSave.bPresetModified = CurrentStatus.bPresetModified;
     {
-        std::lock_guard<std::mutex> Lock(HwEqMutex);
-        ToSave.HwEqBands = HwEqBandState;
-    }
-    {
-        std::lock_guard<std::mutex> Lock(BassEnhancerMutex);
-        ToSave.BassEnhancer = BassEnhancerSettingsState;
+        EqState Curve = CaptureEqCurve();
+        ToSave.HwEqBands = Curve.Bands;
+        ToSave.BassEnhancer = Curve.Bass;
     }
     {
         std::lock_guard<std::mutex> Lock(HrtfCatalogMutex);
@@ -883,6 +1035,257 @@ void AudioEngine::PersistCurrentSettings(const Status& CurrentStatus)
         }
     }
     Settings.Save(ToSave);
+}
+
+EqState AudioEngine::CaptureEqCurve()
+{
+    EqState Curve;
+    {
+        std::lock_guard<std::mutex> Lock(HwEqMutex);
+        Curve.Bands = HwEqBandState;
+    }
+    {
+        std::lock_guard<std::mutex> Lock(BassEnhancerMutex);
+        Curve.Bass = BassEnhancerSettingsState;
+    }
+    return Curve;
+}
+
+EqState AudioEngine::CaptureEqState()
+{
+    EqState Live = CaptureEqCurve();
+    Live.PresetName = ActivePresetName;
+    Live.bModified = bPresetModified;
+    return Live;
+}
+
+void AudioEngine::SetActivePreset(const EqState& Live)
+{
+    ActivePresetName = Live.PresetName;
+    bPresetModified = Live.bModified;
+}
+
+void AudioEngine::ApplyEqCurve(const std::array<EqBand, MaxEqBands>& Bands, const BassEnhancerSettings& Bass)
+{
+    {
+        std::lock_guard<std::mutex> Lock(HwEqMutex);
+        HwEqBandState = Bands;
+    }
+    HwEq->SetBands(Bands);
+    {
+        std::lock_guard<std::mutex> Lock(BassEnhancerMutex);
+        BassEnhancerSettingsState = Bass;
+    }
+    BassEnhancer->SetSettings(Bass);
+    EqRevision.fetch_add(1, std::memory_order_relaxed);
+}
+
+namespace
+{
+const char* PresetResultText(EqPresetCatalog::Result Result)
+{
+    switch (Result)
+    {
+    case EqPresetCatalog::Result::Ok:
+        return "ok";
+    case EqPresetCatalog::Result::InvalidName:
+        return "invalid name";
+    case EqPresetCatalog::Result::BuiltInReadOnly:
+        return "built-in presets are read-only";
+    case EqPresetCatalog::Result::NotFound:
+        return "not found";
+    }
+    return "?";
+}
+} // namespace
+
+bool AudioEngine::HandlePresetCommand(const Command& InCommand)
+{
+    // Lock order: AutoSwitchMutex, then PresetMutex (see audio_engine.hpp).
+    std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
+
+    if (InCommand.CommandOpcode == Opcode::SetHwEqPreset)
+    {
+        std::lock_guard<std::mutex> Lock(PresetMutex);
+        const EqPreset* Selected = PresetCatalog.Find(InCommand.PresetName);
+        if (!Selected)
+        {
+            fprintf(stderr, "[ramkolfxd] SetHwEqPreset: no preset named '%s'\n", InCommand.PresetName.c_str());
+            return false;
+        }
+        ApplyEqCurve(Selected->Bands, Selected->Bass);
+        ActivePresetName = Selected->Name;
+        bPresetModified = false;
+        AutoSwitch.OnPresetChosenByHand(CaptureEqState());
+        fprintf(stderr, "[ramkolfxd] EQ preset '%s' applied\n", Selected->Name.c_str());
+        return true;
+    }
+
+    std::lock_guard<std::mutex> Lock(PresetMutex);
+    // Restored if presets.conf can't be written, so the catalog never
+    // claims a preset (or binding) that wouldn't survive a restart.
+    const EqPresetCatalog Backup = PresetCatalog;
+    const bool bSave = InCommand.CommandOpcode == Opcode::SaveHwEqPreset;
+    EqPresetCatalog::Result Result;
+    std::string StoredName;
+    if (bSave)
+    {
+        const EqState Curve = CaptureEqCurve();
+        Result = PresetCatalog.Save(InCommand.PresetName, Curve.Bands, Curve.Bass, &StoredName);
+    }
+    else // DeleteEqPreset
+    {
+        Result = PresetCatalog.Remove(InCommand.PresetName);
+    }
+
+    const char* Verb = bSave ? "save" : "delete";
+    if (Result != EqPresetCatalog::Result::Ok)
+    {
+        fprintf(stderr, "[ramkolfxd] EQ preset %s '%s' refused: %s\n", Verb, InCommand.PresetName.c_str(),
+                PresetResultText(Result));
+        return false;
+    }
+    if (!PresetFile.Save(PresetCatalog.ToFileContents()))
+    {
+        PresetCatalog = Backup;
+        fprintf(stderr, "[ramkolfxd] EQ preset %s '%s' failed: could not write presets.conf\n", Verb,
+                InCommand.PresetName.c_str());
+        return false;
+    }
+
+    PresetCatalogRevision.fetch_add(1, std::memory_order_relaxed);
+    if (bSave)
+    {
+        ActivePresetName = StoredName;
+        bPresetModified = false;
+        AutoSwitch.OnPresetChosenByHand(CaptureEqState());
+    }
+    else if (ActivePresetName == InCommand.PresetName)
+    {
+        // The curve stays as it is - it just no longer has a name.
+        ActivePresetName.clear();
+        bPresetModified = false;
+        AutoSwitch.TakeManualControl(CaptureEqState());
+    }
+    fprintf(stderr, "[ramkolfxd] EQ preset %s '%s'\n", Verb,
+            StoredName.empty() ? InCommand.PresetName.c_str() : StoredName.c_str());
+    return true;
+}
+
+AutoSwitchTarget AudioEngine::ResolveCurrentTarget()
+{
+    return ResolveAutoSwitchTarget(AppActivity, PresetCatalog.AppBindings(), Output->GetTargetNodeName(),
+                                   PresetCatalog.DeviceBindings());
+}
+
+void AudioEngine::HandleBindCommand(const Command& InCommand)
+{
+    const bool bDevice = InCommand.CommandOpcode == Opcode::BindDevicePreset;
+    const std::string& Target = bDevice ? InCommand.OutputDeviceName : InCommand.ContentAppName;
+
+    std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
+    std::lock_guard<std::mutex> Lock(PresetMutex);
+    const EqPresetCatalog Backup = PresetCatalog; // see HandlePresetCommand
+    const EqPresetCatalog::Result Result = bDevice ? PresetCatalog.BindDevice(Target, InCommand.PresetName)
+                                                   : PresetCatalog.BindApp(Target, InCommand.PresetName);
+    if (Result != EqPresetCatalog::Result::Ok)
+    {
+        fprintf(stderr, "[ramkolfxd] bind %s '%s' -> '%s' refused: %s\n", bDevice ? "device" : "app",
+                Target.c_str(), InCommand.PresetName.c_str(), PresetResultText(Result));
+        return;
+    }
+    if (!PresetFile.Save(PresetCatalog.ToFileContents()))
+    {
+        PresetCatalog = Backup;
+        fprintf(stderr, "[ramkolfxd] bind %s '%s' failed: could not write presets.conf\n",
+                bDevice ? "device" : "app", Target.c_str());
+        return;
+    }
+
+    if (InCommand.PresetName.empty())
+    {
+        AutoSwitch.OnBindingRemoved(bDevice ? EqPresetSource::Device : EqPresetSource::App, Target,
+                                    ResolveCurrentTarget(), CaptureEqState());
+    }
+
+    fprintf(stderr, "[ramkolfxd] %s '%s' %s%s\n", bDevice ? "device" : "app", Target.c_str(),
+            InCommand.PresetName.empty() ? "unbound" : "bound to preset ", InCommand.PresetName.c_str());
+}
+
+bool AudioEngine::EvaluateAutoSwitch()
+{
+    if (!Devices || !Output)
+    {
+        return false;
+    }
+
+    // Everything the rule depends on - the stream list, the clock, the
+    // output device - is sampled under AutoSwitchMutex, not before it: the
+    // timer and control threads both run this, and an input sampled
+    // outside the lock could be applied after a newer evaluation's result.
+    std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
+
+    std::vector<std::string> PlayingApps;
+    for (const ContentStreamInfo& Stream : Devices->GetContentStreams())
+    {
+        if (Stream.bPlaying)
+        {
+            PlayingApps.push_back(Stream.AppName);
+        }
+    }
+    const int64_t NowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+    AppActivity.Update(PlayingApps, NowMs);
+
+    std::lock_guard<std::mutex> Lock(PresetMutex);
+    const AutoSwitchTarget Target = ResolveCurrentTarget();
+    if (Target == AutoSwitch.LastTarget())
+    {
+        return false; // the common case on every tick - skip capturing the curve
+    }
+
+    EqState Live = CaptureEqState();
+    bool bCurveChanged = false;
+    AutoSwitch.Evaluate(Target, PresetCatalog, Live, bCurveChanged);
+    if (bCurveChanged)
+    {
+        ApplyEqCurve(Live.Bands, Live.Bass);
+    }
+    SetActivePreset(Live);
+
+    if (Target.Source == EqPresetSource::Manual)
+    {
+        fprintf(stderr, "[ramkolfxd] EQ auto-switch: no binding applies, back to manual\n");
+    }
+    else
+    {
+        fprintf(stderr, "[ramkolfxd] EQ auto-switch: %s '%s' -> preset '%s'\n",
+                Target.Source == EqPresetSource::App ? "app" : "device", Target.Key.c_str(),
+                Target.PresetName.c_str());
+    }
+    return true;
+}
+
+void AudioEngine::OnAutoSwitchTimer(void* Data, uint64 Expirations)
+{
+    (void)Expirations;
+    AudioEngine* Self = static_cast<AudioEngine*>(Data);
+    if (Self->EvaluateAutoSwitch())
+    {
+        Self->bSettingsDirty.store(true);
+    }
+    Self->FlushSettingsIfDirty();
+}
+
+void AudioEngine::FlushSettingsIfDirty()
+{
+    // Cleared before the snapshot is taken, so a change landing while the
+    // save runs re-marks it dirty and goes out on the next tick.
+    if (bSettingsDirty.exchange(false))
+    {
+        PersistCurrentSettings(); // no locks held here, see its comment
+    }
 }
 
 } // namespace ramkolfx

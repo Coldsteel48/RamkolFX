@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -24,6 +25,8 @@ struct pw_context;
 struct pw_core;
 struct pw_registry;
 struct pw_metadata;
+struct pw_proxy;
+struct pw_node_info;
 struct spa_dict;
 
 namespace ramkolfx
@@ -47,6 +50,13 @@ namespace ramkolfx
 // configured beforehand is captured at the same time (see
 // HandleMetadataProperty) so RestorePreviousDefaultSink() can hand it
 // back to the system once the daemon shuts down.
+//
+// Also tracks playback streams (media.class "Stream/Output/Audio") and the
+// links between nodes, so GetContentStreams() can report which apps are
+// currently routed into the virtual sink and whether each is actually
+// running - the input to EQ preset auto-switching (see
+// docs/eq-presets-plan.md). Each stream node is bound so its info events
+// (state changes: running vs. paused/idle/suspended) reach us.
 //
 // Registry events land on the PipeWire main-loop thread (the same thread
 // AudioEngine::Run() drives); GetDevices() is called from ControlServer's
@@ -77,6 +87,11 @@ public:
     // Safe to call from any thread.
     std::vector<AudioDeviceInfo> GetDevices() const;
 
+    // Playback streams currently linked into the virtual sink.
+    // ContentStreamInfo::BoundPresetName is left empty - bindings aren't
+    // this class's concern. Safe to call from any thread.
+    std::vector<ContentStreamInfo> GetContentStreams() const;
+
     // True if a currently-known real hardware sink's node.name matches
     // Name. Safe to call from any thread.
     bool HasDevice(const std::string& Name) const;
@@ -101,9 +116,25 @@ public:
     // sink. Safe to call from any thread.
     std::optional<std::string> GetPreviousDefaultSinkName() const;
 
+    // A bound Stream/Output/Audio node (public only so the pw_node event
+    // trampoline can reach it; not for external use). Heap-allocated so Listener's
+    // address stays stable for the proxy's lifetime.
+    struct TrackedStream
+    {
+        DeviceRegistry* Owner = nullptr;
+        uint32 Id = 0;
+        std::string AppName;
+        std::string MediaName;
+        bool bRunning = false;
+        pw_proxy* Proxy = nullptr;
+        spa_hook Listener{};
+    };
     // pw_registry callback trampoline targets; not for external use.
     void HandleGlobalAdded(uint32 Id, const char* Type, const spa_dict* Props);
     void HandleGlobalRemoved(uint32 Id);
+
+    // pw_node info callback trampoline target; not for external use.
+    void HandleStreamInfo(uint32 Id, const pw_node_info* Info);
 
     // pw_metadata callback trampoline target; not for external use.
     void HandleMetadataProperty(uint32 Subject, const char* Key, const char* Type, const char* Value);
@@ -145,6 +176,19 @@ private:
 
     mutable std::mutex DevicesMutex;
     std::unordered_map<uint32, AudioDeviceInfo> DevicesById;
+
+    struct LinkEnds
+    {
+        uint32 OutputNode = 0;
+        uint32 InputNode = 0;
+    };
+
+    // Guards everything below. Written on the main-loop thread (registry/
+    // node events), read from control threads (GetContentStreams).
+    mutable std::mutex StreamsMutex;
+    std::unordered_map<uint32, std::unique_ptr<TrackedStream>> StreamsById;
+    std::unordered_map<uint32, LinkEnds> LinksById;
+    uint32 VirtualSinkNodeId = 0xFFFFFFFFu; // SPA_ID_INVALID until our sink's global appears
 };
 
 } // namespace ramkolfx

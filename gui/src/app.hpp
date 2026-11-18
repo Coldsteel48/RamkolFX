@@ -113,6 +113,61 @@ private:
     // HwEqBands.
     BassEnhancerSettings BassEnhancer{};
 
+    // EQ preset catalog (built-ins first), fetched on connect and re-fetched
+    // whenever Status::PresetCatalogRevision changes - i.e. after a save/
+    // delete by this or any other client. LastStatus carries which one is
+    // active.
+    std::vector<EqPresetInfo> EqPresets;
+
+    // Re-fetches EqPresets. On failure marks the connection dropped and
+    // returns false.
+    bool RefreshPresetCatalog();
+
+    // Text buffer behind the "Save EQ preset" popup's name field.
+    char SavePresetNameBuffer[MaxEqPresetNameLength + 1] = {};
+
+    // Re-fetches HwEqBands/BassEnhancer (the curve isn't part of Status).
+    // Called when Status::EqRevision changes, i.e. the daemon changed the
+    // curve by some route other than this GUI's own sliders - applying a
+    // preset, or device/app auto-switching. On failure marks the
+    // connection dropped (same as Apply) and returns false.
+    bool RefreshEqState();
+
+    // Marks the daemon connection lost and schedules an immediate
+    // reconnect attempt - what every failed request does.
+    void MarkDisconnected();
+
+    // Name of the preset the open "Delete EQ preset" popup is asking
+    // about. Captured when the popup opens: the active preset can change
+    // under it (auto-switching), and the confirmation must delete the one
+    // the user was shown.
+    std::string PresetPendingDelete;
+
+    // Draws the preset card's combo / Save as / Delete controls and their
+    // popups.
+    void DrawPresetControls();
+
+    // While the current output device is bound (the "This device" toggle
+    // is on), moves its binding to PresetName - so picking or saving a
+    // preset with the toggle on means "use this one for this device".
+    // Skipped when the pick was the playing app's own bound preset (the
+    // daemon then reports PresetSource App), so maintaining an app's
+    // preset never rewrites the device binding.
+    void RebindDeviceIfBound(const std::string& PresetName);
+
+    // Playback streams routed into RamkolFX (with each app's bound
+    // preset), for the App preset card. Polled alongside status while the
+    // Equalizer tab is showing, so its playing/paused markers stay live.
+    std::vector<ContentStreamInfo> ContentStreams;
+
+    // App picked in the App preset card's app combo (persists across
+    // frames; re-picked automatically when that app goes away).
+    std::string SelectedApp;
+
+    // On failure marks the connection dropped, same as Apply.
+    void RefreshContentStreams();
+    void DrawAppPresetCard();
+
     // Whether the bass enhancer panel shows Cutoff/Drive controls -
     // local-only UX toggle, persisted via gui_prefs.hpp same as
     // bAdvancedEqMode.

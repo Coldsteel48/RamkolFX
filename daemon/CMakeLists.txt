@@ -72,6 +72,20 @@ configure_file(
     @ONLY
 )
 
+# EQ preset storage + auto-switching logic, plus the EQ defaults they
+# depend on: no PipeWire, no DSP pipeline, so the tests (tests/) can link
+# exactly the same objects the daemon runs.
+add_library(ramkolfx_presets STATIC
+    src/key_value_file.cpp
+    src/preset_store.cpp
+    src/preset_auto_switch.cpp
+    src/settings_store.cpp
+    src/dsp/biquad.cpp
+    src/dsp/graphic_eq_filter.cpp
+)
+target_include_directories(ramkolfx_presets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(ramkolfx_presets PUBLIC ramkolfx_common)
+
 add_executable(ramkolfxd
     src/main.cpp
     src/audio_engine.cpp
@@ -79,7 +93,6 @@ add_executable(ramkolfxd
     src/hardware_output.cpp
     src/device_registry.cpp
     src/single_instance_lock.cpp
-    src/settings_store.cpp
     src/dsp/passthrough_stage.cpp
     src/dsp/speaker_layout.cpp
     src/dsp/ambisonics_stage.cpp
@@ -91,8 +104,6 @@ add_executable(ramkolfxd
     src/dsp/binaural_stage.cpp
     src/dsp/binaural_voice.cpp
     src/dsp/hrtf_deck.cpp
-    src/dsp/biquad.cpp
-    src/dsp/graphic_eq_filter.cpp
     src/dsp/hw_eq_stage.cpp
     src/dsp/bass_enhancer_filter.cpp
     src/dsp/bass_enhancer_stage.cpp
@@ -107,6 +118,7 @@ target_include_directories(ramkolfxd PRIVATE
 
 target_link_libraries(ramkolfxd PRIVATE
     ramkolfx_common
+    ramkolfx_presets
     PkgConfig::PIPEWIRE
     Threads::Threads
     mysofa-static

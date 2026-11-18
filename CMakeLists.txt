@@ -22,6 +22,12 @@ add_compile_options(-Wall -Wextra)
 add_subdirectory(common)
 add_subdirectory(daemon)
 
+option(RAMKOLFX_BUILD_TESTS "Build the unit tests (run with ctest)" ON)
+if(RAMKOLFX_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 option(RAMKOLFX_BUILD_GUI "Build the RamkolFX GUI control app" OFF)
 if(RAMKOLFX_BUILD_GUI)
     add_subdirectory(gui)

@@ -58,6 +58,14 @@ public:
     std::optional<std::array<EqBand, MaxEqBands>> RequestHwEqState();
     std::optional<Status> SetBassEnhancer(const BassEnhancerSettings& Settings);
     std::optional<BassEnhancerSettings> RequestBassEnhancerState();
+    std::optional<std::vector<EqPresetInfo>> RequestEqPresetCatalog();
+    std::optional<Status> ApplyEqPreset(const std::string& PresetName);
+    std::optional<Status> SaveEqPreset(const std::string& PresetName);
+    std::optional<Status> DeleteEqPreset(const std::string& PresetName);
+    // Empty PresetName unbinds.
+    std::optional<Status> BindDevicePreset(const std::string& DeviceName, const std::string& PresetName);
+    std::optional<Status> BindAppPreset(const std::string& AppName, const std::string& PresetName);
+    std::optional<std::vector<ContentStreamInfo>> RequestContentStreams();
 
 private:
     struct RawResponse
@@ -71,6 +79,14 @@ private:
     // SendStatusRequest() and RequestDevices(), which each decode it
     // differently.
     std::optional<RawResponse> SendRawRequest(const std::vector<uint8>& Request);
+
+    // Sends Request and decodes the reply with Decode (one of protocol.hpp's
+    // Decode*Response functions) if it carries ExpectedOpcode. nullopt on
+    // no reply or a different opcode; a reply that fails to decode also
+    // disconnects. Shared by every Request*/Set* call.
+    template <typename DecodeFn>
+    auto RequestDecoded(const std::vector<uint8>& Request, Opcode ExpectedOpcode, DecodeFn Decode)
+        -> decltype(Decode(nullptr, uint16{}));
 
     // Sends a request and decodes a StatusResponse from the reply.
     std::optional<Status> SendStatusRequest(const std::vector<uint8>& Request);

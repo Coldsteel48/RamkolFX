@@ -9,6 +9,8 @@
 #include "app.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <string>
 
 #include "imgui.h"
 #include "position_dial.hpp"
@@ -30,7 +32,11 @@ constexpr float PositionSendIntervalSeconds = 0.03f; // ~33 Hz cap while draggin
 // constructing a card and the width math that right-aligns content within
 // it (see DrawSpatialTab/DrawEqTab's TabContentWidth) can't drift apart.
 constexpr float PanelPadding = 16.0f; // outer panel CardScope's own padding
-constexpr float BassCardPadding = 14.0f; // Bass Enhancer CardScope's own padding
+// Inner padding of every nested card (Bass Enhancer, preset cards, genre
+// row) - and the inset of the tab's free-standing rows (title, EQ label,
+// band row) too, so text and controls line up on one left and one right
+// edge across all of them, with card borders on the outer edge.
+constexpr float NestedCardPadding = 14.0f;
 constexpr float ColumnGap = 22.0f; // gap between the spatial tab's two columns
 } // namespace
 
@@ -63,6 +69,10 @@ void App::Tick(float DeltaTimeSeconds)
                     {
                         BassEnhancer = *BassResult;
                     }
+                    if (auto PresetResult = Client.RequestEqPresetCatalog())
+                    {
+                        EqPresets = std::move(*PresetResult);
+                    }
                     DevicePollTimerSeconds = DevicePollIntervalSeconds;
                     bConnected = true;
                 }
@@ -79,7 +89,10 @@ void App::Tick(float DeltaTimeSeconds)
         if (StatusPollTimerSeconds <= 0.0f)
         {
             StatusPollTimerSeconds = StatusPollIntervalSeconds;
-            Apply(Client.RequestStatus());
+            if (Apply(Client.RequestStatus()) && ActiveTabIndex == 1)
+            {
+                RefreshContentStreams(); // only the Equalizer tab shows them
+            }
         }
 
         DevicePollTimerSeconds -= DeltaTimeSeconds;
@@ -92,8 +105,7 @@ void App::Tick(float DeltaTimeSeconds)
             }
             else
             {
-                bConnected = false;
-                ReconnectTimerSeconds = 0.0f;
+                MarkDisconnected();
             }
             if (bConnected)
             {
@@ -103,8 +115,7 @@ void App::Tick(float DeltaTimeSeconds)
                 }
                 else
                 {
-                    bConnected = false;
-                    ReconnectTimerSeconds = 0.0f;
+                    MarkDisconnected();
                 }
             }
         }
@@ -130,12 +141,44 @@ bool App::Apply(std::optional<Status> Result)
 {
     if (Result)
     {
+        const bool bEqChangedElsewhere = Result->EqRevision != LastStatus.EqRevision;
+        const bool bCatalogChanged = Result->PresetCatalogRevision != LastStatus.PresetCatalogRevision;
         LastStatus = *Result;
+        return (!bEqChangedElsewhere || RefreshEqState()) && (!bCatalogChanged || RefreshPresetCatalog());
+    }
+    MarkDisconnected();
+    return false;
+}
+
+bool App::RefreshPresetCatalog()
+{
+    if (auto Result = Client.RequestEqPresetCatalog())
+    {
+        EqPresets = std::move(*Result);
         return true;
     }
+    MarkDisconnected();
+    return false;
+}
+
+void App::MarkDisconnected()
+{
     bConnected = false;
     ReconnectTimerSeconds = 0.0f; // retry immediately
-    return false;
+}
+
+bool App::RefreshEqState()
+{
+    auto EqResult = Client.RequestHwEqState();
+    auto BassResult = EqResult ? Client.RequestBassEnhancerState() : std::nullopt;
+    if (!EqResult || !BassResult)
+    {
+        MarkDisconnected();
+        return false;
+    }
+    HwEqBands = *EqResult;
+    BassEnhancer = *BassResult;
+    return true;
 }
 
 void App::PersistGuiPreferences() const
@@ -201,8 +244,13 @@ void App::DrawUI()
     // so it stays browsable while reconnecting, rather than locking the
     // whole panel to whichever tab happened to be active when the
     // connection dropped.
+    // Explicit TargetContentWidth - exactly the width of the panel below
+    // (its TabContentWidth plus PanelPadding on both sides) - so the tab
+    // bar's edges line up with the panel's, rather than tracking the
+    // window's live (possibly stale) content region.
     static const char* const TabLabels[] = {"Spatial Audio & Speakers", "Equalizer & Bass"};
-    if (DrawSegmentedPill("tab_nav", TabLabels, IM_ARRAYSIZE(TabLabels), &ActiveTabIndex, DpiScale))
+    if (DrawSegmentedPill("tab_nav", TabLabels, IM_ARRAYSIZE(TabLabels), &ActiveTabIndex, DpiScale,
+                          TargetContentWidth))
     {
         PersistGuiPreferences();
     }
@@ -614,6 +662,32 @@ void App::DrawEqTab()
     const float TabContentWidth = TargetContentWidth - 2.0f * PanelPadding * DpiScale;
     const ImVec2 TabStart = ImGui::GetCursorScreenPos();
 
+    // The shared alignment edges (see NestedCardPadding): card borders sit
+    // on TabStart.x / TabStart.x + TabContentWidth, all text and controls on
+    // InnerX / InnerX + InnerWidth.
+    const float CardPad = NestedCardPadding * DpiScale;
+    const float InnerX = TabStart.x + CardPad;
+    const float InnerWidth = TabContentWidth - 2.0f * CardPad;
+    const auto MoveToInnerEdge = [&]
+    {
+        ImGui::SetCursorScreenPos(ImVec2(InnerX, ImGui::GetCursorScreenPos().y));
+    };
+    // ImGui child windows (the preset cards, genre row) take their padding
+    // from the style at BeginChild time; this matches them to CardScope's.
+    const auto BeginNestedChild = [&](const char* Id, ImVec2 Size)
+    {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, palette::NestedCardBgV4);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CardPad, CardPad));
+        ImGui::BeginChild(Id, Size, true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::PopStyleVar(); // only needed at Begin - keeps popups opened inside on the default
+    };
+    const auto EndNestedChild = []
+    {
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+    };
+
+    MoveToInnerEdge();
     ImGui::TextUnformatted("Equalizer & Bass");
     // "Advanced editing" shares this row with the tab title, so the
     // label+toggle pair moves as a unit to the row's right edge - see the
@@ -622,7 +696,7 @@ void App::DrawEqTab()
     const float AdvancedEditUnitWidth =
         ImGui::CalcTextSize("Advanced editing").x + AdvancedEditGap + ToggleTrackWidth * DpiScale;
     ImGui::SameLine();
-    RightAlignCursor(TabStart.x, TabContentWidth, AdvancedEditUnitWidth);
+    RightAlignCursor(InnerX, InnerWidth, AdvancedEditUnitWidth);
     ImGui::TextUnformatted("Advanced editing");
     ImGui::SameLine(0.0f, AdvancedEditGap);
     if (DrawToggleSwitch("advanced_eq", &bAdvancedEqMode, DpiScale))
@@ -648,9 +722,9 @@ void App::DrawEqTab()
 
     {
         CardScope Card(palette::NestedCardBg, palette::RadiusNestedCard * DpiScale,
-                       ImVec2(BassCardPadding * DpiScale, BassCardPadding * DpiScale));
+                       ImVec2(CardPad, CardPad));
         const ImVec2 BassCardStart = ImGui::GetCursorScreenPos();
-        const float BassContentWidth = TabContentWidth - 2.0f * BassCardPadding * DpiScale;
+        const float BassContentWidth = InnerWidth;
 
         ImGui::TextUnformatted("Bass Enhancer");
         ImGui::SameLine();
@@ -708,16 +782,11 @@ void App::DrawEqTab()
         }
     }
 
-    // Static, non-interactive placeholders for the not-yet-implemented
-    // per-device/per-app named preset system - see
-    // AudioEngine::HandleControlCommand, where SetHwEqPreset/
-    // SaveHwEqPreset/SetContentEqPreset/SaveContentEqPreset/
-    // GetEqPresetCatalog/GetContentStreams are decoded but have no
-    // handler yet. Rendered disabled/inert rather than wired to fake
-    // data, same treatment as the Genre auto-detect row below.
+    // Named EQ presets (docs/eq-presets-plan.md): the left card manages
+    // presets and the current output device's binding, the right card
+    // binds presets to apps for auto-switching.
     ImGui::Spacing();
     {
-        static const char* const NoPresets[] = {"(none)"};
         // Derived from TabContentWidth, not a live GetContentRegionAvail()
         // read - same self-referential-width trap TabContentWidth itself
         // dodges (see its comment above): reading it here would size these
@@ -727,10 +796,7 @@ void App::DrawEqTab()
         const float CardWidth = (TabContentWidth - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
         const float CardHeight = 138.0f * DpiScale;
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, palette::NestedCardBgV4);
-        ImGui::BeginChild("device_preset_card", ImVec2(CardWidth, CardHeight), true,
-                          ImGuiWindowFlags_NoScrollbar);
-        ImGui::BeginDisabled(true);
+        BeginNestedChild("device_preset_card", ImVec2(CardWidth, CardHeight));
         {
             // A real BeginChild() (unlike the plain BeginGroup() "columns"
             // used elsewhere in this file), so GetContentRegionAvail()
@@ -738,87 +804,72 @@ void App::DrawEqTab()
             const ImVec2 RowStart = ImGui::GetCursorScreenPos();
             const float RowWidth = ImGui::GetContentRegionAvail().x;
             const float Gap = 6.0f * DpiScale;
-            const float UnitWidth = ImGui::CalcTextSize("Global default").x + Gap + ToggleTrackWidth * DpiScale;
-            ImGui::TextUnformatted("Device preset");
+            const float UnitWidth = ImGui::CalcTextSize("This device").x + Gap + ToggleTrackWidth * DpiScale;
+            ImGui::TextUnformatted("EQ preset");
             ImGui::SameLine();
             RightAlignCursor(RowStart.x, RowWidth, UnitWidth);
-            ImGui::TextUnformatted("Global default");
+            ImGui::TextUnformatted("This device");
             ImGui::SameLine(0.0f, Gap);
         }
-        static bool bDeviceGlobalPlaceholder = false;
-        DrawToggleSwitch("device_global_default", &bDeviceGlobalPlaceholder, DpiScale);
-        ImGui::TextColored(palette::TextMutedV4, "Target: %s",
-                           LastStatus.OutputDeviceName.empty() ? "(none)" : LastStatus.OutputDeviceName.c_str());
-        static int DevicePresetPlaceholder = 0;
-        ImGui::SetNextItemWidth(-1);
-        ImGui::Combo("##device_preset_select", &DevicePresetPlaceholder, NoPresets, IM_ARRAYSIZE(NoPresets));
-        ImGui::PushStyleColor(ImGuiCol_Button, palette::AccentGradientEndV4);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.024f, 0.071f, 0.11f, 1.0f));
-        ImGui::Button("Save as...##device_preset");
-        ImGui::PopStyleColor(2);
-        ImGui::SameLine();
-        ImGui::Button("Delete##device_preset");
-        ImGui::TextColored(palette::WarningV4, "Custom (unsaved)");
-        ImGui::EndDisabled();
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
-
-        ImGui::SameLine();
-
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, palette::NestedCardBgV4);
-        ImGui::BeginChild("app_preset_card", ImVec2(CardWidth, CardHeight), true, ImGuiWindowFlags_NoScrollbar);
-        ImGui::BeginDisabled(true);
+        // On = the current output device is bound to a preset, applied
+        // automatically whenever this device is selected (phase 2 of
+        // docs/eq-presets-plan.md). Turning it on binds the active preset,
+        // so it needs one; while on, picking or saving a preset rebinds.
+        bool bDeviceBound = !LastStatus.DevicePresetName.empty();
+        ImGui::BeginDisabled(LastStatus.OutputDeviceName.empty() ||
+                             (!bDeviceBound && LastStatus.ActivePresetName.empty()));
+        if (DrawToggleSwitch("device_preset_binding", &bDeviceBound, DpiScale))
         {
-            const ImVec2 RowStart = ImGui::GetCursorScreenPos();
-            const float RowWidth = ImGui::GetContentRegionAvail().x;
-            const float Gap = 6.0f * DpiScale;
-            const float UnitWidth = ImGui::CalcTextSize("Global default").x + Gap + ToggleTrackWidth * DpiScale;
-            ImGui::TextUnformatted("App preset");
-            ImGui::SameLine();
-            RightAlignCursor(RowStart.x, RowWidth, UnitWidth);
-            ImGui::TextUnformatted("Global default");
-            ImGui::SameLine(0.0f, Gap);
+            Apply(Client.BindDevicePreset(LastStatus.OutputDeviceName,
+                                          bDeviceBound ? LastStatus.ActivePresetName : std::string()));
         }
-        static bool bAppGlobalPlaceholder = false;
-        DrawToggleSwitch("app_global_default", &bAppGlobalPlaceholder, DpiScale);
-        static int AppPlaceholder = 0;
-        static const char* const NoApps[] = {"(none)"};
-        ImGui::SetNextItemWidth(-1);
-        ImGui::Combo("##app_select", &AppPlaceholder, NoApps, IM_ARRAYSIZE(NoApps));
-        static int AppPresetPlaceholder = 0;
-        ImGui::SetNextItemWidth(-1);
-        ImGui::Combo("##app_preset_select", &AppPresetPlaceholder, NoPresets, IM_ARRAYSIZE(NoPresets));
-        ImGui::PushStyleColor(ImGuiCol_Button, palette::AccentGradientEndV4);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.024f, 0.071f, 0.11f, 1.0f));
-        ImGui::Button("Save as...##app_preset");
-        ImGui::PopStyleColor(2);
-        ImGui::SameLine();
-        ImGui::Button("Delete##app_preset");
-        ImGui::TextColored(palette::WarningV4, "Custom (unsaved)");
         ImGui::EndDisabled();
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip(bDeviceBound ? "Uses \"%s\" whenever this output device is selected"
+                                           : "Use the current preset whenever this output device is selected",
+                              LastStatus.DevicePresetName.c_str());
+        }
+        {
+            std::string DeviceLabel = LastStatus.OutputDeviceName.empty() ? "(none)" : LastStatus.OutputDeviceName;
+            for (const AudioDeviceInfo& Device : Devices)
+            {
+                if (Device.Name == LastStatus.OutputDeviceName)
+                {
+                    DeviceLabel = Device.Description;
+                }
+            }
+            ImGui::TextColored(palette::TextMutedV4, "Device: %s", DeviceLabel.c_str());
+        }
+        DrawPresetControls();
+        EndNestedChild();
+
+        ImGui::SameLine();
+
+        BeginNestedChild("app_preset_card", ImVec2(CardWidth, CardHeight));
+        DrawAppPresetCard();
+        EndNestedChild();
     }
 
     ImGui::Spacing();
     {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, palette::NestedCardBgV4);
         // Explicit TabContentWidth rather than 0.0f ("fill available") for
         // the same reason as CardWidth above - fill-available reads the
         // window's live (possibly stale) content region instead of the
         // fixed per-tab width every other row in this tab is flush to.
-        ImGui::BeginChild("genre_row", ImVec2(TabContentWidth, 30.0f * DpiScale), true,
-                          ImGuiWindowFlags_NoScrollbar);
+        // Height is one text line plus the card padding, so the row's text
+        // isn't clipped.
+        BeginNestedChild("genre_row", ImVec2(TabContentWidth, ImGui::GetTextLineHeight() + 2.0f * CardPad));
         ImGui::BeginDisabled(true);
         ImGui::TextUnformatted("Genre auto-detect (music / jazz / rock / movie / game)");
         ImGui::SameLine();
         ImGui::TextColored(palette::TextMutedV4, "Coming soon");
         ImGui::EndDisabled();
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
+        EndNestedChild();
     }
 
     ImGui::Spacing();
+    MoveToInnerEdge();
     ImGui::TextUnformatted("Equalizer (10-band)");
 
     // Sends BandIndex's current (already locally-updated) EqBand and folds
@@ -832,13 +883,40 @@ void App::DrawEqTab()
     static const char* EqFilterTypeLabels[] = {"Peaking", "Low Shelf", "High Shelf",
                                                 "Low Pass", "High Pass", "Notch"};
 
+    // Band layout: every band is a fixed-width column (the width of the
+    // advanced-mode controls), with the bar and frequency label centered in
+    // it, and the 10 columns spread evenly across InnerWidth - first/last
+    // column flush with the same inner edges as the card contents above.
+    // If the panel were ever too narrow for that, fall back to the
+    // normal item spacing and center the row instead.
+    const float ColumnWidth = 72.0f * DpiScale;
+    const float BarWidth = 28.0f * DpiScale;
+    const float MinGap = ImGui::GetStyle().ItemSpacing.x;
+    const float SpreadGap = (InnerWidth - MaxEqBands * ColumnWidth) / static_cast<float>(MaxEqBands - 1);
+    const float ColumnGapPx = std::max(SpreadGap, MinGap);
+    const float RowWidth = MaxEqBands * ColumnWidth + (MaxEqBands - 1) * ColumnGapPx;
+    const ImVec2 RowOrigin = ImGui::GetCursorScreenPos();
+    const float RowStartX = InnerX + std::max(0.0f, (InnerWidth - RowWidth) * 0.5f);
+
+    // Moves the cursor (on its current line) so an item of ItemWidth is
+    // centered within the column starting at ColumnX.
+    const auto CenterInColumn = [&](float ColumnX, float ItemWidth)
+    {
+        ImGui::SetCursorScreenPos(
+            ImVec2(ColumnX + (ColumnWidth - ItemWidth) * 0.5f, ImGui::GetCursorScreenPos().y));
+    };
+
     for (size_t i = 0; i < MaxEqBands; ++i)
     {
+        const float ColumnX = RowStartX + static_cast<float>(i) * (ColumnWidth + ColumnGapPx);
+        ImGui::SetCursorScreenPos(ImVec2(ColumnX, RowOrigin.y));
+
         ImGui::PushID(static_cast<int>(i));
         ImGui::BeginGroup();
 
         float Gain = HwEqBands[i].GainDb;
-        if (DrawEqBandBar("##gain", &Gain, -12.0f, 12.0f, ImVec2(28.0f * DpiScale, 120.0f * DpiScale), DpiScale))
+        CenterInColumn(ColumnX, BarWidth);
+        if (DrawEqBandBar("##gain", &Gain, -12.0f, 12.0f, ImVec2(BarWidth, 120.0f * DpiScale), DpiScale))
         {
             HwEqBands[i].GainDb = Gain;
             SendHwEqBand(static_cast<uint8>(i));
@@ -848,11 +926,13 @@ void App::DrawEqTab()
         const std::string FreqLabel = NominalHz >= 1000.0f
                                            ? std::to_string(static_cast<int>(NominalHz / 1000.0f)) + "k"
                                            : std::to_string(static_cast<int>(NominalHz));
+        CenterInColumn(ColumnX, ImGui::CalcTextSize(FreqLabel.c_str()).x);
         ImGui::TextUnformatted(FreqLabel.c_str());
 
         if (bAdvancedEqMode)
         {
-            ImGui::SetNextItemWidth(72.0f * DpiScale);
+            ImGui::SetCursorScreenPos(ImVec2(ColumnX, ImGui::GetCursorScreenPos().y));
+            ImGui::SetNextItemWidth(ColumnWidth);
             int FilterTypeIndex = static_cast<int>(HwEqBands[i].FilterType);
             if (ImGui::Combo("##type", &FilterTypeIndex, EqFilterTypeLabels, IM_ARRAYSIZE(EqFilterTypeLabels)))
             {
@@ -860,7 +940,7 @@ void App::DrawEqTab()
                 SendHwEqBand(static_cast<uint8>(i));
             }
 
-            ImGui::SetNextItemWidth(72.0f * DpiScale);
+            ImGui::SetNextItemWidth(ColumnWidth);
             float Frequency = HwEqBands[i].FrequencyHz;
             if (ImGui::DragFloat("##freq", &Frequency, 1.0f, 20.0f, 20000.0f, "%.0f Hz"))
             {
@@ -868,7 +948,7 @@ void App::DrawEqTab()
                 SendHwEqBand(static_cast<uint8>(i));
             }
 
-            ImGui::SetNextItemWidth(72.0f * DpiScale);
+            ImGui::SetNextItemWidth(ColumnWidth);
             float Q = HwEqBands[i].Q;
             if (ImGui::DragFloat("##q", &Q, 0.01f, 0.1f, 10.0f, "Q %.2f"))
             {
@@ -876,23 +956,333 @@ void App::DrawEqTab()
                 SendHwEqBand(static_cast<uint8>(i));
             }
         }
-        else
-        {
-            // Reserves the same 72*DpiScale column width the advanced-mode
-            // controls above use, so toggling Advanced editing only
-            // changes each band's height (extra rows appear/disappear),
-            // never its width - which is what keeps the whole EQ tab (and
-            // therefore the window, via CardScope's auto-hug) from
-            // resizing when the mode is flipped.
-            ImGui::Dummy(ImVec2(72.0f * DpiScale, 0.0f));
-        }
+        // Pins the group to the full column width in both modes, so every
+        // band is the same size and toggling Advanced editing only changes
+        // the bands' height, never the tab's width.
+        ImGui::SetCursorScreenPos(ImVec2(ColumnX, ImGui::GetCursorScreenPos().y));
+        ImGui::Dummy(ImVec2(ColumnWidth, 0.0f));
 
         ImGui::EndGroup();
         ImGui::PopID();
-        if (i + 1 < MaxEqBands)
+    }
+}
+
+void App::RefreshContentStreams()
+{
+    if (auto Result = Client.RequestContentStreams())
+    {
+        ContentStreams = std::move(*Result);
+    }
+    else
+    {
+        MarkDisconnected();
+    }
+}
+
+void App::DrawAppPresetCard()
+{
+    // One entry per app (an app can have several streams - e.g. one per
+    // browser tab); playing if any of its streams is.
+    struct AppEntry
+    {
+        std::string Name;
+        std::string MediaName;
+        std::string BoundPreset;
+        bool bPlaying = false;
+    };
+    std::vector<AppEntry> Apps;
+    for (const ContentStreamInfo& Stream : ContentStreams)
+    {
+        auto It = std::find_if(Apps.begin(), Apps.end(), [&](const AppEntry& E) { return E.Name == Stream.AppName; });
+        if (It == Apps.end())
         {
-            ImGui::SameLine();
+            Apps.push_back({Stream.AppName, Stream.MediaName, Stream.BoundPresetName, Stream.bPlaying});
         }
+        else if (Stream.bPlaying && !It->bPlaying)
+        {
+            It->bPlaying = true;
+            It->MediaName = Stream.MediaName; // show what's actually playing
+        }
+    }
+
+    // Keep the user's pick while that app is around; otherwise follow the
+    // app currently driving the EQ, else the first playing one, else the
+    // first listed.
+    const auto Find = [&](const std::string& Name) -> const AppEntry*
+    {
+        auto It = std::find_if(Apps.begin(), Apps.end(), [&](const AppEntry& E) { return E.Name == Name; });
+        return It != Apps.end() ? &*It : nullptr;
+    };
+    if (!Find(SelectedApp))
+    {
+        auto Playing = std::find_if(Apps.begin(), Apps.end(), [](const AppEntry& E) { return E.bPlaying; });
+        SelectedApp = Find(LastStatus.PresetSourceApp) ? LastStatus.PresetSourceApp
+                      : Playing != Apps.end()          ? Playing->Name
+                      : !Apps.empty()                  ? Apps.front().Name
+                                                       : std::string();
+    }
+    const AppEntry* Selected = Find(SelectedApp);
+
+    {
+        const ImVec2 RowStart = ImGui::GetCursorScreenPos();
+        const float RowWidth = ImGui::GetContentRegionAvail().x;
+        const size_t PlayingCount =
+            std::count_if(Apps.begin(), Apps.end(), [](const AppEntry& E) { return E.bPlaying; });
+        char Summary[32];
+        std::snprintf(Summary, sizeof(Summary), "%zu playing", PlayingCount);
+        ImGui::TextUnformatted("App preset");
+        ImGui::SameLine();
+        RightAlignCursor(RowStart.x, RowWidth, ImGui::CalcTextSize(Summary).x);
+        ImGui::TextColored(palette::TextMutedV4, "%s", Summary);
+    }
+
+    // App picker - only apps currently routed into RamkolFX are listed,
+    // since that's all the daemon reports (bindings for absent apps stay
+    // in effect, they just can't be edited until the app shows up again).
+    ImGui::BeginDisabled(Apps.empty());
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##app_select", Selected ? Selected->Name.c_str() : "(no apps)"))
+    {
+        for (const AppEntry& Entry : Apps)
+        {
+            ImGui::PushID(Entry.Name.c_str());
+            if (ImGui::Selectable(Entry.Name.c_str(), Entry.Name == SelectedApp))
+            {
+                SelectedApp = Entry.Name;
+            }
+            if (!Entry.MediaName.empty() && ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("%s", Entry.MediaName.c_str());
+            }
+            ImGui::SameLine();
+            ImGui::TextColored(Entry.bPlaying ? palette::SuccessV4 : palette::TextMutedV4,
+                               Entry.bPlaying ? "playing" : "paused");
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+
+    // Preset to switch to while the selected app plays; "(none)" unbinds,
+    // leaving the app to whatever the device / manual choice is.
+    ImGui::BeginDisabled(!Selected);
+    ImGui::SetNextItemWidth(-1);
+    const char* Preview = Selected && !Selected->BoundPreset.empty() ? Selected->BoundPreset.c_str() : "(none)";
+    if (ImGui::BeginCombo("##app_preset_select", Preview))
+    {
+        std::optional<std::string> Choice;
+        if (ImGui::Selectable("(none)", Selected && Selected->BoundPreset.empty()))
+        {
+            Choice = std::string();
+        }
+        for (size_t i = 0; i < EqPresets.size(); ++i)
+        {
+            const EqPresetInfo& Info = EqPresets[i];
+            if (i == 0 || Info.bBuiltIn != EqPresets[i - 1].bBuiltIn)
+            {
+                ImGui::Separator();
+            }
+            if (ImGui::Selectable(Info.Name.c_str(), Selected && Selected->BoundPreset == Info.Name))
+            {
+                Choice = Info.Name;
+            }
+        }
+        ImGui::EndCombo();
+        if (Choice && Selected && Apply(Client.BindAppPreset(Selected->Name, *Choice)))
+        {
+            RefreshContentStreams(); // pick up the new BoundPresetName right away
+        }
+    }
+    ImGui::EndDisabled();
+
+    // Apps holds copies, so Selected stays valid even if the bind above
+    // refreshed ContentStreams; its BoundPreset just catches up next frame.
+    if (!Selected)
+    {
+        ImGui::TextColored(palette::TextMutedV4, "Play something to bind it");
+    }
+    else if (LastStatus.PresetSource == EqPresetSource::App && LastStatus.PresetSourceApp == Selected->Name)
+    {
+        ImGui::TextColored(palette::SuccessV4, "Active now");
+    }
+    else if (!Selected->BoundPreset.empty())
+    {
+        ImGui::TextColored(palette::TextMutedV4, "Switches in while it plays");
+    }
+    else
+    {
+        ImGui::TextColored(palette::TextMutedV4, "Follows device / manual");
+    }
+}
+
+void App::RebindDeviceIfBound(const std::string& PresetName)
+{
+    // Called right after the pick/save, so LastStatus is the daemon's
+    // answer to it. Source App there means the preset was the playing
+    // app's own bound preset (reverted or updated in place) - that's
+    // about the app's binding, and must not rewrite the device's.
+    if (LastStatus.PresetSource != EqPresetSource::App && !LastStatus.DevicePresetName.empty() &&
+        LastStatus.DevicePresetName != PresetName && !LastStatus.OutputDeviceName.empty())
+    {
+        Apply(Client.BindDevicePreset(LastStatus.OutputDeviceName, PresetName));
+    }
+}
+
+void App::DrawPresetControls()
+{
+    const std::string& Active = LastStatus.ActivePresetName;
+    const auto FindPreset = [&](const std::string& Name) -> const EqPresetInfo*
+    {
+        for (const EqPresetInfo& Info : EqPresets)
+        {
+            if (Info.Name == Name)
+            {
+                return &Info;
+            }
+        }
+        return nullptr;
+    };
+    // Preset picker. Selecting the already-active preset re-applies it,
+    // which is how a "Custom (unsaved)" tweak gets reverted.
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##eq_preset_select", Active.empty() ? "(none)" : Active.c_str()))
+    {
+        for (size_t i = 0; i < EqPresets.size(); ++i)
+        {
+            const EqPresetInfo& Info = EqPresets[i];
+            if (i > 0 && Info.bBuiltIn != EqPresets[i - 1].bBuiltIn)
+            {
+                ImGui::Separator();
+            }
+            if (ImGui::Selectable(Info.Name.c_str(), Info.Name == Active))
+            {
+                // Apply can replace EqPresets (PresetCatalogRevision moved),
+                // which invalidates Info - copy the name and stop iterating.
+                const std::string Name = Info.Name;
+                if (Apply(Client.ApplyEqPreset(Name)))
+                {
+                    RebindDeviceIfBound(Name);
+                }
+                break;
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // Looked up only now, after the combo: any Apply above may have
+    // replaced EqPresets, so a pointer taken earlier could dangle.
+    const EqPresetInfo* ActiveInfo = Active.empty() ? nullptr : FindPreset(Active);
+    const bool bActiveIsUserPreset = ActiveInfo && !ActiveInfo->bBuiltIn;
+
+    ImGui::PushStyleColor(ImGuiCol_Button, palette::AccentGradientEndV4);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.024f, 0.071f, 0.11f, 1.0f));
+    if (ImGui::Button("Save as...##eq_preset"))
+    {
+        // Pre-fill with the active user preset's name (so "save" over it is
+        // one click), but not a built-in's - those can't be overwritten.
+        const std::string Prefill = bActiveIsUserPreset ? Active : std::string();
+        std::snprintf(SavePresetNameBuffer, sizeof(SavePresetNameBuffer), "%s", Prefill.c_str());
+        ImGui::OpenPopup("Save EQ preset");
+    }
+    ImGui::PopStyleColor(2);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!bActiveIsUserPreset);
+    if (ImGui::Button("Delete##eq_preset"))
+    {
+        PresetPendingDelete = Active;
+        ImGui::OpenPopup("Delete EQ preset");
+    }
+    ImGui::EndDisabled();
+
+    if (Active.empty())
+    {
+        ImGui::TextColored(palette::TextMutedV4, "No preset");
+    }
+    else if (LastStatus.bPresetModified)
+    {
+        ImGui::TextColored(palette::WarningV4, "Custom (unsaved)");
+    }
+    else
+    {
+        ImGui::TextColored(palette::TextMutedV4, "Saved");
+    }
+    // Why this preset is active, when it was switched in automatically.
+    if (LastStatus.PresetSource == EqPresetSource::Device)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(palette::TextMutedV4, "- auto (device)");
+    }
+    else if (LastStatus.PresetSource == EqPresetSource::App)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(palette::TextMutedV4, "- auto (%s)", LastStatus.PresetSourceApp.c_str());
+    }
+
+    if (ImGui::BeginPopupModal("Save EQ preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if (ImGui::IsWindowAppearing())
+        {
+            ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::SetNextItemWidth(260.0f * DpiScale);
+        const bool bEnterPressed = ImGui::InputText("Name", SavePresetNameBuffer, sizeof(SavePresetNameBuffer),
+                                                    ImGuiInputTextFlags_EnterReturnsTrue);
+
+        // The same normalization the daemon applies, so the warnings below
+        // match what it will actually do; the daemon still has the final
+        // say.
+        const std::optional<std::string> Normalized = NormalizePresetName(SavePresetNameBuffer);
+        const std::string Name = Normalized.value_or(std::string());
+        const EqPresetInfo* Existing = Normalized ? FindPreset(Name) : nullptr;
+        const bool bCanSave = Normalized && !(Existing && Existing->bBuiltIn);
+        if (Existing && Existing->bBuiltIn)
+        {
+            ImGui::TextColored(palette::WarningV4, "Built-in presets can't be overwritten");
+        }
+        else if (Existing)
+        {
+            ImGui::TextColored(palette::WarningV4, "Overwrites the existing preset");
+        }
+        else
+        {
+            ImGui::TextUnformatted("");
+        }
+
+        ImGui::BeginDisabled(!bCanSave);
+        const bool bSave = ImGui::Button("Save") || (bEnterPressed && bCanSave);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        {
+            ImGui::CloseCurrentPopup();
+        }
+        if (bSave)
+        {
+            // Apply also re-fetches the catalog (PresetCatalogRevision moved).
+            if (Apply(Client.SaveEqPreset(Name)))
+            {
+                RebindDeviceIfBound(LastStatus.ActivePresetName); // the daemon's normalized name
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if (ImGui::BeginPopupModal("Delete EQ preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("Delete preset \"%s\"?", PresetPendingDelete.c_str());
+        ImGui::TextColored(palette::TextMutedV4, "The current sound stays as it is.");
+        if (ImGui::Button("Delete"))
+        {
+            Apply(Client.DeleteEqPreset(PresetPendingDelete)); // re-fetches the catalog too
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 }
 

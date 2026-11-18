@@ -123,28 +123,31 @@ std::optional<ControlClient::RawResponse> ControlClient::SendRawRequest(const st
     return RawResponse{Header->MessageOpcode, std::move(Payload)};
 }
 
-std::optional<Status> ControlClient::SendStatusRequest(const std::vector<uint8>& Request)
+template <typename DecodeFn>
+auto ControlClient::RequestDecoded(const std::vector<uint8>& Request, Opcode ExpectedOpcode, DecodeFn Decode)
+    -> decltype(Decode(nullptr, uint16{}))
 {
     auto Response = SendRawRequest(Request);
-    if (!Response)
+    if (!Response || Response->MessageOpcode != ExpectedOpcode)
     {
-        return std::nullopt;
-    }
-    if (Response->MessageOpcode != Opcode::StatusResponse)
-    {
-        // ErrorResponse or anything unexpected - not fatal to the
-        // connection itself, but this request didn't succeed.
+        // No reply, an ErrorResponse, or anything unexpected - not fatal
+        // to the connection itself, but this request didn't succeed.
         return std::nullopt;
     }
 
-    auto DecodedStatus = DecodeStatusResponse(Response->Payload.data(),
-                                               static_cast<uint16>(Response->Payload.size()));
-    if (!DecodedStatus)
+    auto Decoded = Decode(Response->Payload.data(), static_cast<uint16>(Response->Payload.size()));
+    if (!Decoded)
     {
+        // The daemon answered with the right opcode but a payload we can't
+        // parse: the two are out of sync, so drop the connection.
         Disconnect();
-        return std::nullopt;
     }
-    return DecodedStatus;
+    return Decoded;
+}
+
+std::optional<Status> ControlClient::SendStatusRequest(const std::vector<uint8>& Request)
+{
+    return RequestDecoded(Request, Opcode::StatusResponse, DecodeStatusResponse);
 }
 
 std::optional<Status> ControlClient::RequestStatus()
@@ -194,38 +197,12 @@ std::optional<Status> ControlClient::SetTestNoiseEnabled(bool bEnabled)
 
 std::optional<std::vector<AudioDeviceInfo>> ControlClient::RequestDevices()
 {
-    auto Response = SendRawRequest(EncodeGetDevicesRequest());
-    if (!Response || Response->MessageOpcode != Opcode::DeviceListResponse)
-    {
-        return std::nullopt;
-    }
-
-    auto DecodedDevices = DecodeDeviceListResponse(Response->Payload.data(),
-                                                     static_cast<uint16>(Response->Payload.size()));
-    if (!DecodedDevices)
-    {
-        Disconnect();
-        return std::nullopt;
-    }
-    return DecodedDevices;
+    return RequestDecoded(EncodeGetDevicesRequest(), Opcode::DeviceListResponse, DecodeDeviceListResponse);
 }
 
 std::optional<std::vector<std::string>> ControlClient::RequestHrtfCatalog()
 {
-    auto Response = SendRawRequest(EncodeGetHrtfCatalogRequest());
-    if (!Response || Response->MessageOpcode != Opcode::HrtfCatalogResponse)
-    {
-        return std::nullopt;
-    }
-
-    auto DecodedCatalog = DecodeHrtfCatalogResponse(Response->Payload.data(),
-                                                      static_cast<uint16>(Response->Payload.size()));
-    if (!DecodedCatalog)
-    {
-        Disconnect();
-        return std::nullopt;
-    }
-    return DecodedCatalog;
+    return RequestDecoded(EncodeGetHrtfCatalogRequest(), Opcode::HrtfCatalogResponse, DecodeHrtfCatalogResponse);
 }
 
 std::optional<Status> ControlClient::SetHrtfFile(uint8 HrtfIndex)
@@ -240,20 +217,7 @@ std::optional<Status> ControlClient::SetHwEqBand(uint8 BandIndex, const EqBand& 
 
 std::optional<std::array<EqBand, MaxEqBands>> ControlClient::RequestHwEqState()
 {
-    auto Response = SendRawRequest(EncodeGetHwEqStateRequest());
-    if (!Response || Response->MessageOpcode != Opcode::HwEqStateResponse)
-    {
-        return std::nullopt;
-    }
-
-    auto DecodedBands = DecodeHwEqStateResponse(Response->Payload.data(),
-                                                  static_cast<uint16>(Response->Payload.size()));
-    if (!DecodedBands)
-    {
-        Disconnect();
-        return std::nullopt;
-    }
-    return DecodedBands;
+    return RequestDecoded(EncodeGetHwEqStateRequest(), Opcode::HwEqStateResponse, DecodeHwEqStateResponse);
 }
 
 std::optional<Status> ControlClient::SetBassEnhancer(const BassEnhancerSettings& Settings)
@@ -263,20 +227,42 @@ std::optional<Status> ControlClient::SetBassEnhancer(const BassEnhancerSettings&
 
 std::optional<BassEnhancerSettings> ControlClient::RequestBassEnhancerState()
 {
-    auto Response = SendRawRequest(EncodeGetBassEnhancerStateRequest());
-    if (!Response || Response->MessageOpcode != Opcode::BassEnhancerStateResponse)
-    {
-        return std::nullopt;
-    }
+    return RequestDecoded(EncodeGetBassEnhancerStateRequest(), Opcode::BassEnhancerStateResponse, DecodeBassEnhancerStateResponse);
+}
 
-    auto DecodedSettings = DecodeBassEnhancerStateResponse(Response->Payload.data(),
-                                                             static_cast<uint16>(Response->Payload.size()));
-    if (!DecodedSettings)
-    {
-        Disconnect();
-        return std::nullopt;
-    }
-    return DecodedSettings;
+std::optional<std::vector<EqPresetInfo>> ControlClient::RequestEqPresetCatalog()
+{
+    return RequestDecoded(EncodeGetEqPresetCatalogRequest(), Opcode::EqPresetCatalogResponse, DecodeEqPresetCatalogResponse);
+}
+
+std::optional<Status> ControlClient::ApplyEqPreset(const std::string& PresetName)
+{
+    return SendStatusRequest(EncodeSetHwEqPresetRequest(PresetName));
+}
+
+std::optional<Status> ControlClient::SaveEqPreset(const std::string& PresetName)
+{
+    return SendStatusRequest(EncodeSaveHwEqPresetRequest(PresetName));
+}
+
+std::optional<Status> ControlClient::DeleteEqPreset(const std::string& PresetName)
+{
+    return SendStatusRequest(EncodeDeleteEqPresetRequest(PresetName));
+}
+
+std::optional<Status> ControlClient::BindDevicePreset(const std::string& DeviceName, const std::string& PresetName)
+{
+    return SendStatusRequest(EncodeBindDevicePresetRequest(DeviceName, PresetName));
+}
+
+std::optional<Status> ControlClient::BindAppPreset(const std::string& AppName, const std::string& PresetName)
+{
+    return SendStatusRequest(EncodeBindAppPresetRequest(AppName, PresetName));
+}
+
+std::optional<std::vector<ContentStreamInfo>> ControlClient::RequestContentStreams()
+{
+    return RequestDecoded(EncodeGetContentStreamsRequest(), Opcode::ContentStreamListResponse, DecodeContentStreamListResponse);
 }
 
 } // namespace ramkolfx::gui

@@ -52,13 +52,16 @@ enum class Opcode : uint8
     SetHwEqPreset = 0x0E,
     SaveHwEqPreset = 0x0F,
     GetContentStreams = 0x10,
-    SetContentEqBand = 0x11,
-    SetContentEqPreset = 0x12,
-    SaveContentEqPreset = 0x13,
+    // 0x11 / 0x13 retired (were SetContentEqBand / SaveContentEqPreset,
+    // for true per-app EQ - dropped in favor of per-app preset
+    // auto-switching, see docs/eq-presets-plan.md).
+    BindAppPreset = 0x12,
     GetEqPresetCatalog = 0x14,
     GetHwEqState = 0x15,
     SetBassEnhancer = 0x16,
     GetBassEnhancerState = 0x17,
+    DeleteEqPreset = 0x18,
+    BindDevicePreset = 0x19,
     // Responses
     StatusResponse = 0x81,
     ErrorResponse = 0x82,
@@ -117,8 +120,8 @@ struct EqBand
 // Wire size of one EqBand: filterType(1) + frequencyHz(4) + gainDb(4) + q(4).
 inline constexpr size_t EqBandWireSize = 13;
 
-// Upper bound on bands per curve (HW or content), shared by daemon and GUI
-// so both agree on BandIndex's valid range for SetHwEqBand/SetContentEqBand.
+// Upper bound on bands per curve, shared by daemon and GUI
+// so both agree on BandIndex's valid range for SetHwEqBand.
 inline constexpr size_t MaxEqBands = 10;
 
 // ISO 10-band graphic EQ center frequencies (31.5Hz-16kHz, ~1 octave
@@ -142,12 +145,9 @@ inline constexpr float DefaultGraphicEqQ = 1.41f;
 // pipeline (see AudioEngine::HandleVirtualSinkAudio) - a final headphone-
 // tuning layer on top of whatever curve the HW EQ already applied.
 //
-// For now this is one global setting, persisted the same flat way as
-// HwEqBands (see settings_store.hpp) - not yet keyed per output-device/
-// content-app/AI preset the way the EQ's preset system is heading (see
-// SetHwEqPreset/SetContentEqBand above). Expect BassEnhancerSettings to
-// eventually fold into that same per-preset system rather than staying a
-// single always-on-top layer.
+// Persisted the same flat way as HwEqBands (see settings_store.hpp), and
+// captured alongside the EQ curve in every named EQ preset (see
+// SetHwEqPreset).
 struct BassEnhancerSettings
 {
     bool bEnabled = false;
@@ -201,16 +201,28 @@ struct Command
     float AzimuthDegrees = 0.0f;  // valid when CommandOpcode == SetSpeakerAzimuth
     bool bMuted = false;          // valid when CommandOpcode == SetSpeakerMute
     bool bTestNoiseEnabled = false; // valid when CommandOpcode == SetTestNoise
-    std::string OutputDeviceName; // valid when CommandOpcode == SetOutputDevice
+    std::string OutputDeviceName; // valid when CommandOpcode == SetOutputDevice or BindDevicePreset
     uint8 HrtfIndex = 0;         // valid when CommandOpcode == SetHrtfFile
     float DistanceMeters = 0.0f;  // valid when CommandOpcode == SetSpeakerDistance
     bool bNearFieldEnabled = false; // valid when CommandOpcode == SetNearFieldEnabled
-    uint8 BandIndex = 0;          // valid when CommandOpcode == SetHwEqBand or SetContentEqBand, 0..MaxEqBands-1
-    EqBand Band;                  // valid when CommandOpcode == SetHwEqBand or SetContentEqBand
-    uint8 EqPresetIndex = 0;      // valid when CommandOpcode == SetHwEqPreset or SetContentEqPreset
-    std::string PresetName;       // valid when CommandOpcode == SaveHwEqPreset or SaveContentEqPreset
-    std::string ContentAppName;   // valid when CommandOpcode == SetContentEqBand, SetContentEqPreset, or SaveContentEqPreset; the persistent key from ContentStreamInfo::AppName
+    uint8 BandIndex = 0;          // valid when CommandOpcode == SetHwEqBand, 0..MaxEqBands-1
+    EqBand Band;                  // valid when CommandOpcode == SetHwEqBand
+    // Valid when CommandOpcode == SetHwEqPreset, SaveHwEqPreset,
+    // DeleteEqPreset, BindDevicePreset, or BindAppPreset (where an empty
+    // name means "unbind"). Presets are addressed by
+    // name rather than catalog index: deleting one would shift every later
+    // index and silently retarget anything (e.g. a device binding) that
+    // referred to them by position.
+    std::string PresetName;
+    std::string ContentAppName;   // valid when CommandOpcode == BindAppPreset; the persistent key from ContentStreamInfo::AppName
     BassEnhancerSettings BassEnhancer; // valid when CommandOpcode == SetBassEnhancer
+};
+
+enum class EqPresetSource : uint8
+{
+    Manual = 0,
+    Device = 1,
+    App = 2,
 };
 
 struct Status
@@ -223,6 +235,66 @@ struct Status
     uint8 ActiveHrtfIndex = 0;  // index into the GetHrtfCatalog list Advanced mode is rendering through
     std::array<float, SpeakerCount> SpeakerDistanceMeters{};
     bool bNearFieldEnabled = false; // whether distance affects loudness (all modes) and ILD (Advanced mode)
+
+    // Name of the EQ preset last applied or saved (see SetHwEqPreset/
+    // SaveHwEqPreset), empty if none - i.e. a hand-tuned curve that was
+    // never saved. bPresetModified is true once a band or the bass
+    // enhancer has been changed since then (GUI shows "Custom (unsaved)").
+    std::string ActivePresetName;
+    bool bPresetModified = false;
+
+    // Bumped by the daemon whenever the HW EQ curve / bass enhancer change
+    // by any route other than the client's own SetHwEqBand/SetBassEnhancer
+    // (applying a preset, or device/app auto-switching). Status
+    // deliberately doesn't carry the curve itself, so a client that caches
+    // it (the GUI) re-fetches GetHwEqState/GetBassEnhancerState when this
+    // changes rather than polling them.
+    uint32 EqRevision = 0;
+
+    // Bumped whenever a preset is saved or deleted, by any client. Same
+    // idea as EqRevision: a client caching the GetEqPresetCatalog list
+    // re-fetches it when this changes.
+    uint32 PresetCatalogRevision = 0;
+
+    // Preset bound to the current output device (see BindDevicePreset),
+    // empty if none - drives the GUI's per-device toggle.
+    std::string DevicePresetName;
+
+    // Why the active preset is active: picked by hand, or auto-switched
+    // in because of the output device's binding or a playing app's
+    // binding (PresetSourceApp names that app). See
+    // docs/eq-presets-plan.md for the resolution rule.
+    EqPresetSource PresetSource = EqPresetSource::Manual;
+    std::string PresetSourceApp;
+};
+
+// Longest accepted EQ preset name, in bytes (after trimming whitespace).
+inline constexpr size_t MaxEqPresetNameLength = 64;
+
+// Longest app / output-device name accepted as a preset binding target or
+// remembered per-device setting (see IsValidTargetName).
+inline constexpr size_t MaxTargetNameLength = 256;
+
+// Whether Name is usable as a binding target or remembered device name
+// (an app's application.name, a PipeWire node name): 1..MaxTargetNameLength
+// bytes with no control characters. Those names end up as values in the
+// daemon's key=value config files, where a newline would inject extra keys.
+bool IsValidTargetName(const std::string& Name);
+
+// Trims surrounding spaces/tabs and checks the result is usable as a preset
+// name: 1..MaxEqPresetNameLength bytes, no control characters (a newline
+// would break the daemon's key=value files). Returns the trimmed name, or
+// nullopt if it isn't valid. Shared so the GUI's pre-send feedback can't
+// drift from what the daemon accepts.
+std::optional<std::string> NormalizePresetName(const std::string& Name);
+
+// One entry of the EqPresetCatalogResponse list. Built-in presets ship
+// with the daemon and can't be overwritten or deleted (saving under a
+// built-in's name is refused; "save as" a new name instead).
+struct EqPresetInfo
+{
+    std::string Name;
+    bool bBuiltIn = false;
 };
 
 // A real hardware playback sink the daemon can pin HardwareOutput to.
@@ -234,18 +306,19 @@ struct AudioDeviceInfo
     std::string Description;
 };
 
-// A currently-connected playback stream the content EQ can target.
-// AppName (e.g. PipeWire application.name) is the persistent, addressable
-// key used by SetContentEqBand/SetContentEqPreset/SaveContentEqPreset and
-// (eventually) genre/content classification - it's what EQ settings are
-// keyed and saved against, not the stream's transient PipeWire id, so
-// settings survive the app reconnecting. MediaName is display-only
-// (node.description or media.name), for telling multiple streams from the
-// same app apart in the GUI.
+// A playback stream currently routed into the RamkolFX virtual sink.
+// AppName (PipeWire application.name, falling back to the process binary)
+// is the persistent key BindAppPreset binds presets to - not the stream's
+// transient PipeWire id, so a binding survives the app reconnecting.
+// MediaName is display-only (media.name), for telling multiple streams
+// from the same app apart. BoundPresetName is AppName's binding (empty if
+// none), repeated on every stream of that app.
 struct ContentStreamInfo
 {
     std::string AppName;
     std::string MediaName;
+    bool bPlaying = false;
+    std::string BoundPresetName;
 };
 
 // Attempts to read a header from the front of `Buffer`. Returns nullopt if
@@ -297,10 +370,9 @@ std::optional<std::vector<ContentStreamInfo>> DecodeContentStreamListResponse(co
                                                                                  uint16 PayloadLength);
 
 // Decodes an EqPresetCatalogResponse payload into the ordered list of
-// preset display names; an entry's index is what SetHwEqPreset/
-// SetContentEqPreset's EqPresetIndex refers to. Same contract as
+// presets (built-ins first). Same truncated/malformed contract as
 // DecodeHrtfCatalogResponse.
-std::optional<std::vector<std::string>> DecodeEqPresetCatalogResponse(const uint8* Payload,
+std::optional<std::vector<EqPresetInfo>> DecodeEqPresetCatalogResponse(const uint8* Payload,
                                                                          uint16 PayloadLength);
 
 // Encodes a full status response message (header + payload), ready to
@@ -335,7 +407,7 @@ std::vector<uint8> EncodeContentStreamListResponse(const std::vector<ContentStre
 
 // Encodes a full EQ preset catalog response message. Same behavior as
 // EncodeHrtfCatalogResponse.
-std::vector<uint8> EncodeEqPresetCatalogResponse(const std::vector<std::string>& DisplayNames);
+std::vector<uint8> EncodeEqPresetCatalogResponse(const std::vector<EqPresetInfo>& Presets);
 
 // Encodes a full request message. Used by control clients (GUI, test
 // tools); the daemon only decodes requests, it doesn't encode them.
@@ -352,17 +424,16 @@ std::vector<uint8> EncodeSetHrtfFileRequest(uint8 HrtfIndex);
 std::vector<uint8> EncodeSetSpeakerDistanceRequest(uint8 SpeakerIndex, float DistanceMeters);
 std::vector<uint8> EncodeSetNearFieldEnabledRequest(bool bEnabled);
 std::vector<uint8> EncodeSetHwEqBandRequest(uint8 BandIndex, const EqBand& Band);
-std::vector<uint8> EncodeSetHwEqPresetRequest(uint8 EqPresetIndex);
+std::vector<uint8> EncodeSetHwEqPresetRequest(const std::string& PresetName);
 std::vector<uint8> EncodeSaveHwEqPresetRequest(const std::string& PresetName);
+std::vector<uint8> EncodeDeleteEqPresetRequest(const std::string& PresetName);
 std::vector<uint8> EncodeGetHwEqStateRequest();
 std::vector<uint8> EncodeSetBassEnhancerRequest(const BassEnhancerSettings& Settings);
 std::vector<uint8> EncodeGetBassEnhancerStateRequest();
 std::vector<uint8> EncodeGetContentStreamsRequest();
-std::vector<uint8> EncodeSetContentEqBandRequest(const std::string& AppName, uint8 BandIndex,
-                                                  const EqBand& Band);
-std::vector<uint8> EncodeSetContentEqPresetRequest(const std::string& AppName, uint8 EqPresetIndex);
-std::vector<uint8> EncodeSaveContentEqPresetRequest(const std::string& AppName,
-                                                     const std::string& PresetName);
+// Empty PresetName unbinds.
+std::vector<uint8> EncodeBindAppPresetRequest(const std::string& AppName, const std::string& PresetName);
+std::vector<uint8> EncodeBindDevicePresetRequest(const std::string& DeviceName, const std::string& PresetName);
 std::vector<uint8> EncodeGetEqPresetCatalogRequest();
 
 // Resolves the default control socket path: $XDG_RUNTIME_DIR/ramkolfx/control.sock,

@@ -29,22 +29,43 @@ void AppendHeader(std::vector<uint8>& Out, Opcode InOpcode, uint16 PayloadLength
     Out.push_back(static_cast<uint8>(PayloadLength & 0xFF));
 }
 
+// A message whose whole payload is one raw string (no length prefix - the
+// header already carries the length): ErrorResponse, SetOutputDevice and
+// the preset-name requests. Truncated to MaxPayloadSize.
+std::vector<uint8> EncodeRawStringMessage(Opcode InOpcode, const std::string& Value)
+{
+    const size_t Len = std::min(Value.size(), static_cast<size_t>(MaxPayloadSize));
+    std::vector<uint8> Out;
+    Out.reserve(HeaderSize + Len);
+    AppendHeader(Out, InOpcode, static_cast<uint16>(Len));
+    Out.insert(Out.end(), Value.begin(), Value.begin() + static_cast<std::ptrdiff_t>(Len));
+    return Out;
+}
+
+void AppendU32BE(std::vector<uint8>& Out, uint32 Value)
+{
+    Out.push_back(static_cast<uint8>((Value >> 24) & 0xFF));
+    Out.push_back(static_cast<uint8>((Value >> 16) & 0xFF));
+    Out.push_back(static_cast<uint8>((Value >> 8) & 0xFF));
+    Out.push_back(static_cast<uint8>(Value & 0xFF));
+}
+
+uint32 ReadU32BE(const uint8* Payload)
+{
+    return (static_cast<uint32>(Payload[0]) << 24) | (static_cast<uint32>(Payload[1]) << 16) |
+           (static_cast<uint32>(Payload[2]) << 8) | static_cast<uint32>(Payload[3]);
+}
+
 void AppendFloatBE(std::vector<uint8>& Out, float Value)
 {
     uint32 Bits;
     std::memcpy(&Bits, &Value, sizeof(Bits));
-    Out.push_back(static_cast<uint8>((Bits >> 24) & 0xFF));
-    Out.push_back(static_cast<uint8>((Bits >> 16) & 0xFF));
-    Out.push_back(static_cast<uint8>((Bits >> 8) & 0xFF));
-    Out.push_back(static_cast<uint8>(Bits & 0xFF));
+    AppendU32BE(Out, Bits);
 }
 
 float ReadFloatBE(const uint8* Payload)
 {
-    const uint32 Bits = (static_cast<uint32>(Payload[0]) << 24) |
-                          (static_cast<uint32>(Payload[1]) << 16) |
-                          (static_cast<uint32>(Payload[2]) << 8) |
-                          static_cast<uint32>(Payload[3]);
+    const uint32 Bits = ReadU32BE(Payload);
     float Value;
     std::memcpy(&Value, &Bits, sizeof(Value));
     return Value;
@@ -289,13 +310,13 @@ std::optional<Command> DecodeCommand(Opcode InOpcode, const uint8* Payload, uint
         return OutCommand;
     }
     case Opcode::SetHwEqPreset:
-        if (PayloadLength < 1)
+    case Opcode::SaveHwEqPreset:
+    case Opcode::DeleteEqPreset:
+        // Raw whole-payload preset name, same convention as SetOutputDevice.
+        if (PayloadLength == 0)
         {
             return std::nullopt;
         }
-        OutCommand.EqPresetIndex = Payload[0];
-        return OutCommand;
-    case Opcode::SaveHwEqPreset:
         OutCommand.PresetName = std::string(reinterpret_cast<const char*>(Payload), PayloadLength);
         return OutCommand;
     case Opcode::GetHwEqState:
@@ -311,41 +332,15 @@ std::optional<Command> DecodeCommand(Opcode InOpcode, const uint8* Payload, uint
         return OutCommand;
     case Opcode::GetContentStreams:
         return OutCommand;
-    case Opcode::SetContentEqBand:
+    case Opcode::BindAppPreset:
+    case Opcode::BindDevicePreset:
     {
+        // [target: length-prefixed string][preset name: raw remainder,
+        // empty = unbind]
+        std::string& Target = InOpcode == Opcode::BindAppPreset ? OutCommand.ContentAppName
+                                                                 : OutCommand.OutputDeviceName;
         size_t Offset = 0;
-        if (!ReadString(Payload, PayloadLength, Offset, OutCommand.ContentAppName))
-        {
-            return std::nullopt;
-        }
-        const size_t Needed = 1 + EqBandWireSize;
-        if (Offset + Needed > PayloadLength || Payload[Offset] >= MaxEqBands ||
-            Payload[Offset + 1] > static_cast<uint8>(EqFilterType::Notch))
-        {
-            return std::nullopt;
-        }
-        OutCommand.BandIndex = Payload[Offset];
-        OutCommand.Band = ReadEqBand(Payload + Offset + 1);
-        return OutCommand;
-    }
-    case Opcode::SetContentEqPreset:
-    {
-        size_t Offset = 0;
-        if (!ReadString(Payload, PayloadLength, Offset, OutCommand.ContentAppName))
-        {
-            return std::nullopt;
-        }
-        if (Offset + 1 > PayloadLength)
-        {
-            return std::nullopt;
-        }
-        OutCommand.EqPresetIndex = Payload[Offset];
-        return OutCommand;
-    }
-    case Opcode::SaveContentEqPreset:
-    {
-        size_t Offset = 0;
-        if (!ReadString(Payload, PayloadLength, Offset, OutCommand.ContentAppName))
+        if (!ReadString(Payload, PayloadLength, Offset, Target) || Target.empty())
         {
             return std::nullopt;
         }
@@ -364,6 +359,9 @@ std::optional<Status> DecodeStatusResponse(const uint8* Payload, uint16 PayloadL
 {
     // Layout: [mode:1][azimuths: 4*SpeakerCount][muted: SpeakerCount][noise:1][activeHrtfIndex:1]
     //         [distances: 4*SpeakerCount][nearFieldEnabled:1][device: length-prefixed string]
+    //         [activePreset: length-prefixed string][presetModified:1][eqRevision: u32]
+    //         [presetCatalogRevision: u32]
+    //         [devicePreset: length-prefixed string][presetSource:1][presetSourceApp: length-prefixed string]
     const uint16 FixedSize =
         static_cast<uint16>(1 + 4 * SpeakerCount + SpeakerCount + 1 + 1 + 4 * SpeakerCount + 1);
     if (PayloadLength < FixedSize || Payload[0] > static_cast<uint8>(SpatialMode::Advanced))
@@ -392,7 +390,28 @@ std::optional<Status> DecodeStatusResponse(const uint8* Payload, uint16 PayloadL
     OutStatus.bNearFieldEnabled = Payload[DistanceOffset + 4 * SpeakerCount] != 0;
 
     size_t Offset = FixedSize;
-    if (!ReadString(Payload, PayloadLength, Offset, OutStatus.OutputDeviceName))
+    if (!ReadString(Payload, PayloadLength, Offset, OutStatus.OutputDeviceName) ||
+        !ReadString(Payload, PayloadLength, Offset, OutStatus.ActivePresetName) ||
+        Offset + 1 + 4 > PayloadLength)
+    {
+        return std::nullopt;
+    }
+    OutStatus.bPresetModified = Payload[Offset] != 0;
+    OutStatus.EqRevision = ReadU32BE(Payload + Offset + 1);
+    Offset += 1 + 4;
+    if (Offset + 4 > PayloadLength)
+    {
+        return std::nullopt;
+    }
+    OutStatus.PresetCatalogRevision = ReadU32BE(Payload + Offset);
+    Offset += 4;
+    if (!ReadString(Payload, PayloadLength, Offset, OutStatus.DevicePresetName) || Offset + 1 > PayloadLength ||
+        Payload[Offset] > static_cast<uint8>(EqPresetSource::App))
+    {
+        return std::nullopt;
+    }
+    OutStatus.PresetSource = static_cast<EqPresetSource>(Payload[Offset++]);
+    if (!ReadString(Payload, PayloadLength, Offset, OutStatus.PresetSourceApp))
     {
         return std::nullopt;
     }
@@ -453,14 +472,30 @@ std::optional<std::vector<ContentStreamInfo>> DecodeContentStreamListResponse(co
         Payload, PayloadLength,
         [](const uint8* P, uint16 Len, size_t& Offset, ContentStreamInfo& Info)
         {
-            return ReadString(P, Len, Offset, Info.AppName) && ReadString(P, Len, Offset, Info.MediaName);
+            if (!ReadString(P, Len, Offset, Info.AppName) || !ReadString(P, Len, Offset, Info.MediaName) ||
+                Offset + 1 > Len)
+            {
+                return false;
+            }
+            Info.bPlaying = P[Offset++] != 0;
+            return ReadString(P, Len, Offset, Info.BoundPresetName);
         });
 }
 
-std::optional<std::vector<std::string>> DecodeEqPresetCatalogResponse(const uint8* Payload,
+std::optional<std::vector<EqPresetInfo>> DecodeEqPresetCatalogResponse(const uint8* Payload,
                                                                          uint16 PayloadLength)
 {
-    return DecodeListResponse<std::string>(Payload, PayloadLength, ReadString);
+    return DecodeListResponse<EqPresetInfo>(
+        Payload, PayloadLength,
+        [](const uint8* P, uint16 Len, size_t& Offset, EqPresetInfo& Info)
+        {
+            if (!ReadString(P, Len, Offset, Info.Name) || Offset + 1 > Len)
+            {
+                return false;
+            }
+            Info.bBuiltIn = P[Offset++] != 0;
+            return true;
+        });
 }
 
 std::vector<uint8> EncodeStatusResponse(const Status& InStatus)
@@ -483,6 +518,13 @@ std::vector<uint8> EncodeStatusResponse(const Status& InStatus)
     }
     Payload.push_back(InStatus.bNearFieldEnabled ? 1 : 0);
     AppendString(Payload, InStatus.OutputDeviceName);
+    AppendString(Payload, InStatus.ActivePresetName);
+    Payload.push_back(InStatus.bPresetModified ? 1 : 0);
+    AppendU32BE(Payload, InStatus.EqRevision);
+    AppendU32BE(Payload, InStatus.PresetCatalogRevision);
+    AppendString(Payload, InStatus.DevicePresetName);
+    Payload.push_back(static_cast<uint8>(InStatus.PresetSource));
+    AppendString(Payload, InStatus.PresetSourceApp);
 
     std::vector<uint8> Out;
     Out.reserve(HeaderSize + Payload.size());
@@ -493,12 +535,7 @@ std::vector<uint8> EncodeStatusResponse(const Status& InStatus)
 
 std::vector<uint8> EncodeErrorResponse(const std::string& Message)
 {
-    std::vector<uint8> Out;
-    const size_t Len = Message.size() > MaxPayloadSize ? MaxPayloadSize : Message.size();
-    Out.reserve(HeaderSize + Len);
-    AppendHeader(Out, Opcode::ErrorResponse, static_cast<uint16>(Len));
-    Out.insert(Out.end(), Message.begin(), Message.begin() + static_cast<std::ptrdiff_t>(Len));
-    return Out;
+    return EncodeRawStringMessage(Opcode::ErrorResponse, Message);
 }
 
 std::vector<uint8> EncodeDeviceListResponse(const std::vector<AudioDeviceInfo>& Devices)
@@ -554,14 +591,19 @@ std::vector<uint8> EncodeContentStreamListResponse(const std::vector<ContentStre
                                {
                                    AppendString(Entry, Stream.AppName);
                                    AppendString(Entry, Stream.MediaName);
+                                   Entry.push_back(Stream.bPlaying ? 1 : 0);
+                                   AppendString(Entry, Stream.BoundPresetName);
                                });
 }
 
-std::vector<uint8> EncodeEqPresetCatalogResponse(const std::vector<std::string>& DisplayNames)
+std::vector<uint8> EncodeEqPresetCatalogResponse(const std::vector<EqPresetInfo>& Presets)
 {
-    return EncodeListResponse(Opcode::EqPresetCatalogResponse, DisplayNames,
-                               [](std::vector<uint8>& Entry, const std::string& Name)
-                               { AppendString(Entry, Name); });
+    return EncodeListResponse(Opcode::EqPresetCatalogResponse, Presets,
+                               [](std::vector<uint8>& Entry, const EqPresetInfo& Info)
+                               {
+                                   AppendString(Entry, Info.Name);
+                                   Entry.push_back(Info.bBuiltIn ? 1 : 0);
+                               });
 }
 
 std::vector<uint8> EncodeGetStatusRequest()
@@ -599,12 +641,7 @@ std::vector<uint8> EncodeGetDevicesRequest()
 
 std::vector<uint8> EncodeSetOutputDeviceRequest(const std::string& DeviceName)
 {
-    std::vector<uint8> Out;
-    const size_t Len = DeviceName.size() > MaxPayloadSize ? MaxPayloadSize : DeviceName.size();
-    Out.reserve(HeaderSize + Len);
-    AppendHeader(Out, Opcode::SetOutputDevice, static_cast<uint16>(Len));
-    Out.insert(Out.end(), DeviceName.begin(), DeviceName.begin() + static_cast<std::ptrdiff_t>(Len));
-    return Out;
+    return EncodeRawStringMessage(Opcode::SetOutputDevice, DeviceName);
 }
 
 std::vector<uint8> EncodeResetSpeakerPositionsRequest()
@@ -679,23 +716,19 @@ std::vector<uint8> EncodeSetHwEqBandRequest(uint8 BandIndex, const EqBand& Band)
     return Out;
 }
 
-std::vector<uint8> EncodeSetHwEqPresetRequest(uint8 EqPresetIndex)
+std::vector<uint8> EncodeSetHwEqPresetRequest(const std::string& PresetName)
 {
-    std::vector<uint8> Out;
-    Out.reserve(HeaderSize + 1);
-    AppendHeader(Out, Opcode::SetHwEqPreset, 1);
-    Out.push_back(EqPresetIndex);
-    return Out;
+    return EncodeRawStringMessage(Opcode::SetHwEqPreset, PresetName);
 }
 
 std::vector<uint8> EncodeSaveHwEqPresetRequest(const std::string& PresetName)
 {
-    std::vector<uint8> Out;
-    const size_t Len = PresetName.size() > MaxPayloadSize ? MaxPayloadSize : PresetName.size();
-    Out.reserve(HeaderSize + Len);
-    AppendHeader(Out, Opcode::SaveHwEqPreset, static_cast<uint16>(Len));
-    Out.insert(Out.end(), PresetName.begin(), PresetName.begin() + static_cast<std::ptrdiff_t>(Len));
-    return Out;
+    return EncodeRawStringMessage(Opcode::SaveHwEqPreset, PresetName);
+}
+
+std::vector<uint8> EncodeDeleteEqPresetRequest(const std::string& PresetName)
+{
+    return EncodeRawStringMessage(Opcode::DeleteEqPreset, PresetName);
 }
 
 std::vector<uint8> EncodeGetHwEqStateRequest()
@@ -728,48 +761,33 @@ std::vector<uint8> EncodeGetContentStreamsRequest()
     return Out;
 }
 
-std::vector<uint8> EncodeSetContentEqBandRequest(const std::string& AppName, uint8 BandIndex,
-                                                  const EqBand& Band)
+namespace
+{
+// [target: length-prefixed string][preset name: raw remainder].
+std::vector<uint8> EncodeBindPresetRequest(Opcode InOpcode, const std::string& Target, const std::string& PresetName)
 {
     std::vector<uint8> Payload;
-    AppendString(Payload, AppName);
-    Payload.push_back(BandIndex);
-    AppendEqBand(Payload, Band);
-
-    std::vector<uint8> Out;
-    Out.reserve(HeaderSize + Payload.size());
-    AppendHeader(Out, Opcode::SetContentEqBand, static_cast<uint16>(Payload.size()));
-    Out.insert(Out.end(), Payload.begin(), Payload.end());
-    return Out;
-}
-
-std::vector<uint8> EncodeSetContentEqPresetRequest(const std::string& AppName, uint8 EqPresetIndex)
-{
-    std::vector<uint8> Payload;
-    AppendString(Payload, AppName);
-    Payload.push_back(EqPresetIndex);
-
-    std::vector<uint8> Out;
-    Out.reserve(HeaderSize + Payload.size());
-    AppendHeader(Out, Opcode::SetContentEqPreset, static_cast<uint16>(Payload.size()));
-    Out.insert(Out.end(), Payload.begin(), Payload.end());
-    return Out;
-}
-
-std::vector<uint8> EncodeSaveContentEqPresetRequest(const std::string& AppName,
-                                                     const std::string& PresetName)
-{
-    std::vector<uint8> Payload;
-    AppendString(Payload, AppName);
+    AppendString(Payload, Target);
     const size_t Available = Payload.size() < MaxPayloadSize ? MaxPayloadSize - Payload.size() : 0;
     const size_t Len = PresetName.size() > Available ? Available : PresetName.size();
     Payload.insert(Payload.end(), PresetName.begin(), PresetName.begin() + static_cast<std::ptrdiff_t>(Len));
 
     std::vector<uint8> Out;
     Out.reserve(HeaderSize + Payload.size());
-    AppendHeader(Out, Opcode::SaveContentEqPreset, static_cast<uint16>(Payload.size()));
+    AppendHeader(Out, InOpcode, static_cast<uint16>(Payload.size()));
     Out.insert(Out.end(), Payload.begin(), Payload.end());
     return Out;
+}
+} // namespace
+
+std::vector<uint8> EncodeBindAppPresetRequest(const std::string& AppName, const std::string& PresetName)
+{
+    return EncodeBindPresetRequest(Opcode::BindAppPreset, AppName, PresetName);
+}
+
+std::vector<uint8> EncodeBindDevicePresetRequest(const std::string& DeviceName, const std::string& PresetName)
+{
+    return EncodeBindPresetRequest(Opcode::BindDevicePreset, DeviceName, PresetName);
 }
 
 std::vector<uint8> EncodeGetEqPresetCatalogRequest()
@@ -790,6 +808,43 @@ std::string DefaultControlSocketPath()
     std::string Dir = "/tmp/ramkolfx-" + std::to_string(getuid());
     mkdir(Dir.c_str(), 0700);
     return Dir + "/control.sock";
+}
+
+namespace
+{
+// The one rule both name validators share: no byte that could break a
+// key=value line (newline, NUL, ...).
+bool HasControlCharacters(const std::string& Name)
+{
+    return std::any_of(Name.begin(), Name.end(),
+                       [](unsigned char C) { return C < 0x20 || C == 0x7F; });
+}
+} // namespace
+
+std::optional<std::string> NormalizePresetName(const std::string& Name)
+{
+    const auto IsSpace = [](unsigned char C) { return C == ' ' || C == '\t'; };
+    size_t Begin = 0;
+    size_t End = Name.size();
+    while (Begin < End && IsSpace(static_cast<unsigned char>(Name[Begin])))
+    {
+        ++Begin;
+    }
+    while (End > Begin && IsSpace(static_cast<unsigned char>(Name[End - 1])))
+    {
+        --End;
+    }
+    std::string Trimmed = Name.substr(Begin, End - Begin);
+    if (Trimmed.empty() || Trimmed.size() > MaxEqPresetNameLength || HasControlCharacters(Trimmed))
+    {
+        return std::nullopt;
+    }
+    return Trimmed;
+}
+
+bool IsValidTargetName(const std::string& Name)
+{
+    return !Name.empty() && Name.size() <= MaxTargetNameLength && !HasControlCharacters(Name);
 }
 
 } // namespace ramkolfx

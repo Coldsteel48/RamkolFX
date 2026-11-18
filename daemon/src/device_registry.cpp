@@ -8,9 +8,12 @@
 
 #include "device_registry.hpp"
 
+#include <algorithm>
+#include <unordered_set>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 
 #include <pipewire/extensions/metadata.h>
@@ -79,6 +82,29 @@ int OnMetadataProperty(void* UserData, uint32 Subject, const char* Key, const ch
     return 0;
 }
 
+void OnStreamNodeInfo(void* UserData, const pw_node_info* Info);
+
+const struct pw_node_events StreamNodeEvents = []
+{
+    struct pw_node_events Events{};
+    Events.version = PW_VERSION_NODE_EVENTS;
+    Events.info = OnStreamNodeInfo;
+    return Events;
+}();
+
+// spa_dict lookup of the first present key, or nullptr.
+const char* LookupFirst(const spa_dict* Props, std::initializer_list<const char*> Keys)
+{
+    for (const char* Key : Keys)
+    {
+        if (const char* Value = spa_dict_lookup(Props, Key); Value && *Value)
+        {
+            return Value;
+        }
+    }
+    return nullptr;
+}
+
 const struct pw_metadata_events MetadataEvents = []
 {
     struct pw_metadata_events Events{};
@@ -86,6 +112,12 @@ const struct pw_metadata_events MetadataEvents = []
     Events.property = OnMetadataProperty;
     return Events;
 }();
+
+void OnStreamNodeInfo(void* UserData, const pw_node_info* Info)
+{
+    auto* Stream = static_cast<DeviceRegistry::TrackedStream*>(UserData);
+    Stream->Owner->HandleStreamInfo(Stream->Id, Info);
+}
 
 } // namespace
 
@@ -95,6 +127,12 @@ DeviceRegistry::DeviceRegistry(pw_loop* InLoop) : Loop(InLoop)
 
 DeviceRegistry::~DeviceRegistry()
 {
+    for (auto& [Id, Stream] : StreamsById)
+    {
+        spa_hook_remove(&Stream->Listener);
+        pw_proxy_destroy(Stream->Proxy);
+    }
+    StreamsById.clear();
     if (DefaultMetadata)
     {
         spa_hook_remove(&MetadataListener);
@@ -195,23 +233,67 @@ void DeviceRegistry::HandleGlobalAdded(uint32 Id, const char* Type, const spa_di
         return;
     }
 
+    if (std::strcmp(Type, PW_TYPE_INTERFACE_Link) == 0)
+    {
+        const char* OutputNode = spa_dict_lookup(Props, PW_KEY_LINK_OUTPUT_NODE);
+        const char* InputNode = spa_dict_lookup(Props, PW_KEY_LINK_INPUT_NODE);
+        if (OutputNode && InputNode)
+        {
+            std::lock_guard<std::mutex> Lock(StreamsMutex);
+            LinksById[Id] = {static_cast<uint32>(std::strtoul(OutputNode, nullptr, 10)),
+                             static_cast<uint32>(std::strtoul(InputNode, nullptr, 10))};
+        }
+        return;
+    }
+
     if (std::strcmp(Type, PW_TYPE_INTERFACE_Node) != 0)
     {
         return;
     }
 
     const char* MediaClass = spa_dict_lookup(Props, PW_KEY_MEDIA_CLASS);
+    if (MediaClass && std::strcmp(MediaClass, "Stream/Output/Audio") == 0)
+    {
+        auto Stream = std::make_unique<TrackedStream>();
+        Stream->Owner = this;
+        Stream->Id = Id;
+        const char* AppName =
+            LookupFirst(Props, {PW_KEY_APP_NAME, PW_KEY_APP_PROCESS_BINARY, PW_KEY_NODE_NAME});
+        Stream->AppName = AppName ? AppName : "Unknown";
+        if (const char* MediaName = LookupFirst(Props, {PW_KEY_MEDIA_NAME, PW_KEY_NODE_DESCRIPTION}))
+        {
+            Stream->MediaName = MediaName;
+        }
+        Stream->Proxy = static_cast<pw_proxy*>(pw_registry_bind(Registry, Id, Type, PW_VERSION_NODE, 0));
+        if (!Stream->Proxy)
+        {
+            return;
+        }
+        pw_proxy_add_object_listener(Stream->Proxy, &Stream->Listener, &StreamNodeEvents, Stream.get());
+
+        std::lock_guard<std::mutex> Lock(StreamsMutex);
+        StreamsById[Id] = std::move(Stream);
+        return;
+    }
+
     if (!MediaClass || std::strcmp(MediaClass, "Audio/Sink") != 0)
     {
         return;
     }
 
     const char* NodeName = spa_dict_lookup(Props, PW_KEY_NODE_NAME);
-    if (!NodeName || std::strcmp(NodeName, VirtualSink::NodeName) == 0)
+    if (NodeName && std::strcmp(NodeName, VirtualSink::NodeName) == 0)
     {
-        // No name to key on, or this is our own virtual sink - selecting
-        // ourselves as the hardware output target would loop the signal
-        // back into the capture side.
+        // Our own virtual sink - remembered so GetContentStreams() can
+        // tell which streams feed it, but never listed as a device:
+        // selecting ourselves as the hardware output target would loop the
+        // signal back into the capture side.
+        std::lock_guard<std::mutex> Lock(StreamsMutex);
+        VirtualSinkNodeId = Id;
+        return;
+    }
+    if (!NodeName)
+    {
         return;
     }
 
@@ -296,8 +378,86 @@ void DeviceRegistry::RestorePreviousDefaultSink()
 
 void DeviceRegistry::HandleGlobalRemoved(uint32 Id)
 {
-    std::lock_guard<std::mutex> Lock(DevicesMutex);
-    DevicesById.erase(Id);
+    {
+        std::lock_guard<std::mutex> Lock(DevicesMutex);
+        DevicesById.erase(Id);
+    }
+
+    std::unique_ptr<TrackedStream> RemovedStream;
+    {
+        std::lock_guard<std::mutex> Lock(StreamsMutex);
+        LinksById.erase(Id);
+        if (Id == VirtualSinkNodeId)
+        {
+            VirtualSinkNodeId = 0xFFFFFFFFu;
+        }
+        if (auto It = StreamsById.find(Id); It != StreamsById.end())
+        {
+            RemovedStream = std::move(It->second);
+            StreamsById.erase(It);
+        }
+    }
+    if (RemovedStream)
+    {
+        spa_hook_remove(&RemovedStream->Listener);
+        pw_proxy_destroy(RemovedStream->Proxy);
+    }
+}
+
+void DeviceRegistry::HandleStreamInfo(uint32 Id, const pw_node_info* Info)
+{
+    std::lock_guard<std::mutex> Lock(StreamsMutex);
+    const auto It = StreamsById.find(Id);
+    if (It == StreamsById.end())
+    {
+        return;
+    }
+    TrackedStream& Stream = *It->second;
+    if (Info->change_mask & PW_NODE_CHANGE_MASK_STATE)
+    {
+        Stream.bRunning = Info->state == PW_NODE_STATE_RUNNING;
+    }
+    if ((Info->change_mask & PW_NODE_CHANGE_MASK_PROPS) && Info->props)
+    {
+        // Registry globals only carry a filtered subset of properties;
+        // the bound node's full props are authoritative for the app name.
+        if (const char* AppName = LookupFirst(Info->props, {PW_KEY_APP_NAME, PW_KEY_APP_PROCESS_BINARY}))
+        {
+            Stream.AppName = AppName;
+        }
+        // media.name tends to follow the current track/tab title.
+        if (const char* MediaName = LookupFirst(Info->props, {PW_KEY_MEDIA_NAME, PW_KEY_NODE_DESCRIPTION}))
+        {
+            Stream.MediaName = MediaName;
+        }
+    }
+}
+
+std::vector<ContentStreamInfo> DeviceRegistry::GetContentStreams() const
+{
+    std::lock_guard<std::mutex> Lock(StreamsMutex);
+    // One pass over the links (PipeWire has one per channel) to find who
+    // feeds the virtual sink, instead of scanning them all per stream.
+    std::unordered_set<uint32> FeedingNodes;
+    for (const auto& [LinkId, Link] : LinksById)
+    {
+        if (Link.InputNode == VirtualSinkNodeId)
+        {
+            FeedingNodes.insert(Link.OutputNode);
+        }
+    }
+
+    std::vector<ContentStreamInfo> Result;
+    for (const auto& [Id, Stream] : StreamsById)
+    {
+        if (FeedingNodes.contains(Id))
+        {
+            Result.push_back({Stream->AppName, Stream->MediaName, Stream->bRunning, {}});
+        }
+    }
+    std::sort(Result.begin(), Result.end(),
+              [](const ContentStreamInfo& A, const ContentStreamInfo& B) { return A.AppName < B.AppName; });
+    return Result;
 }
 
 std::vector<AudioDeviceInfo> DeviceRegistry::GetDevices() const

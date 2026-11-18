@@ -21,10 +21,13 @@
 #include "ramkolfx/types.hpp"
 #include "dsp/speaker_layout.hpp"
 #include "hrtf_catalog.hpp"
+#include "preset_auto_switch.hpp"
+#include "preset_store.hpp"
 #include "settings_store.hpp"
 
 struct pw_main_loop;
 struct pw_loop;
+struct spa_source;
 
 namespace ramkolfx
 {
@@ -79,11 +82,13 @@ private:
     uint32 HandleHardwareOutputRequest(float* Interleaved, uint32 Frames);
     std::vector<uint8> HandleControlCommand(const Command& InCommand);
 
-    // Saves CurrentStatus (as returned to the control client) plus the
-    // HRTF display name it maps to via RuntimeHrtfCatalog. Called from
-    // HandleControlCommand() after any command that changes persisted
-    // state - see PersistedSettings for what's included.
-    void PersistCurrentSettings(const Status& CurrentStatus);
+    // Saves the current state (BuildStatus plus the HRTF display name it
+    // maps to via RuntimeHrtfCatalog). Called via FlushSettingsIfDirty()
+    // once persisted state has changed - see bSettingsDirty, and
+    // PersistedSettings for what's included.
+    // Must be called with no other engine mutex held: it takes
+    // SettingsSaveMutex first and builds the snapshot inside it.
+    void PersistCurrentSettings();
 
     // Scales each non-LFE channel in-place by a per-speaker gain: 0.0 for
     // any currently-muted speaker, otherwise an inverse-distance loudness
@@ -191,12 +196,13 @@ private:
     std::unique_ptr<DeviceRegistry> Devices;
 
     // Loaded once at startup (Run()) to seed initial state below, and
-    // saved to after any control command that changes persisted state -
-    // see PersistCurrentSettings().
+    // saved to whenever persisted state changes - see bSettingsDirty and
+    // PersistCurrentSettings().
     SettingsStore Settings;
 
     SpeakerLayout SharedLayout;
     std::atomic<SpatialMode> Mode{SpatialMode::Off};
+
     std::atomic<bool> bTestNoiseEnabled{false};
     std::atomic<bool> bNearFieldEnabled{false};
 
@@ -230,6 +236,103 @@ private:
     std::unique_ptr<BassEnhancerStage> BassEnhancer;
     std::mutex BassEnhancerMutex;
     BassEnhancerSettings BassEnhancerSettingsState;
+
+    // Named EQ presets (see docs/eq-presets-plan.md). PresetFile persists
+    // only the user presets; PresetCatalog adds the built-ins in front.
+    // ActivePresetName/bPresetModified are what Status reports. Lock order
+    // when nesting: PresetMutex, then HwEqMutex, then BassEnhancerMutex.
+    PresetStore PresetFile;
+    std::mutex PresetMutex;
+    EqPresetCatalog PresetCatalog;
+    std::string ActivePresetName;
+    bool bPresetModified = false;
+
+    // See Status::EqRevision. Bumped whenever the curve changes by a route
+    // other than a client's own SetHwEqBand/SetBassEnhancer.
+    std::atomic<uint32> EqRevision{0};
+
+    // See Status::PresetCatalogRevision. Bumped on every successful preset
+    // save/delete.
+    std::atomic<uint32> PresetCatalogRevision{0};
+
+    // Replaces the live HW EQ curve and bass enhancer settings (state +
+    // DSP stages) in one go and bumps EqRevision. Caller must not hold
+    // HwEqMutex or BassEnhancerMutex.
+    void ApplyEqCurve(const std::array<EqBand, MaxEqBands>& Bands, const BassEnhancerSettings& Bass);
+
+    // The live curve (Bands/Bass only, no preset name). Takes HwEqMutex
+    // and BassEnhancerMutex, so callers must hold neither.
+    EqState CaptureEqCurve();
+
+    // The live curve plus the active preset name/modified flag. Caller
+    // holds PresetMutex.
+    EqState CaptureEqState();
+
+    // Writes the name/modified half of Live back to the Status-visible
+    // fields. Caller holds PresetMutex.
+    void SetActivePreset(const EqState& Live);
+
+    // EQ preset auto-switching (docs/eq-presets-plan.md). Lock order when
+    // nesting: AutoSwitchMutex, then PresetMutex, then HwEqMutex, then
+    // BassEnhancerMutex. AppActivity is guarded by AutoSwitchMutex alone;
+    // AutoSwitch is mutated only with both AutoSwitchMutex and PresetMutex
+    // held, so BuildStatus can read its Source()/SourceApp() under
+    // PresetMutex alone.
+    std::mutex AutoSwitchMutex;
+    AppActivityTracker AppActivity;
+    AutoSwitchController AutoSwitch;
+
+    static constexpr long AutoSwitchTickMs = 250;
+    spa_source* AutoSwitchTimer = nullptr;
+
+    // Serializes PersistCurrentSettings(), called via FlushSettingsIfDirty
+    // from the main loop (timer, Teardown) and - only if the timer couldn't
+    // be created - from control threads. Outermost lock: it's held while the snapshot is built, so
+    // a later save never carries older state.
+    std::mutex SettingsSaveMutex;
+
+    // Set when persisted state changes (control commands, auto-switch);
+    // FlushSettingsIfDirty() turns it into at most one settings.conf write
+    // per AutoSwitchTimer tick, so drags that send a command per frame
+    // don't each pay for a durable write. Worst case on a crash: the last
+    // ~250ms of changes.
+    std::atomic<bool> bSettingsDirty{false};
+    void FlushSettingsIfDirty();
+
+    // Set once shutdown begins (Stop(), Teardown): commands that would wait
+    // on the main loop (SetOutputDevice) are refused from then on - see
+    // Teardown.
+    std::atomic<bool> bStopping{false};
+
+    // Resolves which binding (if any) applies now - from the live stream
+    // list, the output device and the bindings - and, only when that
+    // differs from the last target, applies it via AutoSwitch: snapshotting
+    // the unbound state on the way in, restoring it on the way back out. Runs on the
+    // AutoSwitchTimer tick (main loop) and right after commands that can
+    // change the outcome (control threads). Takes AutoSwitchMutex itself,
+    // so call it without any of the preset/EQ mutexes held. Returns
+    // whether the target changed (and so persisted state may have), which
+    // the caller turns into bSettingsDirty.
+    bool EvaluateAutoSwitch();
+    static void OnAutoSwitchTimer(void* Data, uint64 Expirations);
+
+    // What the rule currently resolves to. Caller holds AutoSwitchMutex
+    // and PresetMutex.
+    AutoSwitchTarget ResolveCurrentTarget();
+
+    // Handles BindDevicePreset/BindAppPreset (empty preset = unbind).
+    // Refusals are logged, like HandlePresetCommand's.
+    void HandleBindCommand(const Command& InCommand);
+
+    // Current state as reported to clients and persisted.
+    Status BuildStatus();
+
+    // Handles SetHwEqPreset/SaveHwEqPreset/DeleteEqPreset. Returns whether
+    // persisted settings changed. Refusals (unknown name, built-in
+    // read-only, invalid name) are logged and leave state untouched, same
+    // as SetHrtfFile's out-of-range handling - an ErrorResponse would
+    // make the GUI drop its connection.
+    bool HandlePresetCommand(const Command& InCommand);
 
     // Whatever's currently in UserHrtfDirectories, followed by the bundled
     // catalog (BuildHrtfCatalog()) - see RebuildHrtfCatalog; index into

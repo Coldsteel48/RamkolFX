@@ -50,6 +50,7 @@ cmake -S . -B build -G Ninja -DRAMKOLFX_BUILD_GUI=ON
 cmake --build build
 # or just:
 ./build.sh          # ./build.sh clean wipes build/ first
+./build.sh test     # build, then run the unit tests (ctest --test-dir build)
 ```
 
 Binaries land at `build/daemon/ramkolfxd` and `build/gui/ramkolfx-gui`.
@@ -107,11 +108,13 @@ switched live via the `SetSpatialMode` control command (`SpatialMode`:
 Downstream of the spatial stage: a 10-band graphic EQ (`HwEqStage`) and a
 psychoacoustic bass enhancer (`BassEnhancerStage`), both live-adjustable
 per-band from the GUI's "Equalizer & Bass" tab (`SetHwEqBand` /
-`SetBassEnhancer`) and included in every `GetStatus` response. The
-protocol already has opcodes for named per-device/per-app EQ presets
-(`SetHwEqPreset`, `SaveHwEqPreset`, `SetContentEqBand`, etc.), decoded on
-the daemon side but with no handler or GUI yet — the Equalizer tab shows
-disabled placeholders for device/app presets and genre auto-detect.
+`SetBassEnhancer`). The EQ curve plus bass enhancer can be saved as named
+presets (built-ins: Flat, Bass Boost, Vocal) and bound to an output
+device or to an app: the daemon tracks which apps are playing into the
+virtual sink and auto-switches to the bound preset, restoring the
+previous sound when they stop - see
+[docs/eq-presets-plan.md](docs/eq-presets-plan.md) for the exact rules.
+Genre auto-detect is still a disabled placeholder.
 
 Virtual speaker positions are live-repositionable both at the API level
 (`SetSpeakerAzimuth`/`GetSpeakerAzimuth`, lock-free) and over the control
@@ -211,8 +214,7 @@ touching the rest of the pipeline.
 4. ~~HRTF-based binaural decode (libmysofa + KissFFT), selectable as the "Advanced" `SpatialMode` alongside algebraic ambisonics~~
 5. ~~Switchable HRTF catalog (MIT KEMAR + full SADIE II/HUTUBS/SONICOM databases + a license-free synthetic spherical-head model) with live, crossfaded switching via `HrtfDeck` and the GUI's HRTF dropdown~~
 6. ~~Parametric EQ: 10-band graphic EQ + psychoacoustic bass enhancer, both live-adjustable from the GUI's Equalizer & Bass tab~~
-7. Named per-device/per-app EQ presets (protocol opcodes decoded on the
-   daemon already; no handler or GUI yet — currently disabled placeholders)
+7. ~~Named EQ presets with per-device and per-app auto-switching~~
 8. ONNX-based automatic EQ preset selection / genre auto-detect (also a
    disabled placeholder in the GUI today)
 9. GUI polish aimed at non-audio-engineer users — two-tab layout

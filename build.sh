@@ -4,6 +4,7 @@
 # Usage:
 #   ./build.sh              # Debug/RelWithDebInfo build of daemon + GUI
 #   ./build.sh clean        # wipe the build directory first
+#   ./build.sh test         # build, then run the unit tests (ctest)
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -21,3 +22,8 @@ echo
 echo "Build complete:"
 echo "  daemon: $BUILD_DIR/daemon/ramkolfxd"
 echo "  gui:    $BUILD_DIR/gui/ramkolfx-gui"
+
+if [[ "${1:-}" == "test" ]]; then
+    echo
+    ctest --test-dir "$BUILD_DIR" --output-on-failure
+fi
