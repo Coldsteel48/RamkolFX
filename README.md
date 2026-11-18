@@ -51,6 +51,7 @@ cmake --build build
 # or just:
 ./build.sh          # ./build.sh clean wipes build/ first
 ./build.sh test     # build, then run the unit tests (ctest --test-dir build)
+tests/e2e/run.sh    # end-to-end tests against live PipeWire (daemon must not be running)
 ```
 
 Binaries land at `build/daemon/ramkolfxd` and `build/gui/ramkolfx-gui`.

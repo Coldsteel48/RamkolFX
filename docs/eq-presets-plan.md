@@ -61,8 +61,9 @@ Unit tests: `./build.sh test` (protocol round trips, preset store and
 bindings, the auto-switch rule and its snapshot/restore state machine
 `AutoSwitchController`, per-device spatial modes) - the pure preset code lives in the
 `ramkolfx_presets` library so the daemon and tests link the same
-objects. The end-to-end PipeWire checks are not part of ctest: they need a
-running PipeWire session and start a real daemon.
+objects. The end-to-end PipeWire checks (`tests/e2e/run.sh`) are not
+part of ctest: they need a running PipeWire session and start a real
+daemon (with a throwaway config directory).
 
 Known limits: the GUI's app card lists only apps currently routed into
 RamkolFX, so a binding for an absent app can't be edited until it shows

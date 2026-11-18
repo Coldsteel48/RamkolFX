@@ -20,3 +20,8 @@ ramkolfx_add_test(protocol_tests ramkolfx_common)
 ramkolfx_add_test(preset_store_tests ramkolfx_presets)
 ramkolfx_add_test(preset_auto_switch_tests ramkolfx_presets)
 ramkolfx_add_test(settings_store_tests ramkolfx_presets)
+
+# End-to-end client against a live daemon + PipeWire - not a ctest test and
+# not built by default; tests/e2e/run.sh builds and drives it.
+add_executable(ramkolfx_e2e EXCLUDE_FROM_ALL e2e/e2e_client.cpp)
+target_link_libraries(ramkolfx_e2e PRIVATE ramkolfx_common)
