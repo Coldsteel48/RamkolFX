@@ -9,6 +9,7 @@
 #pragma once
 
 #include <functional>
+#include <mutex>
 #include <string>
 
 #include "ramkolfx/types.hpp"
@@ -71,8 +72,12 @@ public:
     // thread that owns Stream.
     bool SetTargetNode(std::string NewTargetNodeName);
 
-    const std::string& GetTargetNodeName() const
+    // Returned by value under TargetMutex: SetTargetNode() reassigns the
+    // name from control threads while the main-loop auto-switch timer and
+    // status builders read it, so handing out a reference would race.
+    std::string GetTargetNodeName() const
     {
+        std::lock_guard<std::mutex> Lock(TargetMutex);
         return TargetNodeName;
     }
 
@@ -91,7 +96,8 @@ private:
     pw_loop* Loop;
     pw_stream* Stream = nullptr;
     FillCallback Callback;
-    std::string TargetNodeName;
+    mutable std::mutex TargetMutex;
+    std::string TargetNodeName; // guarded by TargetMutex
 };
 
 } // namespace ramkolfx

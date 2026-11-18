@@ -90,9 +90,10 @@ bool HardwareOutput::Start()
     // target, so the stream is created but stays unlinked instead of
     // AUTOCONNECT resolving "no target" as "default sink" - which could be
     // the virtual sink itself, the exact loop pinning exists to prevent.
-    if (!TargetNodeName.empty())
+    const std::string Target = GetTargetNodeName();
+    if (!Target.empty())
     {
-        pw_properties_set(Props, PW_KEY_TARGET_OBJECT, TargetNodeName.c_str());
+        pw_properties_set(Props, PW_KEY_TARGET_OBJECT, Target.c_str());
         pw_properties_set(Props, PW_KEY_NODE_DONT_RECONNECT, "true");
     }
 
@@ -108,23 +109,24 @@ bool HardwareOutput::Start()
 
 bool HardwareOutput::SetTargetNode(std::string NewTargetNodeName)
 {
-    if (NewTargetNodeName == TargetNodeName)
     {
-        return true;
-    }
-    if (!Stream)
-    {
-        // Not started yet; Start() will pick up TargetNodeName below.
+        std::lock_guard<std::mutex> Lock(TargetMutex);
+        if (NewTargetNodeName == TargetNodeName)
+        {
+            return true;
+        }
+        if (!Stream)
+        {
+            // Not started yet; Start() will pick up TargetNodeName below.
+            TargetNodeName = std::move(NewTargetNodeName);
+            return true;
+        }
         TargetNodeName = std::move(NewTargetNodeName);
-        return true;
     }
 
-    // Assigning TargetNodeName here (rather than inside
-    // ReconnectOnLoopThread) is safe even though it happens off the loop
-    // thread: the loop thread only reads it via ConnectStream(), which is
-    // invoked strictly after this assignment completes (pw_loop_invoke
-    // below blocks until it runs).
-    TargetNodeName = std::move(NewTargetNodeName);
+    // TargetNodeName was assigned above (rather than inside
+    // ReconnectOnLoopThread) under TargetMutex; the loop thread reads it
+    // via GetTargetNodeName() only after pw_loop_invoke below runs.
 
     struct InvokeContext
     {
@@ -155,10 +157,11 @@ bool HardwareOutput::ReconnectOnLoopThread()
     // hint, dont-reconnect is what keeps WirePlumber's default-device
     // policy from relinking this stream onto the new default sink instead.
     // Same empty-TargetNodeName handling as Start() too - see its comment.
-    if (!TargetNodeName.empty())
+    const std::string Target = GetTargetNodeName();
+    if (!Target.empty())
     {
         pw_properties* Props =
-            pw_properties_new(PW_KEY_TARGET_OBJECT, TargetNodeName.c_str(), PW_KEY_NODE_DONT_RECONNECT,
+            pw_properties_new(PW_KEY_TARGET_OBJECT, Target.c_str(), PW_KEY_NODE_DONT_RECONNECT,
                                "true", nullptr);
         pw_stream_update_properties(Stream, &Props->dict);
         pw_properties_free(Props);
@@ -188,7 +191,7 @@ bool HardwareOutput::ConnectStream()
     // empty (no target.object was set) so the stream stays unlinked
     // instead of AUTOCONNECT falling back to the default sink.
     uint32 Flags = PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS;
-    if (!TargetNodeName.empty())
+    if (!GetTargetNodeName().empty())
     {
         Flags |= PW_STREAM_FLAG_AUTOCONNECT;
     }
