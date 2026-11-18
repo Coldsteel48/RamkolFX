@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -203,6 +204,19 @@ private:
     SpeakerLayout SharedLayout;
     std::atomic<SpatialMode> Mode{SpatialMode::Off};
 
+    // Spatial mode remembered per output device (see
+    // PersistedSettings::DeviceSpatialModes). DeviceModeMutex also covers
+    // the Mode store that goes with each update, so a concurrent
+    // SetSpatialMode / SetOutputDevice pair can't record one device's
+    // mode under the other.
+    std::mutex DeviceModeMutex;
+    std::map<std::string, SpatialMode> DeviceSpatialModes;
+
+    // Applies Device's remembered spatial mode, or - for a device never
+    // seen before - remembers the live mode for it. Returns true if
+    // DeviceSpatialModes changed (see ApplyRememberedSpatialMode). Locks
+    // DeviceModeMutex.
+    bool ApplyDeviceSpatialMode(const std::string& Device);
     std::atomic<bool> bTestNoiseEnabled{false};
     std::atomic<bool> bNearFieldEnabled{false};
 

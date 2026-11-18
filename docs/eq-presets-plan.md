@@ -59,7 +59,7 @@ All six phases done. Verified end to end against real PipeWire with
 device binding, app over device, explicit unbind, delete-drops-binding.
 Unit tests: `./build.sh test` (protocol round trips, preset store and
 bindings, the auto-switch rule and its snapshot/restore state machine
-`AutoSwitchController`) - the pure preset code lives in the
+`AutoSwitchController`, per-device spatial modes) - the pure preset code lives in the
 `ramkolfx_presets` library so the daemon and tests link the same
 objects. The end-to-end PipeWire checks are not part of ctest: they need a
 running PipeWire session and start a real daemon.

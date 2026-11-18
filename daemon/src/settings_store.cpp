@@ -38,12 +38,32 @@ std::string SpeakerKey(size_t Index, const char* Field)
     return "speaker." + std::to_string(Index) + "." + Field;
 }
 
+// Per-device modes are stored as `device_mode.count` plus
+// `device_mode.<n>.device` / `.mode` pairs, like presets.conf's bindings:
+// a device name used as a key could in principle contain '='.
+std::string DeviceModeKey(size_t Index, const char* Field)
+{
+    return "device_mode." + std::to_string(Index) + "." + Field;
+}
+
 bool IsValidSpatialMode(long Value)
 {
     return Value >= static_cast<long>(SpatialMode::Off) && Value <= static_cast<long>(SpatialMode::Advanced);
 }
 
 } // namespace
+
+bool ApplyRememberedSpatialMode(std::map<std::string, SpatialMode>& Modes, const std::string& Device,
+                                SpatialMode& InOutMode)
+{
+    if (!IsValidTargetName(Device))
+    {
+        return false;
+    }
+    const auto [It, bInserted] = Modes.try_emplace(Device, InOutMode);
+    InOutMode = It->second;
+    return bInserted;
+}
 
 SettingsStore::SettingsStore() : SettingsPath(DefaultSettingsPath())
 {
@@ -79,6 +99,17 @@ std::optional<PersistedSettings> SettingsStore::Load() const
     ReadEqCurve(*File, "", Result.HwEqBands, Result.BassEnhancer);
     Result.ActivePresetName = File->GetString("eq_preset.active", Result.ActivePresetName);
     Result.bPresetModified = File->GetBool("eq_preset.modified", Result.bPresetModified);
+
+    const size_t DeviceModeCount = File->GetCount("device_mode.count");
+    for (size_t i = 0; i < DeviceModeCount; ++i)
+    {
+        const std::string Device = File->GetString(DeviceModeKey(i, "device"), "");
+        const long ModeValue = File->GetLong(DeviceModeKey(i, "mode"), -1);
+        if (!Device.empty() && IsValidSpatialMode(ModeValue))
+        {
+            Result.DeviceSpatialModes[Device] = static_cast<SpatialMode>(ModeValue);
+        }
+    }
     return Result;
 }
 
@@ -98,6 +129,14 @@ void SettingsStore::Save(const PersistedSettings& InSettings) const
     WriteEqCurve(Out, "", InSettings.HwEqBands, InSettings.BassEnhancer);
     Out << "eq_preset.active=" << InSettings.ActivePresetName << "\n";
     Out << "eq_preset.modified=" << (InSettings.bPresetModified ? 1 : 0) << "\n";
+    Out << "device_mode.count=" << InSettings.DeviceSpatialModes.size() << "\n";
+    size_t DeviceIndex = 0;
+    for (const auto& [Device, DeviceMode] : InSettings.DeviceSpatialModes)
+    {
+        Out << DeviceModeKey(DeviceIndex, "device") << "=" << Device << "\n";
+        Out << DeviceModeKey(DeviceIndex, "mode") << "=" << static_cast<int>(DeviceMode) << "\n";
+        ++DeviceIndex;
+    }
     WriteFileAtomically(SettingsPath, Out.str());
 }
 

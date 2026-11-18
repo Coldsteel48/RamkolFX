@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -55,7 +56,21 @@ struct PersistedSettings
     // presets.conf between runs only loses its name here, never the sound.
     std::string ActivePresetName;
     bool bPresetModified = false;
+
+    // Spatial mode remembered per output device (keyed by PipeWire node
+    // name), so e.g. headphones can stay on Advanced while speakers stay
+    // Off. Mode above is still the live mode; this map is what switching
+    // devices restores from. A device missing here keeps whatever mode
+    // is live when it's first selected.
+    std::map<std::string, SpatialMode> DeviceSpatialModes;
 };
+
+// The per-device spatial mode rule, on switching to Device: a remembered
+// device sets InOutMode to its mode; a device never seen before remembers
+// the live InOutMode instead. Returns true if Modes changed. Invalid device
+// names (empty, control characters - see IsValidTargetName) are ignored.
+bool ApplyRememberedSpatialMode(std::map<std::string, SpatialMode>& Modes, const std::string& Device,
+                                SpatialMode& InOutMode);
 
 // Loads/saves PersistedSettings as a small text file under
 // $XDG_CONFIG_HOME/ramkolfx (falling back to ~/.config/ramkolfx), so user

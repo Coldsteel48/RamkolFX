@@ -484,7 +484,16 @@ int AudioEngine::Run()
     Devices->WaitForInitialSync();
 
     const std::string InitialOutputDevice = ResolveInitialOutputDevice(LoadedSettings);
-    if (!LoadedSettings || LoadedSettings->OutputDeviceName != InitialOutputDevice)
+
+    // The fallback above may have landed on a different device than last
+    // session's, so pick up that device's own spatial mode.
+    if (LoadedSettings)
+    {
+        DeviceSpatialModes = LoadedSettings->DeviceSpatialModes;
+    }
+    const bool bDeviceModesChanged = ApplyDeviceSpatialMode(InitialOutputDevice);
+
+    if (!LoadedSettings || LoadedSettings->OutputDeviceName != InitialOutputDevice || bDeviceModesChanged)
     {
         // First run (nothing persisted yet) or the persisted device is
         // gone - remember whatever we resolved to instead so the next
@@ -492,6 +501,8 @@ int AudioEngine::Run()
         // this fallback every time.
         PersistedSettings ToSave = LoadedSettings.value_or(PersistedSettings{});
         ToSave.OutputDeviceName = InitialOutputDevice;
+        ToSave.Mode = Mode.load(std::memory_order_relaxed);
+        ToSave.DeviceSpatialModes = DeviceSpatialModes;
         Settings.Save(ToSave);
     }
 
@@ -798,7 +809,14 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
 
     if (InCommand.CommandOpcode == Opcode::SetSpatialMode)
     {
-        Mode.store(InCommand.ModeValue, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> Lock(DeviceModeMutex);
+            Mode.store(InCommand.ModeValue, std::memory_order_relaxed);
+            if (const std::string Device = Output->GetTargetNodeName(); IsValidTargetName(Device))
+            {
+                DeviceSpatialModes[Device] = InCommand.ModeValue;
+            }
+        }
         bPersistedStateChanged = true;
         fprintf(stderr, "[ramkolfxd] spatial mode set to %d\n", static_cast<int>(InCommand.ModeValue));
     }
@@ -864,6 +882,7 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
                 fprintf(stderr, "[ramkolfxd] failed to switch output device to %s\n",
                         InCommand.OutputDeviceName.c_str());
             }
+            ApplyDeviceSpatialMode(Output->GetTargetNodeName());
         }
     }
     else if (InCommand.CommandOpcode == Opcode::SetSpeakerMute)
@@ -1023,6 +1042,10 @@ void AudioEngine::PersistCurrentSettings()
     ToSave.ActivePresetName = CurrentStatus.ActivePresetName;
     ToSave.bPresetModified = CurrentStatus.bPresetModified;
     {
+        std::lock_guard<std::mutex> Lock(DeviceModeMutex);
+        ToSave.DeviceSpatialModes = DeviceSpatialModes;
+    }
+    {
         EqState Curve = CaptureEqCurve();
         ToSave.HwEqBands = Curve.Bands;
         ToSave.BassEnhancer = Curve.Bass;
@@ -1035,6 +1058,19 @@ void AudioEngine::PersistCurrentSettings()
         }
     }
     Settings.Save(ToSave);
+}
+
+bool AudioEngine::ApplyDeviceSpatialMode(const std::string& Device)
+{
+    std::lock_guard<std::mutex> Lock(DeviceModeMutex);
+    SpatialMode NewMode = Mode.load(std::memory_order_relaxed);
+    const bool bModesChanged = ApplyRememberedSpatialMode(DeviceSpatialModes, Device, NewMode);
+    if (Mode.exchange(NewMode, std::memory_order_relaxed) != NewMode)
+    {
+        fprintf(stderr, "[ramkolfxd] spatial mode set to %d (remembered for %s)\n", static_cast<int>(NewMode),
+                Device.c_str());
+    }
+    return bModesChanged;
 }
 
 EqState AudioEngine::CaptureEqCurve()

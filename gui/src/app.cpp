@@ -377,7 +377,9 @@ void App::DrawSpatialTab()
         if (ImGui::IsItemHovered())
         {
             ImGui::SetTooltip("Off - plain stereo, no processing.\nBasic - lightweight virtual surround, "
-                               "low CPU.\nAdvanced - HRTF binaural render, most accurate.");
+                               "low CPU.\nAdvanced - HRTF binaural render, most accurate.\n\n"
+                              "Remembered per output device: switching devices restores\n"
+                              "the mode you last used with that device.");
         }
 
         ImGui::Spacing();

@@ -77,7 +77,9 @@ claiming the virtual sink as default can't feed back into itself.
 Pipeline runs end-to-end with three selectable spatialization paths,
 switched live via the `SetSpatialMode` control command (`SpatialMode`:
 `Off` / `Basic` / `Advanced`), all sharing one live-repositionable
-`SpeakerLayout` behind a common `DspStage` interface:
+`SpeakerLayout` behind a common `DspStage` interface. The mode is
+remembered per output device (e.g. Advanced on headphones, Off on
+speakers) and restored whenever that device is selected:
 
 - **Off** — static-gain downmix (`PassthroughStage`).
 - **Basic** — `AmbisonicsStage` encodes the 7 non-LFE 7.1 channels as
