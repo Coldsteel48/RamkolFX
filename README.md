@@ -47,7 +47,8 @@ a desktop entry and a systemd *user* unit.
 | Gentoo | [`.ebuild`](packaging/gentoo/media-sound/ramkolfx) | copy into a local overlay as `media-sound/ramkolfx/`, then `ebuild ramkolfx-*.ebuild manifest` and `emerge media-sound/ramkolfx` |
 | Nix | [`flake.nix`](flake.nix) | `nix run github:Coldsteel48/RamkolFX` (GUI) or `nix profile install github:Coldsteel48/RamkolFX` |
 
-Then start the daemon (it needs a running PipeWire session):
+Requires PipeWire >= 1.4 (Debian 13+, Ubuntu 25.04+, Fedora 42+, Alpine 3.22+,
+current Arch). Then start the daemon (it needs a running PipeWire session):
 
 ```sh
 systemctl --user enable --now ramkolfxd
