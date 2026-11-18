@@ -10,8 +10,15 @@ add_library(ramkolfx_common STATIC
     src/protocol.cpp
 )
 
+configure_file(
+    include/ramkolfx/version.hpp.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/ramkolfx/version.hpp
+    @ONLY
+)
+
 target_include_directories(ramkolfx_common PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 
 target_compile_features(ramkolfx_common PUBLIC cxx_std_20)

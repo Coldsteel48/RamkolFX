@@ -1,12 +1,14 @@
 %global debug_package %{nil}
 
 Name:           ramkolfx
+# upstream_version / Version / Release are maintained by packaging/version.sh
+%global upstream_version 0.1.0-alpha.1
 Version:        0.1.0
-Release:        1
+Release:        0.1.alpha1
 Summary:        3D spatial audio, EQ and bass enhancer for PipeWire
 License:        GPL-3.0-only
 URL:            https://github.com/Coldsteel48/RamkolFX
-Source0:        %{url}/archive/v%{version}/RamkolFX-%{version}.tar.gz
+Source0:        %{url}/archive/v%{upstream_version}/RamkolFX-%{upstream_version}.tar.gz
 Source1:        https://github.com/hoene/libmysofa/archive/refs/tags/v1.3.5.tar.gz#/libmysofa-1.3.5.tar.gz
 Source2:        https://github.com/mborgerding/kissfft/archive/refs/tags/131.2.0.tar.gz#/kissfft-131.2.0.tar.gz
 Source3:        https://github.com/ocornut/imgui/archive/refs/tags/v1.91.6.tar.gz#/imgui-1.91.6.tar.gz
@@ -32,7 +34,7 @@ ramkolfx-gui control app and a bundled set of redistributable HRTFs.
 Enable the daemon with: systemctl --user enable --now ramkolfxd
 
 %prep
-%autosetup -n RamkolFX-%{version}
+%autosetup -n RamkolFX-%{upstream_version}
 mkdir deps
 for s in %{SOURCE1} %{SOURCE2} %{SOURCE3}; do tar -xzf "$s" -C deps; done
 
@@ -57,5 +59,5 @@ DESTDIR=%{buildroot} cmake --install build --component ramkolfx
 %doc %{_docdir}/RamkolFX/
 
 %changelog
-* Wed Nov 18 2026 Roman Levin (Coldsteel48) <noreply@github.com> - 0.1.0-1
-- Initial packaging
+* Wed Nov 18 2026 Roman Levin (Coldsteel48) <noreply@github.com> - 0.1.0-0.1.alpha1
+- Release 0.1.0-alpha.1 (first alpha)

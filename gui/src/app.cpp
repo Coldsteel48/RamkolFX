@@ -14,6 +14,7 @@
 
 #include "imgui.h"
 #include "position_dial.hpp"
+#include "ramkolfx/version.hpp"
 #include "ui_palette.hpp"
 #include "ui_widgets.hpp"
 
@@ -210,7 +211,7 @@ void App::DrawUI()
         ImGui::SameLine(0.0f, 10.0f * DpiScale);
         ImGui::BeginGroup();
         ImGui::TextUnformatted("RamkolFX");
-        ImGui::TextColored(palette::TextMutedV4, "Audio Hub");
+        ImGui::TextColored(palette::TextMutedV4, "Audio Hub  v%s", ramkolfx::Version);
         ImGui::EndGroup();
 
         ImGui::SameLine(0.0f, 24.0f * DpiScale);

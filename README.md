@@ -12,6 +12,7 @@ separately-panned point sources.
 - [Screenshots](#screenshots)
 - [Download](#download)
 - [Install & Run](#install--run)
+- [Versioning](#versioning)
 - [Status](#status)
 - [Architecture](#architecture)
 - [Directory layout](#directory-layout)
@@ -271,6 +272,33 @@ touching the rest of the pipeline.
 9. GUI polish aimed at non-audio-engineer users — two-tab layout
    (Spatial Audio & Speakers / Equalizer & Bass) and the preset cards have
    landed; ongoing refinement
+
+## Versioning
+
+RamkolFX follows [Semantic Versioning](https://semver.org/). The current
+version lives in the [`VERSION`](VERSION) file and is **alpha**: expect rough
+edges, and until 1.0 anything (control protocol, settings/preset formats,
+CLI) may change between releases. Pre-releases are tagged
+`vMAJOR.MINOR.PATCH-alpha.N`, then `-beta.N`, `-rc.N`, then the plain
+release; GitHub marks every one of those except the last as a pre-release.
+
+`ramkolfxd --version` / `ramkolfx-gui --version` print the version, and the
+GUI shows it under its logo. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+**Cutting a release** (the only manual step is editing `VERSION`):
+
+```sh
+echo 0.1.0-alpha.2 > VERSION
+packaging/version.sh sync        # rewrites every distro recipe + flake.nix
+# add the release to CHANGELOG.md, commit
+git tag v0.1.0-alpha.2 && git push origin master v0.1.0-alpha.2
+```
+
+CI refuses to build if the tag, `VERSION` and the recipes disagree
+(`packaging/version.sh check <tag>`), then builds all packages and publishes
+the release. Distros spell pre-releases differently (`0.1.0~alpha.1` on
+Debian, `0.1.0_alpha1` on Arch/Alpine/Gentoo, `Release: 0.1.alpha1` on RPM);
+`version.sh` handles the conversion and `version.sh show` prints each one.
 
 ## License
 

@@ -1,0 +1,19 @@
+// RamkolFX
+// Copyright (C) 2026 Roman Levin (Coldsteel48)
+//
+// This file is part of RamkolFX, dual-licensed under the GNU General
+// Public License v3.0 (see LICENSE) or a separate commercial license
+// (see LICENSE-COMMERCIAL.md). Contributions are accepted only under the
+// terms of the Contributor License Agreement (see CLA.md).
+
+// CMake-generated from the VERSION file at the repository root.
+
+#pragma once
+
+namespace ramkolfx
+{
+
+// Full SemVer string, e.g. "0.1.0-alpha.1".
+inline constexpr const char* Version = "@RAMKOLFX_VERSION_FULL@";
+
+} // namespace ramkolfx

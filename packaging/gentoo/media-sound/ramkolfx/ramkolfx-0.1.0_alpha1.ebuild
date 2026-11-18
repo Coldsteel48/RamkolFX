@@ -5,15 +5,18 @@ EAPI=8
 
 inherit cmake
 
+# MY_PV (upstream SemVer tag) is maintained by packaging/version.sh from ../../../../VERSION.
+MY_PV="0.1.0-alpha.1"
+
 DESCRIPTION="3D spatial audio, EQ and bass enhancer for PipeWire"
 HOMEPAGE="https://github.com/Coldsteel48/RamkolFX"
 SRC_URI="
-	https://github.com/Coldsteel48/RamkolFX/archive/v${PV}.tar.gz -> RamkolFX-${PV}.tar.gz
+	https://github.com/Coldsteel48/RamkolFX/archive/v${MY_PV}.tar.gz -> RamkolFX-${MY_PV}.tar.gz
 	https://github.com/hoene/libmysofa/archive/refs/tags/v1.3.5.tar.gz -> libmysofa-1.3.5.tar.gz
 	https://github.com/mborgerding/kissfft/archive/refs/tags/131.2.0.tar.gz -> kissfft-131.2.0.tar.gz
 	gui? ( https://github.com/ocornut/imgui/archive/refs/tags/v1.91.6.tar.gz -> imgui-1.91.6.tar.gz )
 "
-S="${WORKDIR}/RamkolFX-${PV}"
+S="${WORKDIR}/RamkolFX-${MY_PV}"
 
 LICENSE="GPL-3 MIT Apache-2.0 CC-BY-4.0 BSD"
 SLOT="0"

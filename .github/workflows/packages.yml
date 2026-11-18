@@ -16,7 +16,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: v
-        run: echo "version=$(sed -n 's/^project(RamkolFX VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Check VERSION, recipes and tag agree
+        run: |
+          git config user.name ci && git config user.email ci@invalid
+          TAG=""
+          if [ "$GITHUB_REF_TYPE" = tag ]; then TAG="$GITHUB_REF_NAME"; fi
+          bash packaging/version.sh check $TAG
       - name: Source tarball (same layout as GitHub's tag archive)
         run: |
           mkdir dist
@@ -79,6 +85,8 @@ jobs:
       - name: Publish release
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
-          gh release create "$GITHUB_REF_NAME" artifacts/* \
+          # alpha / beta / rc versions (anything with a "-") are pre-releases
+          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" artifacts/* $pre \
             --title "RamkolFX $GITHUB_REF_NAME" --generate-notes \
             || gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber

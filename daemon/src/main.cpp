@@ -6,12 +6,22 @@
 // (see LICENSE-COMMERCIAL.md). Contributions are accepted only under the
 // terms of the Contributor License Agreement (see CLA.md).
 
+#include <cstdio>
+#include <cstring>
+
 #include "audio_engine.hpp"
+#include "ramkolfx/version.hpp"
 
 int main(int argc, char** argv)
 {
-    (void)argc;
-    (void)argv;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-V") == 0)
+        {
+            std::printf("ramkolfxd %s\n", ramkolfx::Version);
+            return 0;
+        }
+    }
 
     ramkolfx::AudioEngine Engine;
     return Engine.Run();

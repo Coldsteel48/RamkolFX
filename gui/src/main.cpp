@@ -18,6 +18,7 @@
 #include "imgui_impl_sdl2.h"
 
 #include "app.hpp"
+#include "ramkolfx/version.hpp"
 #include "renderer.hpp"
 #include "ui_palette.hpp"
 
@@ -237,8 +238,17 @@ void LoadFonts(float DpiScale)
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) == "--version" || std::string(argv[i]) == "-V")
+        {
+            printf("ramkolfx-gui %s\n", ramkolfx::Version);
+            return 0;
+        }
+    }
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
         fprintf(stderr, "[ramkolfx-gui] SDL_Init failed: %s\n", SDL_GetError());

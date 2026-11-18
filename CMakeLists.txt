@@ -7,7 +7,13 @@
 # terms of the Contributor License Agreement (see CLA.md).
 
 cmake_minimum_required(VERSION 3.20)
-project(RamkolFX VERSION 0.1.0 LANGUAGES CXX)
+# Single source of truth for the app version: the VERSION file (SemVer, e.g.
+# "0.1.0-alpha.1"). CMake's project(VERSION) only takes the numeric part.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/VERSION" RAMKOLFX_VERSION_FULL LIMIT_COUNT 1)
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" RAMKOLFX_VERSION_BASE "${RAMKOLFX_VERSION_FULL}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/VERSION")
+
+project(RamkolFX VERSION ${RAMKOLFX_VERSION_BASE} LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
