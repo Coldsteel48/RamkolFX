@@ -1,0 +1,11 @@
+[Unit]
+Description=RamkolFX spatial audio daemon
+After=pipewire.service wireplumber.service
+Wants=pipewire.service
+
+[Service]
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/ramkolfxd
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,82 @@
+name: Packages
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "version=$(sed -n 's/^project(RamkolFX VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" >> "$GITHUB_OUTPUT"
+      - name: Source tarball (same layout as GitHub's tag archive)
+        run: |
+          mkdir dist
+          git archive --format=tar.gz --prefix=RamkolFX-${{ steps.v.outputs.version }}/ \
+            -o dist/RamkolFX-${{ steps.v.outputs.version }}.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with: { name: source, path: dist/ }
+
+  package:
+    needs: source
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: deb,  image: 'debian:12',        script: build-deb.sh }
+          - { name: rpm,  image: 'fedora:latest',    script: build-rpm.sh }
+          - { name: apk,  image: 'alpine:3.21',      script: build-apk.sh }
+          - { name: arch, image: 'archlinux:latest', script: build-arch.sh }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: source, path: dist }
+      - name: Build ${{ matrix.name }} in ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD":/src -w /src ${{ matrix.image }} \
+            sh packaging/ci/${{ matrix.script }} ${{ needs.source.outputs.version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.name }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.apk
+            dist/*.pkg.tar.zst
+            dist/*.rsa.pub
+
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+      - run: nix build .#default --print-build-logs
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [source, package, nix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts, pattern: 'pkg-*', merge-multiple: true }
+      - name: Collect files
+        run: |
+          cp packaging/gentoo/media-sound/ramkolfx/ramkolfx-*.ebuild artifacts/
+          cp flake.nix artifacts/
+          cd artifacts && sha256sum * > SHA256SUMS && ls -l
+      - name: Publish release
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --title "RamkolFX $GITHUB_REF_NAME" --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber

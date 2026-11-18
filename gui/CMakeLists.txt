@@ -65,3 +65,7 @@ target_link_libraries(ramkolfx-gui PRIVATE
     OpenGL::GL
     PkgConfig::FONTCONFIG
 )
+
+install(TARGETS ramkolfx-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ramkolfx)
+install(FILES ${CMAKE_SOURCE_DIR}/packaging/common/ramkolfx.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT ramkolfx)

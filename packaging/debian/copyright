@@ -1,0 +1,16 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: RamkolFX
+Source: https://github.com/Coldsteel48/RamkolFX
+
+Files: *
+Copyright: 2026 Roman Levin (Coldsteel48)
+License: GPL-3.0-only
+ On Debian systems the full text of the GNU General Public License version 3
+ can be found in /usr/share/common-licenses/GPL-3. A separate commercial
+ license is also offered; see LICENSE-COMMERCIAL.md.
+
+Files: data/hrtf/*
+Copyright: see data/hrtf/README.md and the per-database LICENSE.txt files
+ (MIT KEMAR: public domain, SADIE II: Apache-2.0, HUTUBS: CC-BY-4.0,
+ SONICOM: MIT)
+License: various

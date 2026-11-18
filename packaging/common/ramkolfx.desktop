@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=RamkolFX
+GenericName=Spatial Audio & Equalizer
+Comment=3D spatial audio, HRTF binaural rendering and EQ for PipeWire
+Exec=ramkolfx-gui
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=audio;equalizer;spatial;hrtf;pipewire;

@@ -10,6 +10,7 @@ separately-panned point sources.
 ## Table of contents
 
 - [Screenshots](#screenshots)
+- [Download](#download)
 - [Install & Run](#install--run)
 - [Status](#status)
 - [Architecture](#architecture)
@@ -30,6 +31,32 @@ separately-panned point sources.
 | Spatial Audio & Speakers | Equalizer & Bass |
 | --- | --- |
 | ![Spatial Audio & Speakers tab](docs/screenshots/spatial-audio-speakers.png) | ![Equalizer & Bass tab](docs/screenshots/equalizer-bass.png) |
+
+## Download
+
+Prebuilt packages are attached to every [GitHub release](https://github.com/Coldsteel48/RamkolFX/releases/latest)
+(x86_64). Each one installs `ramkolfxd`, `ramkolfx-gui`, the bundled HRTFs,
+a desktop entry and a systemd *user* unit.
+
+| Distro | Package | Install |
+| --- | --- | --- |
+| Debian / Ubuntu | [`.deb`](https://github.com/Coldsteel48/RamkolFX/releases/latest) | `sudo apt install ./ramkolfx_*_amd64.deb` |
+| Fedora / RHEL / openSUSE | [`.rpm`](https://github.com/Coldsteel48/RamkolFX/releases/latest) | `sudo dnf install ./ramkolfx-*.rpm` |
+| Arch / CachyOS / Manjaro | [`.pkg.tar.zst`](https://github.com/Coldsteel48/RamkolFX/releases/latest) | `sudo pacman -U ramkolfx-*.pkg.tar.zst` |
+| Alpine | [`.apk`](https://github.com/Coldsteel48/RamkolFX/releases/latest) | `sudo apk add --allow-untrusted ./ramkolfx-*.apk` (or add the release's `ramkolfx-alpine-key.rsa.pub` to `/etc/apk/keys/`) |
+| Gentoo | [`.ebuild`](packaging/gentoo/media-sound/ramkolfx) | copy into a local overlay as `media-sound/ramkolfx/`, then `ebuild ramkolfx-*.ebuild manifest` and `emerge media-sound/ramkolfx` |
+| Nix | [`flake.nix`](flake.nix) | `nix run github:Coldsteel48/RamkolFX` (GUI) or `nix profile install github:Coldsteel48/RamkolFX` |
+
+Then start the daemon (it needs a running PipeWire session):
+
+```sh
+systemctl --user enable --now ramkolfxd
+ramkolfx-gui
+```
+
+The recipes live in [`packaging/`](packaging) and are built by
+[`.github/workflows/packages.yml`](.github/workflows/packages.yml) whenever a
+`v*` tag is pushed.
 
 ## Install & Run
 

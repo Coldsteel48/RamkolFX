@@ -1,0 +1,23 @@
+Source: ramkolfx
+Section: sound
+Priority: optional
+Maintainer: Roman Levin (Coldsteel48) <noreply@github.com>
+Build-Depends: debhelper-compat (= 13), cmake (>= 3.20), ninja-build, pkg-config,
+ g++, libpipewire-0.3-dev, zlib1g-dev, libsdl2-dev, libgl-dev,
+ libfontconfig-dev, curl, ca-certificates
+Standards-Version: 4.6.2
+Homepage: https://github.com/Coldsteel48/RamkolFX
+Rules-Requires-Root: no
+
+Package: ramkolfx
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: pipewire, wireplumber
+Description: 3D spatial audio, EQ and bass enhancer for PipeWire
+ RamkolFX creates a virtual PipeWire sink, processes whatever is played into
+ it (HRTF binaural rendering or ambisonics speaker virtualisation, a 10-band
+ graphic EQ and a psychoacoustic bass enhancer) and plays the result out
+ through a real output device. Includes the ramkolfxd daemon, the
+ ramkolfx-gui control app and a bundled set of redistributable HRTFs.
+ .
+ Enable the daemon with: systemctl --user enable --now ramkolfxd

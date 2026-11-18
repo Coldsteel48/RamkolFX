@@ -26,6 +26,9 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/hoene/libmysofa.git
     GIT_TAG v1.3.5
 )
+# Both are linked statically into ramkolfxd. Their own install rules (headers,
+# cmake configs) must not end up in packages: RamkolFX's files all use
+# COMPONENT ramkolfx, so install with `cmake --install <dir> --component ramkolfx`.
 FetchContent_MakeAvailable(mysofa)
 
 set(KISSFFT_STATIC ON CACHE BOOL "" FORCE)
@@ -46,22 +49,28 @@ FetchContent_MakeAvailable(kissfft)
 # avoids bundling), and the license-free synthetic spherical-head model.
 # AudioEngine filters this list down to entries that are actually present
 # on disk at startup.
+# Where the .sofa files live at *runtime*. Defaults to the source tree (dev
+# builds); distro packages pass -DRAMKOLFX_HRTF_DATA_DIR=/usr/share/ramkolfx/hrtf
+# so the baked-in catalog paths match the installed layout.
+set(RAMKOLFX_HRTF_DATA_DIR "${CMAKE_SOURCE_DIR}/data/hrtf" CACHE PATH
+    "Runtime directory holding the bundled HRTF .sofa files")
+
 set(RAMKOLFX_HRTF_CATALOG_ENTRIES
-    "    { \"MIT KEMAR (normal pinna)\", HrtfSourceKind::SofaFile, \"${CMAKE_SOURCE_DIR}/data/hrtf/default.sofa\" },\n")
+    "    { \"MIT KEMAR (normal pinna)\", HrtfSourceKind::SofaFile, \"${RAMKOLFX_HRTF_DATA_DIR}/default.sofa\" },\n")
 set(RAMKOLFX_SADIE_SUBJECTS D1 D2 H3 H4 H5 H6 H7 H8 H9 H10 H11 H12 H13 H14 H15 H16 H17 H18 H19 H20)
 foreach(SUBJECT ${RAMKOLFX_SADIE_SUBJECTS})
     string(APPEND RAMKOLFX_HRTF_CATALOG_ENTRIES
-        "    { \"SADIE II - ${SUBJECT}\", HrtfSourceKind::SofaFile, \"${CMAKE_SOURCE_DIR}/data/hrtf/sadie/sadie_${SUBJECT}.sofa\" },\n")
+        "    { \"SADIE II - ${SUBJECT}\", HrtfSourceKind::SofaFile, \"${RAMKOLFX_HRTF_DATA_DIR}/sadie/sadie_${SUBJECT}.sofa\" },\n")
 endforeach()
 set(RAMKOLFX_HUTUBS_SUBJECTS pp5 pp30 pp50 pp70 pp90)
 foreach(SUBJECT ${RAMKOLFX_HUTUBS_SUBJECTS})
     string(APPEND RAMKOLFX_HRTF_CATALOG_ENTRIES
-        "    { \"HUTUBS - ${SUBJECT}\", HrtfSourceKind::SofaFile, \"${CMAKE_SOURCE_DIR}/data/hrtf/hutubs/hutubs_${SUBJECT}.sofa\" },\n")
+        "    { \"HUTUBS - ${SUBJECT}\", HrtfSourceKind::SofaFile, \"${RAMKOLFX_HRTF_DATA_DIR}/hutubs/hutubs_${SUBJECT}.sofa\" },\n")
 endforeach()
 set(RAMKOLFX_SONICOM_SUBJECTS P0002 P0057 P0102 P0201 P0301)
 foreach(SUBJECT ${RAMKOLFX_SONICOM_SUBJECTS})
     string(APPEND RAMKOLFX_HRTF_CATALOG_ENTRIES
-        "    { \"SONICOM - ${SUBJECT}\", HrtfSourceKind::SofaFile, \"${CMAKE_SOURCE_DIR}/data/hrtf/sonicom/sonicom_${SUBJECT}.sofa\" },\n")
+        "    { \"SONICOM - ${SUBJECT}\", HrtfSourceKind::SofaFile, \"${RAMKOLFX_HRTF_DATA_DIR}/sonicom/sonicom_${SUBJECT}.sofa\" },\n")
 endforeach()
 string(APPEND RAMKOLFX_HRTF_CATALOG_ENTRIES
     "    { \"Synthetic spherical head\", HrtfSourceKind::SyntheticSphericalHead, \"\" },\n")
@@ -124,3 +133,5 @@ target_link_libraries(ramkolfxd PRIVATE
     mysofa-static
     kissfft::kissfft
 )
+
+install(TARGETS ramkolfxd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ramkolfx)
