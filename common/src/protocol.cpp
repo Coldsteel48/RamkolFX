@@ -122,6 +122,73 @@ bool ReadString(const uint8* Payload, uint16 PayloadLength, size_t& Offset, std:
     return true;
 }
 
+// Shared shape behind every *ListResponse decoder: a u16 BE entry count
+// followed by that many entries, each parsed by DecodeEntry (which must
+// advance Offset past its own entry and return false on truncation/
+// malformed data, same contract as ReadString). Pulled out once every
+// list response (devices, HRTF catalog, content streams, EQ presets) was
+// found to repeat this exact count-then-loop skeleton with only the
+// per-entry decoding differing.
+template <typename T, typename EntryDecoder>
+std::optional<std::vector<T>> DecodeListResponse(const uint8* Payload, uint16 PayloadLength,
+                                                  EntryDecoder&& DecodeEntry)
+{
+    size_t Offset = 0;
+    if (Offset + 2 > PayloadLength)
+    {
+        return std::nullopt;
+    }
+    const uint16 Count = static_cast<uint16>((Payload[Offset] << 8) | Payload[Offset + 1]);
+    Offset += 2;
+
+    std::vector<T> Items;
+    Items.reserve(Count);
+    for (uint16 i = 0; i < Count; ++i)
+    {
+        T Item;
+        if (!DecodeEntry(Payload, PayloadLength, Offset, Item))
+        {
+            return std::nullopt;
+        }
+        Items.push_back(std::move(Item));
+    }
+    return Items;
+}
+
+// Shared shape behind every *ListResponse encoder: a u16 BE entry count
+// (patched in once the final count is known) followed by each entry
+// EncodeEntry appends, stopping before - never mid-entry - a further
+// entry would push the payload past MaxPayloadSize. Mirrors
+// DecodeListResponse above; pulled out for the same reason.
+template <typename T, typename EntryEncoder>
+std::vector<uint8> EncodeListResponse(Opcode InOpcode, const std::vector<T>& Items, EntryEncoder&& EncodeEntry)
+{
+    std::vector<uint8> Payload;
+    Payload.push_back(0); // count placeholder, patched below once the final count is known
+    Payload.push_back(0);
+
+    uint16 Count = 0;
+    for (const T& Item : Items)
+    {
+        std::vector<uint8> Entry;
+        EncodeEntry(Entry, Item);
+        if (Payload.size() + Entry.size() > MaxPayloadSize)
+        {
+            break; // stop before exceeding the payload cap, never mid-entry
+        }
+        Payload.insert(Payload.end(), Entry.begin(), Entry.end());
+        ++Count;
+    }
+    Payload[0] = static_cast<uint8>((Count >> 8) & 0xFF);
+    Payload[1] = static_cast<uint8>(Count & 0xFF);
+
+    std::vector<uint8> Out;
+    Out.reserve(HeaderSize + Payload.size());
+    AppendHeader(Out, InOpcode, static_cast<uint16>(Payload.size()));
+    Out.insert(Out.end(), Payload.begin(), Payload.end());
+    return Out;
+}
+
 } // namespace
 
 std::optional<MessageHeader> TryReadHeader(const uint8* Buffer, size_t Available)
@@ -340,52 +407,18 @@ std::string DecodeErrorResponse(const uint8* Payload, uint16 PayloadLength)
 std::optional<std::vector<AudioDeviceInfo>> DecodeDeviceListResponse(const uint8* Payload,
                                                                        uint16 PayloadLength)
 {
-    size_t Offset = 0;
-    if (Offset + 2 > PayloadLength)
-    {
-        return std::nullopt;
-    }
-    const uint16 Count = static_cast<uint16>((Payload[Offset] << 8) | Payload[Offset + 1]);
-    Offset += 2;
-
-    std::vector<AudioDeviceInfo> Devices;
-    Devices.reserve(Count);
-    for (uint16 i = 0; i < Count; ++i)
-    {
-        AudioDeviceInfo Info;
-        if (!ReadString(Payload, PayloadLength, Offset, Info.Name) ||
-            !ReadString(Payload, PayloadLength, Offset, Info.Description))
+    return DecodeListResponse<AudioDeviceInfo>(
+        Payload, PayloadLength,
+        [](const uint8* P, uint16 Len, size_t& Offset, AudioDeviceInfo& Info)
         {
-            return std::nullopt;
-        }
-        Devices.push_back(std::move(Info));
-    }
-    return Devices;
+            return ReadString(P, Len, Offset, Info.Name) && ReadString(P, Len, Offset, Info.Description);
+        });
 }
 
 std::optional<std::vector<std::string>> DecodeHrtfCatalogResponse(const uint8* Payload,
                                                                     uint16 PayloadLength)
 {
-    size_t Offset = 0;
-    if (Offset + 2 > PayloadLength)
-    {
-        return std::nullopt;
-    }
-    const uint16 Count = static_cast<uint16>((Payload[Offset] << 8) | Payload[Offset + 1]);
-    Offset += 2;
-
-    std::vector<std::string> DisplayNames;
-    DisplayNames.reserve(Count);
-    for (uint16 i = 0; i < Count; ++i)
-    {
-        std::string Name;
-        if (!ReadString(Payload, PayloadLength, Offset, Name))
-        {
-            return std::nullopt;
-        }
-        DisplayNames.push_back(std::move(Name));
-    }
-    return DisplayNames;
+    return DecodeListResponse<std::string>(Payload, PayloadLength, ReadString);
 }
 
 std::optional<std::array<EqBand, MaxEqBands>> DecodeHwEqStateResponse(const uint8* Payload,
@@ -416,52 +449,18 @@ std::optional<BassEnhancerSettings> DecodeBassEnhancerStateResponse(const uint8*
 std::optional<std::vector<ContentStreamInfo>> DecodeContentStreamListResponse(const uint8* Payload,
                                                                                  uint16 PayloadLength)
 {
-    size_t Offset = 0;
-    if (Offset + 2 > PayloadLength)
-    {
-        return std::nullopt;
-    }
-    const uint16 Count = static_cast<uint16>((Payload[Offset] << 8) | Payload[Offset + 1]);
-    Offset += 2;
-
-    std::vector<ContentStreamInfo> Streams;
-    Streams.reserve(Count);
-    for (uint16 i = 0; i < Count; ++i)
-    {
-        ContentStreamInfo Info;
-        if (!ReadString(Payload, PayloadLength, Offset, Info.AppName) ||
-            !ReadString(Payload, PayloadLength, Offset, Info.MediaName))
+    return DecodeListResponse<ContentStreamInfo>(
+        Payload, PayloadLength,
+        [](const uint8* P, uint16 Len, size_t& Offset, ContentStreamInfo& Info)
         {
-            return std::nullopt;
-        }
-        Streams.push_back(std::move(Info));
-    }
-    return Streams;
+            return ReadString(P, Len, Offset, Info.AppName) && ReadString(P, Len, Offset, Info.MediaName);
+        });
 }
 
 std::optional<std::vector<std::string>> DecodeEqPresetCatalogResponse(const uint8* Payload,
                                                                          uint16 PayloadLength)
 {
-    size_t Offset = 0;
-    if (Offset + 2 > PayloadLength)
-    {
-        return std::nullopt;
-    }
-    const uint16 Count = static_cast<uint16>((Payload[Offset] << 8) | Payload[Offset + 1]);
-    Offset += 2;
-
-    std::vector<std::string> DisplayNames;
-    DisplayNames.reserve(Count);
-    for (uint16 i = 0; i < Count; ++i)
-    {
-        std::string Name;
-        if (!ReadString(Payload, PayloadLength, Offset, Name))
-        {
-            return std::nullopt;
-        }
-        DisplayNames.push_back(std::move(Name));
-    }
-    return DisplayNames;
+    return DecodeListResponse<std::string>(Payload, PayloadLength, ReadString);
 }
 
 std::vector<uint8> EncodeStatusResponse(const Status& InStatus)
@@ -504,59 +503,19 @@ std::vector<uint8> EncodeErrorResponse(const std::string& Message)
 
 std::vector<uint8> EncodeDeviceListResponse(const std::vector<AudioDeviceInfo>& Devices)
 {
-    std::vector<uint8> Payload;
-    Payload.push_back(0); // count placeholder, patched below once the final count is known
-    Payload.push_back(0);
-
-    uint16 Count = 0;
-    for (const auto& Device : Devices)
-    {
-        std::vector<uint8> Entry;
-        AppendString(Entry, Device.Name);
-        AppendString(Entry, Device.Description);
-        if (Payload.size() + Entry.size() > MaxPayloadSize)
-        {
-            break; // stop before exceeding the payload cap, never mid-entry
-        }
-        Payload.insert(Payload.end(), Entry.begin(), Entry.end());
-        ++Count;
-    }
-    Payload[0] = static_cast<uint8>((Count >> 8) & 0xFF);
-    Payload[1] = static_cast<uint8>(Count & 0xFF);
-
-    std::vector<uint8> Out;
-    Out.reserve(HeaderSize + Payload.size());
-    AppendHeader(Out, Opcode::DeviceListResponse, static_cast<uint16>(Payload.size()));
-    Out.insert(Out.end(), Payload.begin(), Payload.end());
-    return Out;
+    return EncodeListResponse(Opcode::DeviceListResponse, Devices,
+                               [](std::vector<uint8>& Entry, const AudioDeviceInfo& Device)
+                               {
+                                   AppendString(Entry, Device.Name);
+                                   AppendString(Entry, Device.Description);
+                               });
 }
 
 std::vector<uint8> EncodeHrtfCatalogResponse(const std::vector<std::string>& DisplayNames)
 {
-    std::vector<uint8> Payload;
-    Payload.push_back(0); // count placeholder, patched below once the final count is known
-    Payload.push_back(0);
-
-    uint16 Count = 0;
-    for (const auto& Name : DisplayNames)
-    {
-        std::vector<uint8> Entry;
-        AppendString(Entry, Name);
-        if (Payload.size() + Entry.size() > MaxPayloadSize)
-        {
-            break; // stop before exceeding the payload cap, never mid-entry
-        }
-        Payload.insert(Payload.end(), Entry.begin(), Entry.end());
-        ++Count;
-    }
-    Payload[0] = static_cast<uint8>((Count >> 8) & 0xFF);
-    Payload[1] = static_cast<uint8>(Count & 0xFF);
-
-    std::vector<uint8> Out;
-    Out.reserve(HeaderSize + Payload.size());
-    AppendHeader(Out, Opcode::HrtfCatalogResponse, static_cast<uint16>(Payload.size()));
-    Out.insert(Out.end(), Payload.begin(), Payload.end());
-    return Out;
+    return EncodeListResponse(Opcode::HrtfCatalogResponse, DisplayNames,
+                               [](std::vector<uint8>& Entry, const std::string& Name)
+                               { AppendString(Entry, Name); });
 }
 
 std::vector<uint8> EncodeHwEqStateResponse(const std::array<EqBand, MaxEqBands>& Bands)
@@ -590,59 +549,19 @@ std::vector<uint8> EncodeBassEnhancerStateResponse(const BassEnhancerSettings& S
 
 std::vector<uint8> EncodeContentStreamListResponse(const std::vector<ContentStreamInfo>& Streams)
 {
-    std::vector<uint8> Payload;
-    Payload.push_back(0); // count placeholder, patched below once the final count is known
-    Payload.push_back(0);
-
-    uint16 Count = 0;
-    for (const auto& Stream : Streams)
-    {
-        std::vector<uint8> Entry;
-        AppendString(Entry, Stream.AppName);
-        AppendString(Entry, Stream.MediaName);
-        if (Payload.size() + Entry.size() > MaxPayloadSize)
-        {
-            break; // stop before exceeding the payload cap, never mid-entry
-        }
-        Payload.insert(Payload.end(), Entry.begin(), Entry.end());
-        ++Count;
-    }
-    Payload[0] = static_cast<uint8>((Count >> 8) & 0xFF);
-    Payload[1] = static_cast<uint8>(Count & 0xFF);
-
-    std::vector<uint8> Out;
-    Out.reserve(HeaderSize + Payload.size());
-    AppendHeader(Out, Opcode::ContentStreamListResponse, static_cast<uint16>(Payload.size()));
-    Out.insert(Out.end(), Payload.begin(), Payload.end());
-    return Out;
+    return EncodeListResponse(Opcode::ContentStreamListResponse, Streams,
+                               [](std::vector<uint8>& Entry, const ContentStreamInfo& Stream)
+                               {
+                                   AppendString(Entry, Stream.AppName);
+                                   AppendString(Entry, Stream.MediaName);
+                               });
 }
 
 std::vector<uint8> EncodeEqPresetCatalogResponse(const std::vector<std::string>& DisplayNames)
 {
-    std::vector<uint8> Payload;
-    Payload.push_back(0); // count placeholder, patched below once the final count is known
-    Payload.push_back(0);
-
-    uint16 Count = 0;
-    for (const auto& Name : DisplayNames)
-    {
-        std::vector<uint8> Entry;
-        AppendString(Entry, Name);
-        if (Payload.size() + Entry.size() > MaxPayloadSize)
-        {
-            break; // stop before exceeding the payload cap, never mid-entry
-        }
-        Payload.insert(Payload.end(), Entry.begin(), Entry.end());
-        ++Count;
-    }
-    Payload[0] = static_cast<uint8>((Count >> 8) & 0xFF);
-    Payload[1] = static_cast<uint8>(Count & 0xFF);
-
-    std::vector<uint8> Out;
-    Out.reserve(HeaderSize + Payload.size());
-    AppendHeader(Out, Opcode::EqPresetCatalogResponse, static_cast<uint16>(Payload.size()));
-    Out.insert(Out.end(), Payload.begin(), Payload.end());
-    return Out;
+    return EncodeListResponse(Opcode::EqPresetCatalogResponse, DisplayNames,
+                               [](std::vector<uint8>& Entry, const std::string& Name)
+                               { AppendString(Entry, Name); });
 }
 
 std::vector<uint8> EncodeGetStatusRequest()

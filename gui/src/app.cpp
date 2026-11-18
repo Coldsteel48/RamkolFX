@@ -79,15 +79,7 @@ void App::Tick(float DeltaTimeSeconds)
         if (StatusPollTimerSeconds <= 0.0f)
         {
             StatusPollTimerSeconds = StatusPollIntervalSeconds;
-            if (auto Result = Client.RequestStatus())
-            {
-                LastStatus = *Result;
-            }
-            else
-            {
-                bConnected = false;
-                ReconnectTimerSeconds = 0.0f; // retry immediately
-            }
+            Apply(Client.RequestStatus());
         }
 
         DevicePollTimerSeconds -= DeltaTimeSeconds;
@@ -132,6 +124,18 @@ void App::Tick(float DeltaTimeSeconds)
     }
 
     DrawUI();
+}
+
+bool App::Apply(std::optional<Status> Result)
+{
+    if (Result)
+    {
+        LastStatus = *Result;
+        return true;
+    }
+    bConnected = false;
+    ReconnectTimerSeconds = 0.0f; // retry immediately
+    return false;
 }
 
 void App::PersistGuiPreferences() const
@@ -221,7 +225,6 @@ void App::DrawUI()
     }
 
     ImGui::SameLine(0.0f, 24.0f);
-    //ImGui::Dummy(ImVec2(0.0f, 16.0f * DpiScale)); 
     ImGui::Spacing();
     ImGui::Spacing();
     ImGui::Spacing();
@@ -240,14 +243,7 @@ void App::DrawSpatialTab()
     // connection.
     auto SetSpeakerMuted = [&](uint8 SpeakerIndex, bool bMuted) -> bool
     {
-        if (auto Result = Client.SetSpeakerMute(SpeakerIndex, bMuted))
-        {
-            LastStatus = *Result;
-            return true;
-        }
-        bConnected = false;
-        ReconnectTimerSeconds = 0.0f;
-        return false;
+        return Apply(Client.SetSpeakerMute(SpeakerIndex, bMuted));
     };
 
     // Sends one speaker's given (already-captured) azimuth and distance and
@@ -261,26 +257,9 @@ void App::DrawSpatialTab()
     // reading them fresh between calls.
     auto SendSpeakerPositionValues = [&](uint8 SpeakerIndex, float AzimuthDegrees, float DistanceMeters)
     {
-        if (auto Result = Client.SetSpeakerAzimuth(SpeakerIndex, AzimuthDegrees))
+        if (Apply(Client.SetSpeakerAzimuth(SpeakerIndex, AzimuthDegrees)))
         {
-            LastStatus = *Result;
-        }
-        else
-        {
-            bConnected = false;
-            ReconnectTimerSeconds = 0.0f;
-        }
-        if (bConnected)
-        {
-            if (auto Result = Client.SetSpeakerDistance(SpeakerIndex, DistanceMeters))
-            {
-                LastStatus = *Result;
-            }
-            else
-            {
-                bConnected = false;
-                ReconnectTimerSeconds = 0.0f;
-            }
+            Apply(Client.SetSpeakerDistance(SpeakerIndex, DistanceMeters));
         }
     };
 
@@ -343,15 +322,7 @@ void App::DrawSpatialTab()
         if (DrawSegmentedPill("spatial_mode", ModeLabels, IM_ARRAYSIZE(ModeLabels), &ModeIndex, DpiScale,
                               LeftColumnWidth))
         {
-            if (auto Result = Client.SetSpatialMode(static_cast<SpatialMode>(ModeIndex)))
-            {
-                LastStatus = *Result;
-            }
-            else
-            {
-                bConnected = false;
-                ReconnectTimerSeconds = 0.0f;
-            }
+            Apply(Client.SetSpatialMode(static_cast<SpatialMode>(ModeIndex)));
         }
 
         ImGui::TextColored(palette::TextMutedV4, "What does this mean?");
@@ -382,15 +353,7 @@ void App::DrawSpatialTab()
                 const bool bSelected = Device.Name == LastStatus.OutputDeviceName;
                 if (ImGui::Selectable(Device.Description.c_str(), bSelected))
                 {
-                    if (auto Result = Client.SetOutputDevice(Device.Name))
-                    {
-                        LastStatus = *Result;
-                    }
-                    else
-                    {
-                        bConnected = false;
-                        ReconnectTimerSeconds = 0.0f;
-                    }
+                    Apply(Client.SetOutputDevice(Device.Name));
                 }
                 if (bSelected)
                 {
@@ -419,15 +382,7 @@ void App::DrawSpatialTab()
                     const bool bSelected = i == CurrentHrtfIndex;
                     if (ImGui::Selectable(HrtfCatalog[static_cast<size_t>(i)].c_str(), bSelected))
                     {
-                        if (auto Result = Client.SetHrtfFile(static_cast<uint8>(i)))
-                        {
-                            LastStatus = *Result;
-                        }
-                        else
-                        {
-                            bConnected = false;
-                            ReconnectTimerSeconds = 0.0f;
-                        }
+                        Apply(Client.SetHrtfFile(static_cast<uint8>(i)));
                     }
                     if (bSelected)
                     {
@@ -444,15 +399,7 @@ void App::DrawSpatialTab()
             bool bNearFieldEnabled = LastStatus.bNearFieldEnabled;
             if (DrawToggleSwitch("near_field", &bNearFieldEnabled, DpiScale))
             {
-                if (auto Result = Client.SetNearFieldEnabled(bNearFieldEnabled))
-                {
-                    LastStatus = *Result;
-                }
-                else
-                {
-                    bConnected = false;
-                    ReconnectTimerSeconds = 0.0f;
-                }
+                Apply(Client.SetNearFieldEnabled(bNearFieldEnabled));
             }
             if (ImGui::IsItemHovered())
             {
@@ -612,15 +559,7 @@ void App::DrawSpatialTab()
         ImGui::Spacing();
         if (ImGui::Button("Reset"))
         {
-            if (auto Result = Client.ResetSpeakerPositions())
-            {
-                LastStatus = *Result;
-            }
-            else
-            {
-                bConnected = false;
-                ReconnectTimerSeconds = 0.0f;
-            }
+            Apply(Client.ResetSpeakerPositions());
         }
 
         ImGui::SameLine();
@@ -642,15 +581,7 @@ void App::DrawSpatialTab()
         bool bTestNoiseEnabled = LastStatus.bTestNoiseEnabled;
         if (DrawToggleSwitch("test_noise", &bTestNoiseEnabled, DpiScale))
         {
-            if (auto Result = Client.SetTestNoiseEnabled(bTestNoiseEnabled))
-            {
-                LastStatus = *Result;
-            }
-            else
-            {
-                bConnected = false;
-                ReconnectTimerSeconds = 0.0f;
-            }
+            Apply(Client.SetTestNoiseEnabled(bTestNoiseEnabled));
         }
     }
     ImGui::EndGroup();
@@ -712,15 +643,7 @@ void App::DrawEqTab()
     // pattern as every other control here.
     auto SendBassEnhancer = [&]()
     {
-        if (auto Result = Client.SetBassEnhancer(BassEnhancer))
-        {
-            LastStatus = *Result;
-        }
-        else
-        {
-            bConnected = false;
-            ReconnectTimerSeconds = 0.0f;
-        }
+        Apply(Client.SetBassEnhancer(BassEnhancer));
     };
 
     {
@@ -903,15 +826,7 @@ void App::DrawEqTab()
     // every other control above.
     auto SendHwEqBand = [&](uint8 BandIndex)
     {
-        if (auto Result = Client.SetHwEqBand(BandIndex, HwEqBands[BandIndex]))
-        {
-            LastStatus = *Result;
-        }
-        else
-        {
-            bConnected = false;
-            ReconnectTimerSeconds = 0.0f;
-        }
+        Apply(Client.SetHwEqBand(BandIndex, HwEqBands[BandIndex]));
     };
 
     static const char* EqFilterTypeLabels[] = {"Peaking", "Low Shelf", "High Shelf",

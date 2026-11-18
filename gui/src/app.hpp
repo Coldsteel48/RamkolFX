@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <vector>
 
 #include "ramkolfx/protocol.hpp"
@@ -42,6 +43,16 @@ private:
     void DrawUI();
     void DrawSpatialTab();
     void DrawEqTab();
+
+    // Applies a control request's result to LastStatus and returns true,
+    // or - on failure - marks the connection dropped (bConnected = false,
+    // ReconnectTimerSeconds = 0 so Tick() retries immediately) and returns
+    // false. Every control request in this file (set spatial mode, speaker
+    // azimuth/distance/mute, output device, HRTF file, near-field, test
+    // noise, HW EQ band, bass enhancer, ...) follows this exact
+    // success-updates/failure-disconnects shape, so they all funnel through
+    // here instead of repeating it at each call site.
+    bool Apply(std::optional<Status> Result);
 
     // Writes every local-only GUI preference field to gui_prefs.hpp in one
     // call - used everywhere a preference-backed toggle changes, so no
