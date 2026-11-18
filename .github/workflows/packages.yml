@@ -32,9 +32,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: deb,  image: 'debian:12',        script: build-deb.sh }
+          # The daemon needs PipeWire >= ~1.4 (spa_json_str_object_find), so
+          # build on the oldest distro releases that ship it.
+          - { name: deb,  image: 'debian:13',        script: build-deb.sh }
           - { name: rpm,  image: 'fedora:latest',    script: build-rpm.sh }
-          - { name: apk,  image: 'alpine:3.21',      script: build-apk.sh }
+          - { name: apk,  image: 'alpine:3.22',      script: build-apk.sh }
           - { name: arch, image: 'archlinux:latest', script: build-arch.sh }
     steps:
       - uses: actions/checkout@v4
