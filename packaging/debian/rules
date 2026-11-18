@@ -6,12 +6,12 @@ D = $(CURDIR)/debian/ramkolfx
 	dh $@
 
 override_dh_auto_configure:
-	packaging/ci/fetch-deps.sh $(CURDIR)/debian/deps
+	sh packaging/ci/fetch-deps.sh $(CURDIR)/debian/deps
 	cmake -S . -B $(B) -G Ninja \
 	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
 	  -DRAMKOLFX_HRTF_DATA_DIR=/usr/share/ramkolfx/hrtf \
 	  -DRAMKOLFX_BUILD_GUI=ON -DRAMKOLFX_BUILD_TESTS=OFF \
-	  $$(packaging/ci/vendor-flags.sh $(CURDIR)/debian/deps)
+	  $$(sh packaging/ci/vendor-flags.sh $(CURDIR)/debian/deps)
 
 override_dh_auto_build:
 	cmake --build $(B)

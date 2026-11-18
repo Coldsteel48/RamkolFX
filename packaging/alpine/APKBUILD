@@ -23,7 +23,7 @@ build() {
 		-DRAMKOLFX_HRTF_DATA_DIR=/usr/share/ramkolfx/hrtf \
 		-DRAMKOLFX_BUILD_GUI=ON \
 		-DRAMKOLFX_BUILD_TESTS=OFF \
-		$(packaging/ci/vendor-flags.sh "$srcdir")
+		$(sh packaging/ci/vendor-flags.sh "$srcdir")
 	cmake --build build
 }
 

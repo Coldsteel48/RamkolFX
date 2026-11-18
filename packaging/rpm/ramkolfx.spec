@@ -41,7 +41,7 @@ cmake -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%{_prefix} \
   -DRAMKOLFX_HRTF_DATA_DIR=%{_datadir}/ramkolfx/hrtf \
   -DRAMKOLFX_BUILD_GUI=ON -DRAMKOLFX_BUILD_TESTS=OFF \
-  $(packaging/ci/vendor-flags.sh "$PWD/deps")
+  $(sh packaging/ci/vendor-flags.sh "$PWD/deps")
 cmake --build build
 
 %install
