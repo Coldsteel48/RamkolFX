@@ -9,11 +9,15 @@
 // EqPresetCatalog rules (built-in protection, naming, bindings) and
 // PresetStore/KeyValueFile persistence.
 
+#include <cstdio>
 #include <fstream>
 
+#include <unistd.h>
+
 #include "dsp/graphic_eq_filter.hpp"
-#include "key_value_file.hpp"
+#include "ramkolfx/key_value_file.hpp"
 #include "preset_store.hpp"
+#include "ramkolfx/atomic_file.hpp"
 #include "test_harness.hpp"
 
 using namespace ramkolfx;
@@ -170,6 +174,25 @@ TEST(PresetStoreMissingAndCorruptFiles)
     CHECK(Good.Bands[2].GainDb == 0.0f);
     CHECK(Good.Bands[3].GainDb == 5.0f);
     CHECK(Good.Bands[4].FilterType == EqFilterType::Peaking);
+}
+
+TEST(AtomicWriteCreatesMissingDirectories)
+{
+    // A config dir that was never created, or was deleted while running -
+    // two levels deep, like ~/.config/ramkolfx on a fresh account.
+    test::TempPath Root;
+    const std::string Parent = Root.Get() + "/config";
+    const std::string Dir = Parent + "/ramkolfx";
+    const std::string File = Dir + "/settings.conf";
+    CHECK(WriteFileAtomically(File, "a=1\n"));
+    const auto Loaded = KeyValueFile::Load(File);
+    REQUIRE(Loaded);
+    CHECK(Loaded->GetLong("a", 0) == 1);
+
+    std::remove(File.c_str());
+    rmdir(Dir.c_str());
+    rmdir(Parent.c_str());
+    rmdir(Root.Get().c_str());
 }
 
 TEST(KeyValueFileBasics)

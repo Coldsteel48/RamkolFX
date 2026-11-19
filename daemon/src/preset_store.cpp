@@ -12,11 +12,10 @@
 #include <cstdio>
 #include <sstream>
 
-#include <sys/stat.h>
-
 #include "dsp/graphic_eq_filter.hpp"
-#include "key_value_file.hpp"
-#include "xdg_paths.hpp"
+#include "ramkolfx/key_value_file.hpp"
+#include "ramkolfx/atomic_file.hpp"
+#include "ramkolfx/xdg_paths.hpp"
 
 namespace ramkolfx
 {
@@ -26,9 +25,7 @@ namespace
 
 std::string DefaultPresetsPath()
 {
-    std::string ConfigDir = XdgConfigHome() + "/ramkolfx";
-    mkdir(ConfigDir.c_str(), 0700);
-    return ConfigDir + "/presets.conf";
+    return RamkolfxConfigDir() + "/presets.conf";
 }
 
 std::string BandKey(const std::string& Prefix, size_t Index, const char* Field)
@@ -349,7 +346,7 @@ bool PresetStore::Save(const PresetFileContents& Contents) const
     }
     WriteBindings(Out, "device", Contents.DeviceBindings);
     WriteBindings(Out, "app", Contents.AppBindings);
-    return WriteFileAtomically(Path, Out.str());
+    return WriteFileAtomically(Path, Out.str(), {.LogPrefix = "[ramkolfxd]"});
 }
 
 } // namespace ramkolfx

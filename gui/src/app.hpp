@@ -28,19 +28,56 @@ public:
     // pixels) both tabs' content should target - see the comment at its
     // computation in main.cpp for why it has to come from the fixed OS
     // window size rather than be measured live via ImGui.
-    App(float InDpiScale, float InTargetContentWidth)
-        : DpiScale(InDpiScale), TargetContentWidth(InTargetContentWidth),
-          bMirrorModeEnabled(LoadGuiPreferences().bMirrorModeEnabled),
-          bAdvancedEqMode(LoadGuiPreferences().bAdvancedEqMode),
-          bAdvancedBassMode(LoadGuiPreferences().bAdvancedBassMode),
-          ActiveTabIndex(LoadGuiPreferences().ActiveTabIndex)
+    // Why minimize-to-tray can't work in this session, if it can't - the
+    // Settings popup then disables that toggle and says why. main.cpp
+    // works it out once and applies the same value to its own startup
+    // decision.
+    enum class MinimizeToTrayBlocker
     {
-    }
+        None,
+        // Not an X11 session: on native Wayland, xdg-shell never tells a
+        // client it was minimized (SDL only sees a focus loss).
+        NotX11,
+        // Built without Xlib's headers (see x11_window.hpp), so a minimized
+        // window can't be taken off the X11 taskbar.
+        BuiltWithoutX11,
+    };
+    App(float InDpiScale, float InTargetContentWidth, const GuiPreferences& InPreferences,
+        MinimizeToTrayBlocker InMinimizeToTrayBlocker);
 
+    // Daemon reconnects and status/device polling, then drawing the UI.
+    // Only called while the window is drawn: hidden in the tray or
+    // minimized, the GUI doesn't talk to the daemon at all.
     void Tick(float DeltaTimeSeconds);
+
+    // The window just went to the tray: stops anything audible that only
+    // the (now unreachable) UI could turn off - the test noise.
+    void OnWindowHidden();
+
+    // The window is about to be drawn again after a spell hidden or
+    // minimized, during which nothing was polled: makes the next Tick()
+    // refresh everything at once, instead of showing what was current
+    // when the window went away until each poll interval runs out.
+    void OnWindowShown();
+
+    // Window-to-tray behavior chosen in the Settings popup - main.cpp's
+    // event loop reads these to decide what close/minimize do, and to keep
+    // the tray icon up while either is in effect. Minimize-to-tray only
+    // counts where minimizing can be detected (see the constructor):
+    // the toggle is kept for X11 sessions, but means nothing on Wayland.
+    // The rule itself lives in GuiPreferences, shared with main.cpp.
+    bool ShouldMinimizeToTrayOnClose() const { return Preferences.bMinimizeToTrayOnClose; }
+    bool ShouldMinimizeToTrayOnMinimize() const;
+    // Either of the above in effect: the tray icon should be up.
+    bool WantsTrayIcon() const;
+
+    // Fed each frame from Tray::CanShowIcon(), so the Settings popup can
+    // warn when the tray options currently have nothing to minimize to.
+    void SetTrayAvailable(bool bAvailable) { bTrayAvailable = bAvailable; }
 
 private:
     void DrawUI();
+    void DrawSettingsPopup();
     void DrawSpatialTab();
     void DrawEqTab();
 
@@ -67,6 +104,12 @@ private:
     // same size - see the constructor comment and main.cpp's computation.
     float TargetContentWidth = 0.0f;
 
+    // Local-only UX state, never sent to the daemon - mirror mode, advanced
+    // EQ/bass editing, the active tab, the tray options (see
+    // GuiPreferences). The Settings popup and toggles edit it in place and
+    // PersistGuiPreferences() saves it.
+    GuiPreferences Preferences;
+
     ControlClient Client;
     Status LastStatus;
     std::vector<AudioDeviceInfo> Devices;
@@ -86,12 +129,6 @@ private:
     int PendingPositionIndex = -1;
     int PendingMirroredIndex = -1;
 
-    // Local-only UX toggle (never sent to the daemon): when on, dragging a
-    // left/right speaker also drags its mirrored counterpart - see
-    // DrawPositionDial's bMirrorEnabled. Persisted separately via
-    // gui_prefs.hpp since it never touches the daemon's SettingsStore.
-    bool bMirrorModeEnabled = false;
-
     // Local cache of the current 10-band HW EQ curve - fetched once on
     // connect/reconnect via RequestHwEqState() and kept in sync
     // optimistically as the user drags sliders (Status deliberately
@@ -101,11 +138,6 @@ private:
     // panel is disabled (see ImGui::BeginDisabled(!bConnected) in DrawUI)
     // until then anyway, so the placeholder is never actually shown.
     std::array<EqBand, MaxEqBands> HwEqBands{};
-
-    // Whether the EQ panel shows per-band frequency/Q/filter-type controls
-    // - local-only UX toggle, persisted via gui_prefs.hpp same as
-    // bMirrorModeEnabled.
-    bool bAdvancedEqMode = false;
 
     // Local cache of the current bass enhancer settings - fetched once on
     // connect/reconnect via RequestBassEnhancerState() and kept in sync
@@ -168,17 +200,14 @@ private:
     void RefreshContentStreams();
     void DrawAppPresetCard();
 
-    // Whether the bass enhancer panel shows Cutoff/Drive controls -
-    // local-only UX toggle, persisted via gui_prefs.hpp same as
-    // bAdvancedEqMode.
-    bool bAdvancedBassMode = false;
+    // Mirrors the XDG autostart entry (see autostart.hpp), which stays the
+    // source of truth - re-read whenever the Settings popup opens.
+    bool bAutostartEnabled = false;
+    bool bAutostartWriteFailed = false;
 
-    // Which top-level tab (0 = Spatial Audio & Speakers, 1 = Equalizer &
-    // Bass) is currently showing - only one tab's DrawXxxTab() runs per
-    // frame, so the AlwaysAutoResize window only ever measures whichever
-    // tab is active, same as before this tab split existed. Persisted via
-    // gui_prefs.hpp same as the other local-only UX toggles above.
-    int ActiveTabIndex = 0;
+    bool bTrayAvailable = false;
+    const MinimizeToTrayBlocker MinimizeBlocker;
+    const bool bMinimizeToTraySupported;
 
     // Accumulated while LastStatus.bTestNoiseEnabled is true (reset to 0
     // otherwise, so the animation phase always restarts cleanly); drives

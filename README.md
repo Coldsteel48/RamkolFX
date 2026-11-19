@@ -64,8 +64,8 @@ The recipes live in [`packaging/`](packaging) and are built by
 
 **Dependencies** — daemon: CMake >= 3.20, a C++20 compiler, Ninja,
 `pkg-config`, PipeWire dev headers (`libpipewire-0.3`), zlib dev headers,
-pthreads. GUI (optional, `-DRAMKOLFX_BUILD_GUI=ON`): SDL2 dev headers,
-OpenGL dev headers/libs. Network access is needed on first configure —
+pthreads. GUI (optional, `-DRAMKOLFX_BUILD_GUI=ON`): SDL2 >= 2.0.18 dev headers,
+OpenGL dev headers/libs, fontconfig, libdbus-1 and libX11 dev headers. Network access is needed on first configure —
 CMake `FetchContent` pulls libmysofa + KissFFT (daemon) and Dear ImGui
 (GUI), none of which are common distro packages.
 
@@ -105,8 +105,18 @@ claiming the virtual sink as default can't feed back into itself.
 State lives in `$XDG_CONFIG_HOME/ramkolfx` (default `~/.config/ramkolfx`):
 `settings.conf` (spatial mode per device, speaker layout, EQ curve, output
 device, HRTF choice), `presets.conf` (your EQ presets and their device/app
-bindings), `gui_prefs.conf` (GUI-only display choices), and `hrtf/` for
+bindings), `gui_prefs.conf` (GUI-only display and tray choices), and `hrtf/` for
 your own SOFA files. All are plain `key=value` text.
+
+The GUI's **Settings** button (top right) holds the window behavior options:
+start at login (writes `~/.config/autostart/ramkolfx.desktop`, which launches
+`ramkolfx-gui --minimized`), and minimize to the system tray on close and/or
+on minimize. The tray icon uses the freedesktop StatusNotifierItem protocol,
+so it shows on KDE Plasma, COSMIC, Xfce, waybar etc., and on GNOME with the
+AppIndicator extension; with no tray host around, close and minimize just
+behave normally. Native Wayland sessions never tell an app it was minimized,
+so minimize-to-tray only works on X11 — on Wayland use close-to-tray. Only one
+GUI runs at a time: launching it again brings up the existing window.
 
 ## Status
 

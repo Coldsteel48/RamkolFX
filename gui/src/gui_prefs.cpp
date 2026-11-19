@@ -8,13 +8,13 @@
 
 #include "gui_prefs.hpp"
 
-#include <cstdio>
-#include <cstdlib>
-#include <fstream>
+#include <optional>
+#include <sstream>
 #include <string>
-#include <unordered_map>
 
-#include <sys/stat.h>
+#include "ramkolfx/atomic_file.hpp"
+#include "ramkolfx/key_value_file.hpp"
+#include "ramkolfx/xdg_paths.hpp"
 
 namespace ramkolfx::gui
 {
@@ -27,22 +27,7 @@ namespace
 // this file's writes never race with or clobber the daemon's own.
 std::string GuiPrefsPath()
 {
-    std::string ConfigDir;
-    if (const char* XdgConfigHome = std::getenv("XDG_CONFIG_HOME"); XdgConfigHome && *XdgConfigHome)
-    {
-        ConfigDir = XdgConfigHome;
-    }
-    else if (const char* Home = std::getenv("HOME"); Home && *Home)
-    {
-        ConfigDir = std::string(Home) + "/.config";
-    }
-    else
-    {
-        ConfigDir = "/tmp";
-    }
-    ConfigDir += "/ramkolfx";
-    mkdir(ConfigDir.c_str(), 0700);
-    return ConfigDir + "/gui_prefs.conf";
+    return RamkolfxConfigDir() + "/gui_prefs.conf";
 }
 
 } // namespace
@@ -50,41 +35,18 @@ std::string GuiPrefsPath()
 GuiPreferences LoadGuiPreferences()
 {
     GuiPreferences Result;
-
-    std::ifstream File(GuiPrefsPath());
-    if (!File.is_open())
+    const std::optional<KeyValueFile> File = KeyValueFile::Load(GuiPrefsPath());
+    if (!File)
     {
         return Result;
     }
-
-    std::unordered_map<std::string, std::string> Fields;
-    std::string Line;
-    while (std::getline(File, Line))
-    {
-        const size_t Eq = Line.find('=');
-        if (Eq == std::string::npos)
-        {
-            continue;
-        }
-        Fields.emplace(Line.substr(0, Eq), Line.substr(Eq + 1));
-    }
-
-    if (const auto It = Fields.find("mirror_left_right"); It != Fields.end())
-    {
-        Result.bMirrorModeEnabled = It->second == "1";
-    }
-    if (const auto It = Fields.find("advanced_eq_mode"); It != Fields.end())
-    {
-        Result.bAdvancedEqMode = It->second == "1";
-    }
-    if (const auto It = Fields.find("advanced_bass_mode"); It != Fields.end())
-    {
-        Result.bAdvancedBassMode = It->second == "1";
-    }
-    if (const auto It = Fields.find("active_tab_index"); It != Fields.end())
-    {
-        Result.ActiveTabIndex = It->second == "1" ? 1 : 0;
-    }
+    Result.bMirrorModeEnabled = File->GetBool("mirror_left_right", Result.bMirrorModeEnabled);
+    Result.bAdvancedEqMode = File->GetBool("advanced_eq_mode", Result.bAdvancedEqMode);
+    Result.bAdvancedBassMode = File->GetBool("advanced_bass_mode", Result.bAdvancedBassMode);
+    Result.ActiveTabIndex = File->GetLong("active_tab_index", Result.ActiveTabIndex) == 1 ? 1 : 0;
+    Result.bMinimizeToTrayOnClose = File->GetBool("minimize_to_tray_on_close", Result.bMinimizeToTrayOnClose);
+    Result.bMinimizeToTrayOnMinimize =
+        File->GetBool("minimize_to_tray_on_minimize", Result.bMinimizeToTrayOnMinimize);
     return Result;
 }
 
@@ -92,26 +54,17 @@ void SaveGuiPreferences(const GuiPreferences& InPreferences)
 {
     const std::string Path = GuiPrefsPath();
 
-    // Write-to-temp-then-rename, same as SettingsStore::Save: rename() is
-    // atomic within a directory, so a crash mid-write can't corrupt the
-    // prefs file.
-    const std::string TempPath = Path + ".tmp";
-    std::ofstream File(TempPath, std::ios::trunc);
-    if (!File.is_open())
-    {
-        fprintf(stderr, "[ramkolfx-gui] failed to write preferences to %s\n", TempPath.c_str());
-        return;
-    }
-    File << "mirror_left_right=" << (InPreferences.bMirrorModeEnabled ? 1 : 0) << "\n";
-    File << "advanced_eq_mode=" << (InPreferences.bAdvancedEqMode ? 1 : 0) << "\n";
-    File << "advanced_bass_mode=" << (InPreferences.bAdvancedBassMode ? 1 : 0) << "\n";
-    File << "active_tab_index=" << InPreferences.ActiveTabIndex << "\n";
-    File.close();
-
-    if (std::rename(TempPath.c_str(), Path.c_str()) != 0)
-    {
-        fprintf(stderr, "[ramkolfx-gui] failed to save preferences to %s\n", Path.c_str());
-    }
+    std::ostringstream Out;
+    Out << "mirror_left_right=" << (InPreferences.bMirrorModeEnabled ? 1 : 0) << "\n";
+    Out << "advanced_eq_mode=" << (InPreferences.bAdvancedEqMode ? 1 : 0) << "\n";
+    Out << "advanced_bass_mode=" << (InPreferences.bAdvancedBassMode ? 1 : 0) << "\n";
+    Out << "active_tab_index=" << InPreferences.ActiveTabIndex << "\n";
+    Out << "minimize_to_tray_on_close=" << (InPreferences.bMinimizeToTrayOnClose ? 1 : 0) << "\n";
+    Out << "minimize_to_tray_on_minimize=" << (InPreferences.bMinimizeToTrayOnMinimize ? 1 : 0) << "\n";
+    // Not durable: this is saved from the render loop on every tab switch
+    // and toggle, where an fsync could stall a frame for a long time - and
+    // losing the last UI tweak to a power cut is harmless.
+    WriteFileAtomically(Path, Out.str(), {.LogPrefix = "[ramkolfx-gui]", .bDurable = false});
 }
 
 } // namespace ramkolfx::gui

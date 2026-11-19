@@ -21,6 +21,13 @@ ramkolfx_add_test(preset_store_tests ramkolfx_presets)
 ramkolfx_add_test(preset_auto_switch_tests ramkolfx_presets)
 ramkolfx_add_test(settings_store_tests ramkolfx_presets)
 
+# The GUI's autostart Exec= quoting. Pure string code with no GUI
+# dependencies, compiled straight in so it's tested even when the GUI
+# itself isn't built (RAMKOLFX_BUILD_GUI is off by default).
+ramkolfx_add_test(desktop_exec_tests)
+target_sources(desktop_exec_tests PRIVATE ${PROJECT_SOURCE_DIR}/gui/src/desktop_exec.cpp)
+target_include_directories(desktop_exec_tests PRIVATE ${PROJECT_SOURCE_DIR}/gui/src)
+
 # End-to-end client against a live daemon + PipeWire - not a ctest test and
 # not built by default; tests/e2e/run.sh builds and drives it.
 add_executable(ramkolfx_e2e EXCLUDE_FROM_ALL e2e/e2e_client.cpp)

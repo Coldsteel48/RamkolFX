@@ -12,12 +12,14 @@ namespace ramkolfx::gui
 {
 
 // Preferences that belong to this GUI instance alone and are never sent
-// to the daemon (see App::bMirrorModeEnabled) - kept in their own file
+// to the daemon (see App::Preferences) - kept in their own file
 // rather than folded into the daemon's SettingsStore so a headless
 // client or a second GUI instance isn't affected by one GUI's local UX
 // choices.
 struct GuiPreferences
 {
+    // Dragging a left/right speaker also drags its mirrored counterpart -
+    // see DrawPositionDial's bMirrorEnabled.
     bool bMirrorModeEnabled = false;
 
     // Whether the HW EQ panel shows per-band frequency/Q/filter-type
@@ -33,9 +35,33 @@ struct GuiPreferences
     bool bAdvancedBassMode = false;
 
     // Which of the two top-level tabs (0 = Spatial Audio & Speakers, 1 =
-    // Equalizer & Bass) was showing when the GUI last closed - purely a
-    // local UX convenience, never sent to the daemon.
+    // Equalizer & Bass) is showing (and was when the GUI last closed) -
+    // only one tab's DrawXxxTab() runs per frame, so the AlwaysAutoResize
+    // window only ever measures whichever tab is active. Purely a local UX
+    // convenience, never sent to the daemon.
     int ActiveTabIndex = 0;
+
+    // Window-close / window-minimize hide the window to the system tray
+    // instead of quitting / iconifying it - see main.cpp's event loop. Only
+    // honored while the tray icon is actually up (see Tray::IsIconShown),
+    // so a desktop without a tray never ends up with an unreachable window.
+    bool bMinimizeToTrayOnClose = false;
+    bool bMinimizeToTrayOnMinimize = false;
+
+    // The one copy of which tray options are in effect - App applies it
+    // to the live Settings toggles, main.cpp to the saved ones at startup,
+    // before an App exists. Minimize-to-tray only counts where it can work
+    // (an X11 session, in a build with X11 support - see
+    // App::MinimizeToTrayBlocker).
+    bool MinimizesToTrayOnMinimize(bool bMinimizeToTraySupported) const
+    {
+        return bMinimizeToTrayOnMinimize && bMinimizeToTraySupported;
+    }
+    // Either option in effect: the tray icon should be up.
+    bool WantsTrayIcon(bool bMinimizeToTraySupported) const
+    {
+        return bMinimizeToTrayOnClose || MinimizesToTrayOnMinimize(bMinimizeToTraySupported);
+    }
 };
 
 // Reads $XDG_CONFIG_HOME/ramkolfx/gui_prefs.conf (falling back to

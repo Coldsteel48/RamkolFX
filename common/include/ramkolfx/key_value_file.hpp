@@ -16,12 +16,12 @@ namespace ramkolfx
 {
 
 // Parsed contents of a simple `key=value`-per-line config file - the
-// format SettingsStore and PresetStore both persist in. Deliberately not
-// JSON: the daemon has no JSON dependency, and these files are small flat
-// sets of scalar fields. Every getter falls back to the caller's default
-// when a key is missing or unparseable, so an older version's file (or a
-// partially corrupt one) still loads field by field instead of failing
-// as a whole.
+// format the daemon's SettingsStore and PresetStore and the GUI's
+// gui_prefs.conf all persist in. Deliberately not JSON: nothing here has a
+// JSON dependency, and these files are small flat sets of scalar fields.
+// Every getter falls back to the caller's default when a key is missing
+// or unparseable, so an older version's file (or a partially corrupt one)
+// still loads field by field instead of failing as a whole.
 class KeyValueFile
 {
 public:
@@ -44,14 +44,5 @@ public:
 private:
     std::unordered_map<std::string, std::string> Fields;
 };
-
-// Writes Contents to Path via write-to-temp-then-rename: rename() is atomic
-// within the same directory, so a crash or power loss mid-write leaves
-// either the old file or the new one intact, never a half-written one. The
-// temp file is fsync'd before the rename (and the directory after it) -
-// without that, some filesystems can commit the rename before the data
-// and leave an empty file after a power cut.
-// Best-effort: logs to stderr and returns false on failure.
-bool WriteFileAtomically(const std::string& Path, const std::string& Contents);
 
 } // namespace ramkolfx

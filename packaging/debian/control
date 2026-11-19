@@ -3,8 +3,8 @@ Section: sound
 Priority: optional
 Maintainer: Roman Levin (Coldsteel48) <noreply@github.com>
 Build-Depends: debhelper-compat (= 13), cmake (>= 3.20), ninja-build, pkg-config,
- g++, libpipewire-0.3-dev, zlib1g-dev, libsdl2-dev, libgl-dev,
- libfontconfig-dev, curl, ca-certificates
+ g++, libpipewire-0.3-dev, zlib1g-dev, libsdl2-dev (>= 2.0.18), libgl-dev,
+ libfontconfig-dev, libdbus-1-dev, libx11-dev, curl, ca-certificates
 Standards-Version: 4.6.2
 Homepage: https://github.com/Coldsteel48/RamkolFX
 Rules-Requires-Root: no

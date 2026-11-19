@@ -17,7 +17,12 @@
 # into the app rather than linked as a versioned shared library.
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+# 2.0.18: SDL_GetTicks64 - see main.cpp. Checked here so an older SDL fails
+# at configure time with a clear message rather than mid-build. (Before
+# 2.0.22, SDL also queues an SDL_QUIT when the last window is closed;
+# main.cpp tells that apart from a real quit request, so close-to-tray
+# works there too.)
+pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2>=2.0.18)
 find_package(OpenGL REQUIRED)
 
 # Used at startup to look up already-installed system fonts per script
@@ -25,6 +30,29 @@ find_package(OpenGL REQUIRED)
 # whatever font the user's own desktop/locale already provides, instead
 # of bundling a font file and taking on its license terms - see main.cpp.
 pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+
+# System tray icon (freedesktop StatusNotifierItem) and single-instance
+# activation - see tray.hpp. libdbus is dual AFL-2.1/GPL-2.0+, and SDL
+# already talks to the session bus through it, so this adds no new
+# runtime dependency in practice.
+pkg_check_modules(DBUS REQUIRED IMPORTED_TARGET dbus-1)
+
+# FdWakeup's helper thread (fd_wakeup.hpp), and dlopen() for reusing SDL's
+# already-loaded libX11 (x11_window.hpp).
+find_package(Threads REQUIRED)
+
+# x11_window.cpp needs Xlib's headers (only the headers - libX11 itself is
+# reused from SDL at runtime). Without them it still builds, as a no-op,
+# but minimize-to-tray then can't take a minimized window off the X11
+# taskbar - so say so rather than ship that silently.
+include(CheckIncludeFileCXX)
+set(CMAKE_REQUIRED_INCLUDES ${SDL2_INCLUDE_DIRS})
+check_include_file_cxx(X11/Xlib.h RAMKOLFX_HAVE_XLIB_H)
+unset(CMAKE_REQUIRED_INCLUDES)
+if(NOT RAMKOLFX_HAVE_XLIB_H)
+    message(WARNING "X11/Xlib.h not found (install the libX11 development headers): "
+                    "the GUI builds, but minimize-to-tray won't work on X11.")
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -51,11 +79,16 @@ target_link_libraries(imgui PUBLIC PkgConfig::SDL2 OpenGL::GL)
 add_executable(ramkolfx-gui
     src/main.cpp
     src/app.cpp
+    src/autostart.cpp
     src/control_client.cpp
+    src/desktop_exec.cpp
+    src/fd_wakeup.cpp
     src/gui_prefs.cpp
     src/position_dial.cpp
     src/renderer_opengl3.cpp
+    src/tray.cpp
     src/ui_widgets.cpp
+    src/x11_window.cpp
 )
 
 target_link_libraries(ramkolfx-gui PRIVATE
@@ -64,6 +97,9 @@ target_link_libraries(ramkolfx-gui PRIVATE
     PkgConfig::SDL2
     OpenGL::GL
     PkgConfig::FONTCONFIG
+    PkgConfig::DBUS
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
 )
 
 install(TARGETS ramkolfx-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ramkolfx)

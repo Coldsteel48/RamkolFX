@@ -37,7 +37,7 @@
 #include "hardware_output.hpp"
 #include "single_instance_lock.hpp"
 #include "virtual_sink.hpp"
-#include "xdg_paths.hpp"
+#include "ramkolfx/xdg_paths.hpp"
 
 namespace ramkolfx
 {
@@ -153,7 +153,7 @@ std::vector<HrtfCatalogEntry> AudioEngine::BuildHrtfCatalog()
 
 std::vector<std::string> AudioEngine::ResolveUserHrtfDirectories()
 {
-    std::vector<std::string> Directories = {XdgConfigHome() + "/ramkolfx/hrtf"};
+    std::vector<std::string> Directories = {RamkolfxConfigDir() + "/hrtf"};
 
     // RAMKOLFX_HRTF_DIR adds a second directory rather than replacing the
     // default one, so files dropped into the normal XDG location are never
@@ -174,10 +174,19 @@ std::vector<std::string> AudioEngine::ResolveUserHrtfDirectories()
         }
     }
 
+    // The default one owner-only, like every directory RamkolFX creates
+    // under the config home: this commonly runs before anything has been
+    // saved, so it's what creates ~/.config/ramkolfx (and even ~/.config)
+    // on a fresh account - std::filesystem::create_directories would leave
+    // those umask-default (typically world-readable). The override can be
+    // anywhere, perhaps meant to be shared with other users or services,
+    // so it and its missing parents get the umask's usual modes instead.
+    // Existing directories are left as they are either way.
+    CreateDirectories(Directories[0]);
     std::error_code Ignored;
-    for (const std::string& Directory : Directories)
+    for (size_t i = 1; i < Directories.size(); ++i)
     {
-        std::filesystem::create_directories(Directory, Ignored);
+        std::filesystem::create_directories(Directories[i], Ignored);
     }
     return Directories;
 }

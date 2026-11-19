@@ -24,7 +24,8 @@ main (daemon) -> AudioEngine -> {
 
 main (gui) -> IRenderer + App -> ControlClient (talks to AudioEngine's ControlServer
   over the Unix socket using protocol.hpp), rendering via DrawPositionDial and
-  the ui_widgets.hpp helpers
+  the ui_widgets.hpp helpers; main also owns a Tray (D-Bus tray icon +
+  single-instance activation)
 ```
 
 Signal path per block (`AudioEngine::HandleVirtualSinkAudio`): captured 7.1 ->
@@ -43,6 +44,10 @@ Shared code linked into both `ramkolfxd` (daemon) and `ramkolfx-gui`.
 - **Responsibility:** Defines the daemon's binary control-socket wire protocol — a fixed 3-byte header (opcode + big-endian u16 length), request `Command`s, response `Status`, and free encode/decode functions for each message type. No class/object state; purely protocol structs (`Opcode`, `SpatialMode`, `MessageHeader`, `Command`, `Status`, `AudioDeviceInfo`, `EqBand`/`EqFilterType`, `BassEnhancerSettings`, `EqPresetInfo`, `EqPresetSource`, `ContentStreamInfo`) plus `Encode*`/`Decode*` free functions. `Status` carries the active EQ preset and why it's active (manual / device / app), the current device's bound preset, and `EqRevision` / `PresetCatalogRevision` counters that tell a client to re-fetch the curve or the preset list after a change made elsewhere. List responses share one encode/decode template.
 - **Key interface:** `TryReadHeader`, `DecodeCommand`, `DecodeStatusResponse`, `Decode*Response` / `Encode*Response` per response type (device list, HRTF catalog, HW EQ state, bass enhancer state, EQ preset catalog, content streams), the `Encode*Request` family, `DefaultControlSocketPath`, and two name validators shared by daemon and GUI: `NormalizePresetName` (trim + length + no control characters) and `IsValidTargetName` (app/device names that end up in config files).
 - **Collaborators:** Used by `ControlServer`/`AudioEngine` (daemon side, decodes requests + encodes responses) and `ControlClient` (GUI side, encodes requests + decodes responses).
+
+### `XdgConfigHome` / `RamkolfxConfigDir` (free functions)
+- **File:** `common/include/ramkolfx/xdg_paths.hpp`
+- **Responsibility:** `XdgConfigHome` is `$XDG_CONFIG_HOME`, else `~/.config`, else `/tmp`, which is the base the GUI's autostart entry builds on. `RamkolfxConfigDir` is `<that>/ramkolfx`. It only returns the path and doesn't create anything: `WriteFileAtomically` creates the directory (owner-only, parents included) when a write finds it missing, so code writing there must go through it rather than a plain `open`/`ofstream`. `CreateDirectories` is the owner-only `mkdir -p` it uses, for any other directory RamkolFX creates under the config home. The daemon's `settings.conf` and `presets.conf` and the GUI's `gui_prefs.conf` all live there, each under its own filename.
 
 ### `RingBuffer<T>`
 - **File:** `common/include/ramkolfx/ring_buffer.hpp`
@@ -76,15 +81,19 @@ Shared code linked into both `ramkolfxd` (daemon) and `ramkolfx-gui`.
 
 ### `SettingsStore` (+ `PersistedSettings`)
 - **File:** `daemon/src/settings_store.hpp` (+ `.cpp`)
-- **Responsibility:** Loads/saves `PersistedSettings` (spatial mode, per-speaker layout, near-field toggle, output device, active HRTF display name, HW EQ curve, bass enhancer, active preset name/modified flag, and the spatial mode remembered per output device) as `settings.conf` under `$XDG_CONFIG_HOME/ramkolfx`, via `KeyValueFile` / `WriteFileAtomically`. Also hosts `ApplyRememberedSpatialMode`, the pure per-device spatial-mode rule.
+- **Responsibility:** Loads/saves `PersistedSettings` (spatial mode, per-speaker layout, near-field toggle, output device, active HRTF display name, HW EQ curve, bass enhancer, active preset name/modified flag, and the spatial mode remembered per output device) as `settings.conf` under `$XDG_CONFIG_HOME/ramkolfx`, via `KeyValueFile` and `WriteFileAtomically` (`common/include/ramkolfx/atomic_file.hpp`). Also hosts `ApplyRememberedSpatialMode`, the pure per-device spatial-mode rule.
 - **Key interface:** `Load`, `Save`, `ApplyRememberedSpatialMode` (free function).
 - **Collaborators:** Owned by `AudioEngine`, called on startup (`Run`) and from `PersistCurrentSettings`, which the auto-switch timer runs at most once per tick when state is dirty.
 
-### `KeyValueFile` / `WriteFileAtomically`
-- **File:** `daemon/src/key_value_file.hpp` (+ `.cpp`)
-- **Responsibility:** The flat `key=value`-per-line format both config files use. Getters fall back to the caller's default for missing or unparseable keys, so older or partly corrupt files still load field by field; `GetCount` clamps indexed-entry counts to the file's size. `WriteFileAtomically` writes a temp file, fsyncs it, renames it over the target and fsyncs the directory.
-- **Key interface:** `Load`, `GetString`/`GetLong`/`GetFloat`/`GetBool`/`GetCount`, `WriteFileAtomically`.
-- **Collaborators:** Used by `SettingsStore` and `PresetStore`.
+### `KeyValueFile`
+- **File:** `common/include/ramkolfx/key_value_file.hpp` (+ `common/src/key_value_file.cpp`)
+- **Responsibility:** The flat `key=value`-per-line format the daemon's config files and the GUI's `gui_prefs.conf` use. Getters fall back to the caller's default for missing or unparseable keys, so older or partly corrupt files still load field by field; `GetCount` clamps indexed-entry counts to the file's size.
+- **Key interface:** `Load`, `GetString`/`GetLong`/`GetFloat`/`GetBool`/`GetCount`.
+
+### `WriteFileAtomically`
+- **File:** `common/include/ramkolfx/atomic_file.hpp` (+ `common/src/atomic_file.cpp`)
+- **Responsibility:** Crash-safe file writes shared by the daemon (`SettingsStore`, `PresetStore`) and the GUI (`gui_prefs.conf`, the autostart entry): writes a temp file, fsyncs it, renames it over the target and fsyncs the directory; removes the temp file on failure. `AtomicWriteOptions` sets the log prefix and can skip the fsyncs (`bDurable = false`) for files that are cheap to lose and written from the render loop (`gui_prefs.conf`, the autostart entry).
+- **Collaborators:** Used by `SettingsStore` and `PresetStore` (durable), and by the GUI's `SaveGuiPreferences` (`gui/src/gui_prefs.cpp`) and `SetAutostartEnabled` (`gui/src/autostart.cpp`), both with `bDurable = false`.
 
 ### `PresetStore` / `EqPresetCatalog` (+ `EqPreset`)
 - **File:** `daemon/src/preset_store.hpp` (+ `.cpp`)
@@ -248,8 +257,8 @@ Widely-shared discriminator (`SofaFile` / `SyntheticSphericalHead`) across `Bina
 ### `App`
 - **File:** `gui/src/app.hpp` (+ `.cpp`)
 - **Responsibility:** Owns the control connection (`ControlClient`) and draws the entire ImGui UI each frame across two tabs — "Spatial Audio & Speakers" (mode pill, output device, speaker dial, mute/solo, test noise) and "Equalizer & Bass" (bass enhancer, EQ preset card with the per-device binding toggle, app preset card, 10-band EQ). Handles status polling, device/HRTF-catalog polling, throttled position-drag sending, mirror-mode UX and reconnects; re-fetches the EQ curve or the preset catalog when `Status::EqRevision` / `PresetCatalogRevision` change, and polls content streams while the Equalizer tab is showing.
-- **Key interface:** `Tick` (private `DrawUI`, `DrawSpatialTab`, `DrawEqTab`, `DrawPresetControls`, `DrawAppPresetCard`, `Apply`, `RefreshEqState`, `RefreshPresetCatalog`, `RefreshContentStreams`, `MarkDisconnected`).
-- **Collaborators:** Owns `ControlClient Client`; holds `Status LastStatus`, devices, HRTF catalog, EQ bands, bass settings, the preset catalog and content streams from `protocol.hpp`; draws with `DrawPositionDial` and the `ui_widgets.hpp` helpers; persists local UX choices via `gui_prefs.hpp`. Instantiated by `gui/src/main.cpp`.
+- **Key interface:** `Tick` (polling/reconnects + draw; only called while the window is drawn - hidden or minimized, the GUI doesn't talk to the daemon at all), `OnWindowHidden` (stops test noise when the window goes to the tray), `OnWindowShown` (makes the next `Tick` refresh everything at once after an idle spell), `ShouldMinimizeToTrayOnClose` / `ShouldMinimizeToTrayOnMinimize`, `SetTrayAvailable` (why minimize-to-tray can't work, if it can't - not an X11 session, or built without X11 support - is a constructor argument, `MinimizeToTrayBlocker`, computed once in `main.cpp`; private `DrawUI`, `DrawSettingsPopup`, `DrawSpatialTab`, `DrawEqTab`, `DrawPresetControls`, `DrawAppPresetCard`, `Apply`, `RefreshEqState`, `RefreshPresetCatalog`, `RefreshContentStreams`, `MarkDisconnected`). The header's Settings popup holds the start-at-login and minimize-to-tray toggles.
+- **Collaborators:** Owns `ControlClient Client`; holds `Status LastStatus`, devices, HRTF catalog, EQ bands, bass settings, the preset catalog and content streams from `protocol.hpp`; draws with `DrawPositionDial` and the `ui_widgets.hpp` helpers; keeps local UX choices in one `GuiPreferences Preferences` member, persisted via `gui_prefs.hpp`. Instantiated by `gui/src/main.cpp`.
 
 ### `ControlClient`
 - **File:** `gui/src/control_client.hpp` (+ `.cpp`)
@@ -259,8 +268,27 @@ Widely-shared discriminator (`SofaFile` / `SyntheticSphericalHead`) across `Bina
 
 ### `ui_widgets.hpp` helpers / `palette` / `GuiPreferences`
 - **Files:** `gui/src/ui_widgets.hpp` (+ `.cpp`), `gui/src/ui_palette.hpp`, `gui/src/gui_prefs.hpp` (+ `.cpp`)
-- **Responsibility:** Custom-drawn widgets as stateless free functions with a DPI `Scale` parameter (`DrawSegmentedPill`, `DrawToggleSwitch`, `DrawEqBandBar`, …); the shared color/radius palette in both `ImU32` and `ImVec4` forms; and GUI-local preferences (mirror mode, advanced EQ/bass editing, last tab) in `gui_prefs.conf`, never sent to the daemon.
+- **Responsibility:** Custom-drawn widgets as stateless free functions with a DPI `Scale` parameter (`DrawSegmentedPill`, `DrawToggleSwitch`, `DrawEqBandBar`, …); the shared color/radius palette in both `ImU32` and `ImVec4` forms; and GUI-local preferences (mirror mode, advanced EQ/bass editing, last tab, minimize-to-tray on close/minimize) in `gui_prefs.conf`, never sent to the daemon. `GuiPreferences::WantsTrayIcon` / `MinimizesToTrayOnMinimize` hold the one copy of the tray rule (minimize-to-tray only counts where it can work: an X11 session, in a build with X11 support), used by `App` and by `main.cpp`'s hidden `--minimized` start.
 - **Collaborators:** Used by `App` and `DrawPositionDial`; the palette also by `gui/src/main.cpp`'s style setup.
+
+### `Tray`
+- **File:** `gui/src/tray.hpp` (+ `.cpp`)
+- **Responsibility:** The GUI's D-Bus session-bus presence, over libdbus on a private connection: a freedesktop StatusNotifierItem tray icon with a com.canonical.dbusmenu context menu (Show/Hide, Quit), and single-instance activation via the well-known name `io.github.Coldsteel48.RamkolFX`. Tracks whether a `org.kde.StatusNotifierWatcher` is on the bus and hasn't kept rejecting the icon (`CanShowIcon`, for the Settings warning; a rejected registration is retried with a growing delay, and only a few failures in a row count as unusable) and whether it acknowledged the icon's registration (`IsIconShown`, the only condition under which the window may be hidden), and re-registers the icon whenever a watcher (re)appears. A `--minimized` second instance exits quietly instead of activating the running one; one whose Activate call isn't answered in time also exits (the running instance still owns the name and handles the queued call once it catches up), so there are never two GUIs. The icon image is the in-app logo mark, rendered procedurally. Apart from the startup `ClaimSingleInstance`, never blocks on the bus: every call is sent asynchronously and its reply matched by serial, each registration step (claiming the item's bus name, `RegisterStatusNotifierItem`) has a 5 s deadline after which it counts as failed (libdbus has no timeouts without a main loop integration, so `Dispatch` enforces them), and a lost connection is re-established with a growing delay, re-claiming the single-instance name and re-registering the icon. `Dispatch` is pumped from the main loop and accumulates `Requests` (toggle window, show window, hide window, quit, plus the xdg-activation token that came with them) for main to act on.
+- **Key interface:** `ClaimSingleInstance`, `SetIconVisible`, `SetWindowShown`, `CanShowIcon`, `IsIconShown`, `Dispatch`, `GetPollFd`, `HasPendingOutput`, `GetTimeoutMs`, `TakeRequests`.
+- **Collaborators:** Owned by `gui/src/main.cpp`, which hides/shows the SDL window in response (and parks it minimized in the taskbar if the icon disappears while hidden, moving it back once the icon returns) and feeds `CanShowIcon()` to `App`. An `FdWakeup` turns bus traffic on `GetPollFd()` into SDL events: while the window is hidden or minimized the loop sleeps on them instead of polling, and while it draws `Dispatch(bSocketReady)` skips the socket I/O on frames the waker didn't fire (falling back to I/O every frame when there's no working waker); while `HasPendingOutput()` it also wakes once the socket can take the rest of a queued reply. On exit, the last messages get a 250 ms budget to go out rather than an unbounded flush.
+
+### `FdWakeup`
+- **File:** `gui/src/fd_wakeup.hpp` (+ `.cpp`)
+- **Responsibility:** Lets `SDL_WaitEvent` wake on a file descriptor SDL doesn't know about (the tray's D-Bus socket): a helper thread `poll()`s its own duplicate of the fd (so the owner closing the original can't leave it watching a reused fd number) and pushes one SDL event per `Arm()` when it turns readable (or writable, when armed with `bWantWritable`), so the hidden-in-tray loop sleeps instead of polling on a timer and the drawing loop skips the socket when nothing happened. Re-arming with different events interrupts a `poll()` already running. The thread starts with all signals blocked, so SIGTERM/SIGINT always reach the main thread's wait; `IsWatching()` reports whether it's still running (one that gave up pushes a last event so its owner switches to servicing the fd unprompted).
+
+### `SetX11WindowSkipTaskbar` / `DeiconifyX11Window` (free functions)
+- **File:** `gui/src/x11_window.hpp` (+ `.cpp`)
+- **Responsibility:** The two X11 window operations SDL2's API lacks, both done as EWMH requests to the window manager so SDL hears of the result through its usual X events and its window flags (`MINIMIZED` in particular, which Dear ImGui's SDL backend also reads) never go stale. `SetX11WindowSkipTaskbar` adds/removes `_NET_WM_STATE_SKIP_TASKBAR` / `_SKIP_PAGER` (plus KWin's `_KDE_NET_WM_STATE_SKIP_SWITCHER`): minimize-to-tray leaves a minimized window minimized and only takes it off the taskbar and switcher, since `SDL_HideWindow` can't remove an already-unmapped (iconic) window from the taskbar. `DeiconifyX11Window` un-minimizes a window without un-maximizing it (SDL2's `SDL_RestoreWindow` does both on X11): it maps the window and sends `_NET_ACTIVE_WINDOW`. Both reuse the libX11 SDL already loaded via `dlopen(RTLD_NOLOAD)`, resolved once, so they add no dependency.
+
+### `IsAutostartEnabled` / `SetAutostartEnabled` / `AutostartEntryPath` (free functions)
+- **File:** `gui/src/autostart.hpp` (+ `.cpp`)
+- **Responsibility:** Start-at-login via an XDG autostart entry (`$XDG_CONFIG_HOME/autostart/ramkolfx.desktop`, launching `ramkolfx-gui --minimized` by absolute path, since the login session's `$PATH` may differ from the GUI's). The entry file is the source of truth, so changes made from the desktop's own autostart settings show up in the GUI. Written without fsync, since it's toggled from the render thread and cheap to recreate.
+- **Collaborators:** Called from `App::DrawSettingsPopup`. Quotes and reads back the `Exec=` line with `QuoteDesktopExecArgument` / `DesktopExecProgram` (`gui/src/desktop_exec.hpp`), dependency-free so `tests/desktop_exec_tests.cpp` checks they stay each other's inverse even when the GUI isn't built.
 
 ### `IRenderer` (abstract interface) + OpenGL3 implementation
 - **File:** `gui/src/renderer.hpp` (+ `renderer_opengl3.cpp`)
@@ -285,4 +313,4 @@ Widely-shared discriminator (`SofaFile` / `SyntheticSphericalHead`) across `Bina
 ## Top-level `main.cpp` wiring
 
 - **`daemon/src/main.cpp`:** trivial — constructs `ramkolfx::AudioEngine` and calls `Run()`, returning its exit code. All daemon composition happens inside `AudioEngine`.
-- **`gui/src/main.cpp`:** initializes SDL + ImGui, resolves a DPI scale (`ResolveDpiScale`, with `RAMKOLFX_GUI_SCALE` env override), creates an `IRenderer` via `CreateOpenGL3Renderer()`, creates the SDL window sized/scaled accordingly, constructs `ramkolfx::gui::App`, then runs the SDL event/render loop calling `Renderer->NewFrame()` → `ImGui::NewFrame()` → `App.Tick(DeltaTime)` → `ImGui::Render()` → `Renderer->RenderFrame(...)` each frame.
+- **`gui/src/main.cpp`:** parses `--minimized` / `--version`, claims single-instance via `Tray` (a second launch just shows the running window and exits), initializes SDL + ImGui, resolves a DPI scale (`ResolveDpiScale`, with `RAMKOLFX_GUI_SCALE` env override), creates an `IRenderer` via `CreateOpenGL3Renderer()`, creates the SDL window sized/scaled accordingly, constructs `ramkolfx::gui::App`, then runs the SDL event/render loop calling `Renderer->NewFrame()` → `ImGui::NewFrame()` → `App.Tick(DeltaTime)` → `ImGui::Render()` → `Renderer->RenderFrame(...)` each frame. Window close/minimize hide to the tray when `App`'s settings ask for it and the icon is up (a close while a tray host exists but the icon is briefly unregistered minimizes instead of quitting - bounded, since a host that never answers fails each registration at its deadline). Whenever the window should be in the tray but there's no icon - that close, a minimize-to-tray, a `--minimized` start whose tray wait ran out, the icon vanishing while the window is in it - it waits minimized in the taskbar and moves into the tray once the icon is up, unless the user brings it back first. The tray menu's Show/Hide entry follows whether the window is on screen (a window minimized to the taskbar gets Show). On Wayland, showing an unfocused window remaps it only when SDL3 can hand over an xdg-activation token; otherwise it's raised in place. While hidden or minimized, the loop neither renders nor polls the daemon: it sleeps in `SDL_WaitEventTimeout`, woken by SDL events, tray bus traffic (`FdWakeup`) and `Tray::GetTimeoutMs`, then calls `App::OnWindowShown` before the first frame back.

@@ -17,8 +17,10 @@ BuildRequires:  gcc-c++
 BuildRequires:  cmake >= 3.20
 BuildRequires:  ninja-build
 BuildRequires:  pkgconfig(libpipewire-0.3)
-BuildRequires:  pkgconfig(sdl2)
+BuildRequires:  pkgconfig(sdl2) >= 2.0.18
+BuildRequires:  pkgconfig(x11)
 BuildRequires:  pkgconfig(fontconfig)
+BuildRequires:  pkgconfig(dbus-1)
 BuildRequires:  pkgconfig(gl)
 BuildRequires:  zlib-devel
 Recommends:     pipewire

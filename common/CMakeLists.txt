@@ -7,6 +7,8 @@
 # terms of the Contributor License Agreement (see CLA.md).
 
 add_library(ramkolfx_common STATIC
+    src/atomic_file.cpp
+    src/key_value_file.cpp
     src/protocol.cpp
 )
 

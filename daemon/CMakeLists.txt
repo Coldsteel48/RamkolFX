@@ -85,7 +85,6 @@ configure_file(
 # depend on: no PipeWire, no DSP pipeline, so the tests (tests/) can link
 # exactly the same objects the daemon runs.
 add_library(ramkolfx_presets STATIC
-    src/key_value_file.cpp
     src/preset_store.cpp
     src/preset_auto_switch.cpp
     src/settings_store.cpp

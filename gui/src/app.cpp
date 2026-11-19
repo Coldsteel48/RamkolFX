@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <string>
 
+#include "autostart.hpp"
 #include "imgui.h"
 #include "position_dial.hpp"
 #include "ramkolfx/version.hpp"
@@ -40,6 +41,14 @@ constexpr float PanelPadding = 16.0f; // outer panel CardScope's own padding
 constexpr float NestedCardPadding = 14.0f;
 constexpr float ColumnGap = 22.0f; // gap between the spatial tab's two columns
 } // namespace
+
+App::App(float InDpiScale, float InTargetContentWidth, const GuiPreferences& InPreferences,
+         MinimizeToTrayBlocker InMinimizeToTrayBlocker)
+    : DpiScale(InDpiScale), TargetContentWidth(InTargetContentWidth), Preferences(InPreferences),
+      MinimizeBlocker(InMinimizeToTrayBlocker),
+      bMinimizeToTraySupported(InMinimizeToTrayBlocker == MinimizeToTrayBlocker::None)
+{
+}
 
 void App::Tick(float DeltaTimeSeconds)
 {
@@ -90,7 +99,7 @@ void App::Tick(float DeltaTimeSeconds)
         if (StatusPollTimerSeconds <= 0.0f)
         {
             StatusPollTimerSeconds = StatusPollIntervalSeconds;
-            if (Apply(Client.RequestStatus()) && ActiveTabIndex == 1)
+            if (Apply(Client.RequestStatus()) && Preferences.ActiveTabIndex == 1)
             {
                 RefreshContentStreams(); // only the Equalizer tab shows them
             }
@@ -136,6 +145,23 @@ void App::Tick(float DeltaTimeSeconds)
     }
 
     DrawUI();
+}
+
+void App::OnWindowHidden()
+{
+    // Nothing on screen could turn it off any more - a test signal left
+    // playing from the tray would just be noise with no visible source.
+    if (bConnected && LastStatus.bTestNoiseEnabled)
+    {
+        Apply(Client.SetTestNoiseEnabled(false));
+    }
+}
+
+void App::OnWindowShown()
+{
+    ReconnectTimerSeconds = 0.0f;
+    StatusPollTimerSeconds = 0.0f;
+    DevicePollTimerSeconds = 0.0f;
 }
 
 bool App::Apply(std::optional<Status> Result)
@@ -184,10 +210,17 @@ bool App::RefreshEqState()
 
 void App::PersistGuiPreferences() const
 {
-    SaveGuiPreferences({.bMirrorModeEnabled = bMirrorModeEnabled,
-                         .bAdvancedEqMode = bAdvancedEqMode,
-                         .bAdvancedBassMode = bAdvancedBassMode,
-                         .ActiveTabIndex = ActiveTabIndex});
+    SaveGuiPreferences(Preferences);
+}
+
+bool App::ShouldMinimizeToTrayOnMinimize() const
+{
+    return Preferences.MinimizesToTrayOnMinimize(bMinimizeToTraySupported);
+}
+
+bool App::WantsTrayIcon() const
+{
+    return Preferences.WantsTrayIcon(bMinimizeToTraySupported);
 }
 
 void App::DrawUI()
@@ -236,6 +269,21 @@ void App::DrawUI()
         {
             ImGui::TextColored(palette::WarningV4, "Daemon not running - retrying...");
         }
+
+        // Right edge lines up with the tab bar / panel below (both
+        // TargetContentWidth wide from the window's content start).
+        const char* SettingsLabel = "Settings";
+        const float SettingsWidth = ImGui::CalcTextSize(SettingsLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SameLine();
+        RightAlignCursor(ImGui::GetWindowPos().x + ImGui::GetStyle().WindowPadding.x, TargetContentWidth,
+                         SettingsWidth);
+        if (ImGui::Button(SettingsLabel))
+        {
+            bAutostartEnabled = IsAutostartEnabled(); // may have been changed outside the app
+            bAutostartWriteFailed = false;
+            ImGui::OpenPopup("Settings");
+        }
+        DrawSettingsPopup();
     }
 
     ImGui::Spacing();
@@ -250,7 +298,7 @@ void App::DrawUI()
     // bar's edges line up with the panel's, rather than tracking the
     // window's live (possibly stale) content region.
     static const char* const TabLabels[] = {"Spatial Audio & Speakers", "Equalizer & Bass"};
-    if (DrawSegmentedPill("tab_nav", TabLabels, IM_ARRAYSIZE(TabLabels), &ActiveTabIndex, DpiScale,
+    if (DrawSegmentedPill("tab_nav", TabLabels, IM_ARRAYSIZE(TabLabels), &Preferences.ActiveTabIndex, DpiScale,
                           TargetContentWidth))
     {
         PersistGuiPreferences();
@@ -262,7 +310,7 @@ void App::DrawUI()
         CardScope Panel(palette::PanelBg, palette::RadiusTopCard * DpiScale,
                         ImVec2(PanelPadding * DpiScale, PanelPadding * DpiScale));
         ImGui::BeginDisabled(!bConnected);
-        if (ActiveTabIndex == 0)
+        if (Preferences.ActiveTabIndex == 0)
         {
             DrawSpatialTab();
         }
@@ -281,6 +329,100 @@ void App::DrawUI()
     ImGui::Spacing();
 
     ImGui::End();
+}
+
+void App::DrawSettingsPopup()
+{
+    if (!ImGui::BeginPopupModal("Settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        return;
+    }
+
+    // One label + right-aligned toggle per row, all toggles on one edge.
+    const float RowWidth = 380.0f * DpiScale;
+    const auto ToggleRow = [&](const char* Id, const char* Label, bool* Value, const char* Tooltip) -> bool
+    {
+        const float RowStartX = ImGui::GetCursorScreenPos().x;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(Label);
+        ImGui::SameLine();
+        RightAlignCursor(RowStartX, RowWidth, ToggleTrackWidth * DpiScale);
+        const bool bChanged = DrawToggleSwitch(Id, Value, DpiScale);
+        // AllowWhenDisabled: a greyed-out row is exactly when the user most
+        // wants to know what it does.
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip("%s", Tooltip);
+        }
+        return bChanged;
+    };
+
+    ImGui::TextColored(palette::TextMutedV4, "Startup");
+    if (ToggleRow("autostart", "Start RamkolFX when I log in", &bAutostartEnabled,
+                  "Launches RamkolFX in the background at login: hidden in the system tray if a tray "
+                  "option below is on, otherwise minimized.\nThis controls the RamkolFX window only - the "
+                  "audio daemon runs as its own systemd user service (ramkolfxd)."))
+    {
+        bAutostartWriteFailed = !SetAutostartEnabled(bAutostartEnabled);
+        if (bAutostartWriteFailed)
+        {
+            bAutostartEnabled = !bAutostartEnabled; // reflect what's actually on disk
+        }
+    }
+    if (bAutostartWriteFailed)
+    {
+        // The real path ($XDG_CONFIG_HOME may point anywhere), wrapped like
+        // the tray warnings below since it can be long.
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + RowWidth);
+        ImGui::TextColored(palette::WarningV4, "Couldn't update %s (see terminal output)", AutostartEntryPath().c_str());
+        ImGui::PopTextWrapPos();
+    }
+
+    ImGui::Spacing();
+    ImGui::TextColored(palette::TextMutedV4, "System tray");
+    bool bTrayChanged = false;
+    bTrayChanged |= ToggleRow("tray_on_close", "Minimize to tray when closed", &Preferences.bMinimizeToTrayOnClose,
+                              "The window's close button hides RamkolFX to the system tray instead of "
+                              "quitting.\nQuit from the tray icon's menu.");
+    // Kept (and still saved) while disabled, so an X11 session picks it up.
+    ImGui::BeginDisabled(!bMinimizeToTraySupported);
+    bTrayChanged |= ToggleRow("tray_on_minimize", "Minimize to tray when minimized", &Preferences.bMinimizeToTrayOnMinimize,
+                              "Minimizing hides RamkolFX to the system tray instead of the taskbar.");
+    ImGui::EndDisabled();
+    if (bTrayChanged)
+    {
+        PersistGuiPreferences();
+    }
+
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + RowWidth);
+    if (MinimizeBlocker == MinimizeToTrayBlocker::NotX11)
+    {
+        ImGui::TextColored(palette::TextMutedV4,
+                           "Wayland doesn't tell apps when they're minimized, so minimize-to-tray only works in "
+                           "X11 sessions. Use the close button instead, or click the tray icon to hide the window.");
+    }
+    else if (MinimizeBlocker == MinimizeToTrayBlocker::BuiltWithoutX11)
+    {
+        ImGui::TextColored(palette::TextMutedV4,
+                           "This build of RamkolFX lacks X11 support (it was built without the libX11 headers), "
+                           "so minimize-to-tray can't work. Use the close button instead, or click the tray icon "
+                           "to hide the window.");
+    }
+    if (!bTrayAvailable && WantsTrayIcon())
+    {
+        ImGui::TextColored(palette::WarningV4,
+                           "No usable system tray found - close and minimize behave normally until one is "
+                           "available (on GNOME, install the AppIndicator extension).");
+    }
+    ImGui::PopTextWrapPos();
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+    if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+    {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 void App::DrawSpatialTab()
@@ -484,7 +626,7 @@ void App::DrawSpatialTab()
         RightAlignCursor(RightColumnStart.x, RadarCardSize, MirrorUnitWidth);
         ImGui::TextUnformatted("Mirror");
         ImGui::SameLine(0.0f, MirrorGap);
-        if (DrawToggleSwitch("mirror", &bMirrorModeEnabled, DpiScale))
+        if (DrawToggleSwitch("mirror", &Preferences.bMirrorModeEnabled, DpiScale))
         {
             PersistGuiPreferences();
         }
@@ -513,7 +655,7 @@ void App::DrawSpatialTab()
         int MirroredIndex = -1;
         const bool bDialChanged = DrawPositionDial(
             "speaker_dial", LastStatus.SpeakerAzimuthDegrees, LastStatus.SpeakerDistanceMeters,
-            LastStatus.SpeakerMuted, bMirrorModeEnabled, &ChangedIndex, &MirroredIndex, &MuteToggledIndex,
+            LastStatus.SpeakerMuted, Preferences.bMirrorModeEnabled, &ChangedIndex, &MirroredIndex, &MuteToggledIndex,
             &SoloIndex, DpiScale, LastStatus.bTestNoiseEnabled, TestNoisePulseTimeSeconds);
 
         ImGui::SetCursorScreenPos(ImVec2(RadarCardMin.x, RadarCardMin.y + RadarCardSize));
@@ -702,7 +844,7 @@ void App::DrawEqTab()
     RightAlignCursor(InnerX, InnerWidth, AdvancedEditUnitWidth);
     ImGui::TextUnformatted("Advanced editing");
     ImGui::SameLine(0.0f, AdvancedEditGap);
-    if (DrawToggleSwitch("advanced_eq", &bAdvancedEqMode, DpiScale))
+    if (DrawToggleSwitch("advanced_eq", &Preferences.bAdvancedEqMode, DpiScale))
     {
         PersistGuiPreferences();
     }
@@ -758,12 +900,12 @@ void App::DrawEqTab()
             ImGui::TextUnformatted("Advanced tuning");
             ImGui::SameLine();
             RightAlignCursor(BassCardStart.x, BassContentWidth, ToggleTrackWidth * DpiScale);
-            if (DrawToggleSwitch("bass_advanced", &bAdvancedBassMode, DpiScale))
+            if (DrawToggleSwitch("bass_advanced", &Preferences.bAdvancedBassMode, DpiScale))
             {
                 PersistGuiPreferences();
             }
 
-            if (bAdvancedBassMode)
+            if (Preferences.bAdvancedBassMode)
             {
                 ImGui::SetNextItemWidth(160.0f * DpiScale);
                 float Cutoff = BassEnhancer.CutoffHz;
@@ -932,7 +1074,7 @@ void App::DrawEqTab()
         CenterInColumn(ColumnX, ImGui::CalcTextSize(FreqLabel.c_str()).x);
         ImGui::TextUnformatted(FreqLabel.c_str());
 
-        if (bAdvancedEqMode)
+        if (Preferences.bAdvancedEqMode)
         {
             ImGui::SetCursorScreenPos(ImVec2(ColumnX, ImGui::GetCursorScreenPos().y));
             ImGui::SetNextItemWidth(ColumnWidth);

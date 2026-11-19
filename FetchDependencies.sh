@@ -60,25 +60,25 @@ case "$ID $ID_LIKE" in
     *debian*|*ubuntu*)
         PACKAGES=(build-essential cmake ninja-build pkg-config git
                    libpipewire-0.3-dev zlib1g-dev)
-        [[ "$WITH_GUI" -eq 1 ]] && PACKAGES+=(libsdl2-dev libgl1-mesa-dev)
+        [[ "$WITH_GUI" -eq 1 ]] && PACKAGES+=(libsdl2-dev libgl1-mesa-dev libfontconfig-dev libdbus-1-dev libx11-dev)
         run sudo apt update
         run sudo apt install -y "${PACKAGES[@]}"
         ;;
     *fedora*|*rhel*)
         PACKAGES=(gcc-c++ cmake ninja-build pkgconf-pkg-config git
                    pipewire-devel zlib-devel)
-        [[ "$WITH_GUI" -eq 1 ]] && PACKAGES+=(SDL2-devel mesa-libGL-devel)
+        [[ "$WITH_GUI" -eq 1 ]] && PACKAGES+=(SDL2-devel mesa-libGL-devel fontconfig-devel dbus-devel libX11-devel)
         run sudo dnf install -y "${PACKAGES[@]}"
         ;;
     *arch*)
         PACKAGES=(base-devel cmake ninja pkgconf git libpipewire zlib)
-        [[ "$WITH_GUI" -eq 1 ]] && PACKAGES+=(sdl2 mesa)
+        [[ "$WITH_GUI" -eq 1 ]] && PACKAGES+=(sdl2 mesa fontconfig dbus libx11)
         run sudo pacman -S --needed "${PACKAGES[@]}"
         ;;
     *opensuse*|*suse*)
         PACKAGES=(gcc-c++ cmake ninja pkgconf-pkg-config git
                    pipewire-devel zlib-devel)
-        [[ "$WITH_GUI" -eq 1 ]] && PACKAGES+=(libSDL2-devel Mesa-libGL-devel)
+        [[ "$WITH_GUI" -eq 1 ]] && PACKAGES+=(libSDL2-devel Mesa-libGL-devel fontconfig-devel dbus-1-devel libX11-devel)
         run sudo zypper install -y "${PACKAGES[@]}"
         ;;
     *)

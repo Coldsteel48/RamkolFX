@@ -34,7 +34,7 @@
             };
 
             nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
-            buildInputs = with pkgs; [ pipewire zlib SDL2 fontconfig libGL libx11 ];
+            buildInputs = with pkgs; [ pipewire zlib SDL2 fontconfig dbus libGL libx11 ];
 
             # No network in the sandbox: unpack the pinned deps up front and
             # point FetchContent at them.

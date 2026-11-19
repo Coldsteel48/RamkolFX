@@ -11,11 +11,10 @@
 #include <sstream>
 #include <utility>
 
-#include <sys/stat.h>
-
-#include "key_value_file.hpp"
+#include "ramkolfx/key_value_file.hpp"
 #include "preset_store.hpp"
-#include "xdg_paths.hpp"
+#include "ramkolfx/atomic_file.hpp"
+#include "ramkolfx/xdg_paths.hpp"
 
 namespace ramkolfx
 {
@@ -28,9 +27,7 @@ namespace
 // typically tmpfs), settings need to survive a reboot.
 std::string DefaultSettingsPath()
 {
-    std::string ConfigDir = XdgConfigHome() + "/ramkolfx";
-    mkdir(ConfigDir.c_str(), 0700);
-    return ConfigDir + "/settings.conf";
+    return RamkolfxConfigDir() + "/settings.conf";
 }
 
 std::string SpeakerKey(size_t Index, const char* Field)
@@ -137,7 +134,7 @@ void SettingsStore::Save(const PersistedSettings& InSettings) const
         Out << DeviceModeKey(DeviceIndex, "mode") << "=" << static_cast<int>(DeviceMode) << "\n";
         ++DeviceIndex;
     }
-    WriteFileAtomically(SettingsPath, Out.str());
+    WriteFileAtomically(SettingsPath, Out.str(), {.LogPrefix = "[ramkolfxd]"});
 }
 
 } // namespace ramkolfx

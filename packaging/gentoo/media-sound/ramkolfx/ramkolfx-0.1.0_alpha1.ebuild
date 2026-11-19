@@ -27,12 +27,15 @@ RDEPEND="
 	media-video/pipewire:=
 	sys-libs/zlib
 	gui? (
-		media-libs/libsdl2[opengl]
+		>=media-libs/libsdl2-2.0.18[opengl]
 		media-libs/fontconfig
+		sys-apps/dbus
 		virtual/opengl
 	)
 "
-DEPEND="${RDEPEND}"
+DEPEND="${RDEPEND}
+	gui? ( x11-libs/libX11 )
+"
 BDEPEND="virtual/pkgconfig"
 
 src_configure() {
