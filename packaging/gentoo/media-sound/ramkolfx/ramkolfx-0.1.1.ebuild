@@ -3,7 +3,7 @@
 
 EAPI=8
 
-inherit cmake
+inherit xdg cmake
 
 # MY_PV (upstream SemVer tag) is maintained by packaging/version.sh from ../../../../VERSION.
 MY_PV="0.1.1"
@@ -56,5 +56,6 @@ src_install() {
 }
 
 pkg_postinst() {
+	xdg_pkg_postinst
 	elog "Enable the daemon with: systemctl --user enable --now ramkolfxd"
 }

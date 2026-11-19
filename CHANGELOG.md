@@ -7,6 +7,16 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+### Fixed
+
+- The GUI window showed a generic icon in the title bar and taskbar instead
+  of the RamkolFX logo. It now identifies itself as `ramkolfx` (Wayland
+  app_id / X11 WM_CLASS) to match `ramkolfx.desktop`, sets its own window
+  icon, and an app icon (`hicolor/scalable/apps/ramkolfx.svg`) is installed.
+  The window, tray, in-app header and installed icon are all drawn from one
+  logo definition. Start-at-login entries created by 0.1.1 get the icon
+  added on the next launch.
+
 ## [0.1.1] - 2026-11-19
 
 ### Added

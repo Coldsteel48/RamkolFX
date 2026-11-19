@@ -57,6 +57,7 @@ DESTDIR=%{buildroot} cmake --install build --component ramkolfx
 %{_bindir}/ramkolfx-gui
 %{_datadir}/ramkolfx/
 %{_datadir}/applications/ramkolfx.desktop
+%{_datadir}/icons/hicolor/scalable/apps/ramkolfx.svg
 %{_prefix}/lib/systemd/user/ramkolfxd.service
 %doc %{_docdir}/RamkolFX/
 

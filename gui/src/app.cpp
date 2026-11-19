@@ -232,13 +232,7 @@ void App::DrawUI()
     {
         ImDrawList* DrawList = ImGui::GetWindowDrawList();
         const float LogoSize = 36.0f * DpiScale;
-        const ImVec2 LogoMin = ImGui::GetCursorScreenPos();
-        const ImVec2 LogoMax(LogoMin.x + LogoSize, LogoMin.y + LogoSize);
-        DrawList->AddRectFilledMultiColor(LogoMin, LogoMax, palette::AccentGradientStart,
-                                          palette::AccentGradientEnd, palette::AccentGradientEnd,
-                                          palette::AccentGradientStart);
-        DrawList->AddText(ImVec2(LogoMin.x + LogoSize * 0.32f, LogoMin.y + LogoSize * 0.22f),
-                          IM_COL32(6, 18, 28, 255), "R");
+        DrawLogoMark(DrawList, ImGui::GetCursorScreenPos(), LogoSize);
         ImGui::Dummy(ImVec2(LogoSize, LogoSize));
 
         ImGui::SameLine(0.0f, 10.0f * DpiScale);

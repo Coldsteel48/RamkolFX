@@ -33,6 +33,13 @@ bool IsAutostartEnabled();
 // recreate as gui_prefs.conf, and this runs on the render thread.
 bool SetAutostartEnabled(bool bEnabled);
 
+// Brings an existing entry written by an older version up to date - today,
+// adding the Icon= key 0.1.1 didn't write - by inserting the missing key
+// rather than rewriting the file, so the user's own edits survive. Does
+// nothing when there is no entry or it is already current. Call once at
+// startup, off the render thread.
+void UpgradeAutostartEntry();
+
 // Where the entry lives ($XDG_CONFIG_HOME/autostart/ramkolfx.desktop), for
 // pointing the user at it.
 std::string AutostartEntryPath();

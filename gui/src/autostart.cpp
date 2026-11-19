@@ -193,6 +193,45 @@ bool IsAutostartEnabled()
     return IsLaunchable(DesktopExecProgram(Exec));
 }
 
+void UpgradeAutostartEntry()
+{
+    const std::string Path = AutostartEntryPath();
+    std::ifstream File(Path);
+    if (!File.is_open())
+    {
+        return;
+    }
+    std::string Contents;
+    size_t InsertAt = std::string::npos; // just past the [Desktop Entry] line
+    bool bInDesktopEntry = false;
+    std::string Line;
+    while (std::getline(File, Line))
+    {
+        Contents += Line + "\n";
+        const std::string Trimmed = Trim(Line);
+        if (!Trimmed.empty() && Trimmed[0] == '[')
+        {
+            bInDesktopEntry = Trimmed == "[Desktop Entry]";
+            if (bInDesktopEntry && InsertAt == std::string::npos)
+            {
+                InsertAt = Contents.size();
+            }
+            continue;
+        }
+        const size_t Eq = Trimmed.find('=');
+        if (bInDesktopEntry && Eq != std::string::npos && Trim(Trimmed.substr(0, Eq)) == "Icon")
+        {
+            return; // already has one (ours or the user's)
+        }
+    }
+    if (InsertAt == std::string::npos)
+    {
+        return; // not a desktop entry we can make sense of - leave it alone
+    }
+    Contents.insert(InsertAt, "Icon=ramkolfx\n");
+    WriteFileAtomically(Path, Contents, {.LogPrefix = "[ramkolfx-gui]", .bDurable = false});
+}
+
 bool SetAutostartEnabled(bool bEnabled)
 {
     const std::string Path = AutostartEntryPath();
@@ -211,6 +250,7 @@ bool SetAutostartEnabled(bool bEnabled)
                                  "Type=Application\n"
                                  "Name=RamkolFX\n"
                                  "Comment=Start RamkolFX in the background at login\n"
+                                 "Icon=ramkolfx\n"
                                  "Exec=" +
                                  ExecCommand() +
                                  " --minimized\n"

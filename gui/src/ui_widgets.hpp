@@ -19,6 +19,10 @@
 namespace ramkolfx::gui
 {
 
+// The logo mark (see logo.hpp) as a Size x Size square at Min, drawn as
+// vector shapes so it stays crisp at any DPI scale.
+void DrawLogoMark(ImDrawList* DrawList, ImVec2 Min, float Size);
+
 // A horizontal segmented control (pill group). Used both for the
 // top-level tab nav and the spatial-mode Off/Basic/Advanced selector.
 // Returns true and updates *CurrentIndex if the user clicked a different

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#35c7ff"/>
+      <stop offset="1" stop-color="#3f7cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56.32" fill="url(#accent)"/>
+  <path fill="#06121c" d="M70.4 47.36h92.16v23.04h-92.16zM70.4 70.4h23.04v23.04h-23.04zM162.56 70.4h23.04v23.04h-23.04zM70.4 93.44h23.04v23.04h-23.04zM162.56 93.44h23.04v23.04h-23.04zM70.4 116.48h92.16v23.04h-92.16zM70.4 139.52h23.04v23.04h-23.04zM116.48 139.52h23.04v23.04h-23.04zM70.4 162.56h23.04v23.04h-23.04zM139.52 162.56h23.04v23.04h-23.04zM70.4 185.6h23.04v23.04h-23.04zM162.56 185.6h23.04v23.04h-23.04z"/>
+</svg>

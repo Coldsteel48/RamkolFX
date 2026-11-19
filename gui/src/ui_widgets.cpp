@@ -9,8 +9,11 @@
 #include "ui_widgets.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
+#include "imgui_internal.h" // ShadeVertsLinearColorGradientKeepAlpha
+#include "logo.hpp"
 #include "ui_palette.hpp"
 
 namespace ramkolfx::gui
@@ -258,6 +261,34 @@ CardScope::~CardScope()
     DrawList->AddRectFilled(ImVec2(ContentMin.x - Padding.x, ContentMin.y - Padding.y),
                             ImVec2(ContentMax.x + Padding.x, ContentMax.y + Padding.y), BgColor, Rounding);
     Splitter.Merge(DrawList);
+}
+
+void DrawLogoMark(ImDrawList* DrawList, ImVec2 Min, float Size)
+{
+    const ImVec2 Max(Min.x + Size, Min.y + Size);
+    const int FirstVertex = DrawList->VtxBuffer.Size;
+    DrawList->AddRectFilled(Min, Max, IM_COL32_WHITE, logo::CornerRadius * Size);
+    ImGui::ShadeVertsLinearColorGradientKeepAlpha(DrawList, FirstVertex, DrawList->VtxBuffer.Size, Min,
+                                                  ImVec2(Max.x, Min.y), palette::AccentGradientStart,
+                                                  palette::AccentGradientEnd);
+
+    // Whole-pixel cells, centred, so the glyph's strokes come out even
+    // instead of alternating between N and N+1 pixels wide.
+    const float Cell = std::fmax(1.0f, std::round(logo::GlyphCell * Size));
+    const float Left = std::round(Min.x + (Size - logo::GlyphColumns * Cell) * 0.5f);
+    const float Top = std::round(Min.y + (Size - logo::GlyphRows * Cell) * 0.5f);
+    const ImU32 Ink = IM_COL32(logo::InkRgb[0], logo::InkRgb[1], logo::InkRgb[2], 255);
+    for (int Row = 0; Row < logo::GlyphRows; ++Row)
+    {
+        for (int Column = 0; Column < logo::GlyphColumns; ++Column)
+        {
+            if (logo::Glyph[Row][Column] == '#')
+            {
+                const ImVec2 CellMin(Left + Column * Cell, Top + Row * Cell);
+                DrawList->AddRectFilled(CellMin, ImVec2(CellMin.x + Cell, CellMin.y + Cell), Ink);
+            }
+        }
+    }
 }
 
 } // namespace ramkolfx::gui

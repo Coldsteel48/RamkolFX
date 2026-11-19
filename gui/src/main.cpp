@@ -24,8 +24,10 @@
 #include "imgui_impl_sdl2.h"
 
 #include "app.hpp"
+#include "autostart.hpp"
 #include "fd_wakeup.hpp"
 #include "gui_prefs.hpp"
+#include "logo.hpp"
 #include "ramkolfx/version.hpp"
 #include "renderer.hpp"
 #include "tray.hpp"
@@ -334,6 +336,10 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    // Entries written by older versions lack Icon=; IsAutostartEnabled()
+    // still reports them on, so the toggle alone would never rewrite them.
+    ramkolfx::gui::UpgradeAutostartEntry();
+
     // Closing the window must not imply quitting when it can go to the
     // tray instead - window close is handled explicitly below, so SDL_QUIT
     // only ever means a real quit request (SIGINT/SIGTERM). By name rather
@@ -341,6 +347,22 @@ int main(int argc, char** argv)
     // lack; such an SDL doesn't know the hint either - see
     // bQuitFollowsClose below for how the loop copes with that.
     SDL_SetHint("SDL_QUIT_ON_LAST_WINDOW_CLOSE", "0");
+
+    // Identify the window as "ramkolfx" (Wayland app_id, X11 WM_CLASS) rather
+    // than the executable's name, which SDL uses by default: that's how the
+    // compositor matches it to ramkolfx.desktop, and through that to the
+    // icon and name shown in the taskbar and title bar. SDL3 (including
+    // under sdl2-compat) reads the hint, SDL2 the environment variables;
+    // either way a value the user set in the environment still wins. SDL2's
+    // Wayland backend falls back to SDL_VIDEO_X11_WMCLASS when
+    // SDL_VIDEO_WAYLAND_WMCLASS is unset, so a user-set X11 class must keep
+    // the Wayland one unset for that fallback to still apply.
+    SDL_SetHint("SDL_APP_ID", ramkolfx::gui::logo::AppId);
+    if (!getenv("SDL_VIDEO_X11_WMCLASS"))
+    {
+        setenv("SDL_VIDEO_WAYLAND_WMCLASS", ramkolfx::gui::logo::AppId, 0);
+        setenv("SDL_VIDEO_X11_WMCLASS", ramkolfx::gui::logo::AppId, 0);
+    }
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
@@ -383,6 +405,22 @@ int main(int argc, char** argv)
     {
         fprintf(stderr, "[ramkolfx-gui] SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 1;
+    }
+
+    // The window's own icon: what X11 desktops show, and Wayland ones that
+    // support xdg-toplevel-icon (KDE Plasma does) - it also covers running
+    // an uninstalled build, where there is no ramkolfx.desktop to match.
+    {
+        // 96px: KWin's preferred size, downscaled cleanly by the others.
+        const ramkolfx::gui::logo::ArgbImage Icon = ramkolfx::gui::logo::RenderArgb(96);
+        SDL_Surface* Surface = SDL_CreateRGBSurfaceWithFormatFrom(
+            const_cast<unsigned char*>(Icon.Argb.data()), Icon.Size, Icon.Size, 32, Icon.Size * 4,
+            SDL_PIXELFORMAT_ARGB32); // byte order A,R,G,B - the layout RenderArgb produces
+        if (Surface)
+        {
+            SDL_SetWindowIcon(Window, Surface); // copies the pixels
+            SDL_FreeSurface(Surface);
+        }
     }
 
     IMGUI_CHECKVERSION();

@@ -84,6 +84,7 @@ add_executable(ramkolfx-gui
     src/desktop_exec.cpp
     src/fd_wakeup.cpp
     src/gui_prefs.cpp
+    src/logo.cpp
     src/position_dial.cpp
     src/renderer_opengl3.cpp
     src/tray.cpp
@@ -102,6 +103,27 @@ target_link_libraries(ramkolfx-gui PRIVATE
     ${CMAKE_DL_LIBS}
 )
 
+# The app icon (packaging/common/ramkolfx.svg, named by ramkolfx.desktop's
+# Icon=) is generated from the same logo definition the GUI draws its
+# window, header and tray icons from (src/logo.hpp). It's checked in rather
+# than generated during the build, because the generator is compiled for
+# the target and so can't run on the build host when cross-compiling.
+# Instead the logo_svg_up_to_date test fails if the checked-in copy drifts
+# from logo.hpp; `cmake --build build --target ramkolfx-update-logo-svg`
+# regenerates it. The generator only needs ImGui's headers, not the library.
+set(RAMKOLFX_LOGO_SVG ${PROJECT_SOURCE_DIR}/packaging/common/ramkolfx.svg)
+add_executable(ramkolfx-logo-svg EXCLUDE_FROM_ALL tools/logo_svg.cpp src/logo.cpp)
+target_include_directories(ramkolfx-logo-svg PRIVATE src ${imgui_SOURCE_DIR})
+add_custom_target(ramkolfx-update-logo-svg
+    COMMAND ramkolfx-logo-svg ${RAMKOLFX_LOGO_SVG}
+    VERBATIM)
+if(RAMKOLFX_BUILD_TESTS)
+    set_target_properties(ramkolfx-logo-svg PROPERTIES EXCLUDE_FROM_ALL OFF) # ctest runs what ALL built
+    add_test(NAME logo_svg_up_to_date COMMAND ramkolfx-logo-svg --check ${RAMKOLFX_LOGO_SVG})
+endif()
+
 install(TARGETS ramkolfx-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ramkolfx)
 install(FILES ${CMAKE_SOURCE_DIR}/packaging/common/ramkolfx.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT ramkolfx)
+install(FILES ${RAMKOLFX_LOGO_SVG}
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps COMPONENT ramkolfx)

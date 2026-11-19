@@ -22,7 +22,7 @@
 #include <dbus/dbus.h>
 #include <unistd.h>
 
-#include "ui_palette.hpp"
+#include "logo.hpp"
 
 namespace ramkolfx::gui
 {
@@ -195,83 +195,12 @@ constexpr const char* MenuIntrospectXml =
 // ---------------------------------------------------------------------------
 // Tray icon image
 
-struct IconImage
-{
-    int Size = 0;
-    std::vector<unsigned char> Argb; // ARGB32, network byte order, as SNI's IconPixmap wants
-};
-
-// The in-app logo mark (see App::DrawUI's branding row) - a rounded
-// accent-gradient square with a dark "R" - drawn procedurally from this
-// 5x7 bitmap glyph, so the tray icon matches the window without shipping
-// an image file or depending on the icon theme having something suitable.
-constexpr const char* LogoGlyph[7] = {"####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"};
-
-IconImage RenderLogoIcon(int Size)
-{
-    constexpr int Samples = 4; // per axis, for antialiased edges
-    constexpr float CornerRadius = 0.22f;
-    constexpr float GlyphCell = 0.09f;
-    constexpr float GlyphLeft = (1.0f - 5.0f * GlyphCell) * 0.5f;
-    constexpr float GlyphTop = (1.0f - 7.0f * GlyphCell) * 0.5f;
-    const ImVec4 Start = palette::AccentGradientStartV4;
-    const ImVec4 End = palette::AccentGradientEndV4;
-    const ImVec4 Ink(6.0f / 255.0f, 18.0f / 255.0f, 28.0f / 255.0f, 1.0f);
-
-    IconImage Image;
-    Image.Size = Size;
-    Image.Argb.reserve(static_cast<size_t>(Size) * Size * 4);
-    for (int Y = 0; Y < Size; ++Y)
-    {
-        for (int X = 0; X < Size; ++X)
-        {
-            float R = 0.0f, G = 0.0f, B = 0.0f;
-            int Covered = 0;
-            for (int SY = 0; SY < Samples; ++SY)
-            {
-                for (int SX = 0; SX < Samples; ++SX)
-                {
-                    const float U = (static_cast<float>(X) + (static_cast<float>(SX) + 0.5f) / Samples) / Size;
-                    const float V = (static_cast<float>(Y) + (static_cast<float>(SY) + 0.5f) / Samples) / Size;
-
-                    const float DX = std::fmax(std::fmax(CornerRadius - U, U - (1.0f - CornerRadius)), 0.0f);
-                    const float DY = std::fmax(std::fmax(CornerRadius - V, V - (1.0f - CornerRadius)), 0.0f);
-                    if (DX * DX + DY * DY > CornerRadius * CornerRadius)
-                    {
-                        continue;
-                    }
-
-                    ImVec4 Color(Start.x + (End.x - Start.x) * U, Start.y + (End.y - Start.y) * U,
-                                 Start.z + (End.z - Start.z) * U, 1.0f);
-                    const int Column = static_cast<int>(std::floor((U - GlyphLeft) / GlyphCell));
-                    const int Row = static_cast<int>(std::floor((V - GlyphTop) / GlyphCell));
-                    if (Column >= 0 && Column < 5 && Row >= 0 && Row < 7 && LogoGlyph[Row][Column] == '#')
-                    {
-                        Color = Ink;
-                    }
-                    R += Color.x;
-                    G += Color.y;
-                    B += Color.z;
-                    ++Covered;
-                }
-            }
-
-            const auto ToByte = [](float Value) { return static_cast<unsigned char>(Value * 255.0f + 0.5f); };
-            const float Inv = Covered > 0 ? 1.0f / static_cast<float>(Covered) : 0.0f;
-            Image.Argb.push_back(ToByte(static_cast<float>(Covered) / (Samples * Samples)));
-            Image.Argb.push_back(ToByte(R * Inv));
-            Image.Argb.push_back(ToByte(G * Inv));
-            Image.Argb.push_back(ToByte(B * Inv));
-        }
-    }
-    return Image;
-}
-
 // A few common panel sizes, so hosts can pick one instead of rescaling.
-const std::vector<IconImage>& LogoIcons()
+const std::vector<logo::ArgbImage>& LogoIcons()
 {
-    static const std::vector<IconImage> Icons = {RenderLogoIcon(22), RenderLogoIcon(32), RenderLogoIcon(48),
-                                                 RenderLogoIcon(64)};
+    // ARGB with straight alpha, bytes in network order - what SNI's IconPixmap wants.
+    static const std::vector<logo::ArgbImage> Icons = {logo::RenderArgb(22), logo::RenderArgb(32),
+                                                       logo::RenderArgb(48), logo::RenderArgb(64)};
     return Icons;
 }
 
@@ -293,11 +222,11 @@ void AppendStringVariant(DBusMessageIter* It, const char* Value)
 }
 
 // a(iiay)
-void AppendPixmaps(DBusMessageIter* It, const std::vector<IconImage>& Images)
+void AppendPixmaps(DBusMessageIter* It, const std::vector<logo::ArgbImage>& Images)
 {
     DBusMessageIter Array;
     dbus_message_iter_open_container(It, DBUS_TYPE_ARRAY, "(iiay)", &Array);
-    for (const IconImage& Image : Images)
+    for (const logo::ArgbImage& Image : Images)
     {
         DBusMessageIter Struct;
         DBusMessageIter Bytes;
@@ -463,7 +392,7 @@ bool AppendItemProperty(DBusMessageIter* It, const char* Name)
     }
     else if (Is("IconPixmap") || Is("OverlayIconPixmap") || Is("AttentionIconPixmap"))
     {
-        static const std::vector<IconImage> NoImages;
+        static const std::vector<logo::ArgbImage> NoImages;
         DBusMessageIter Variant;
         dbus_message_iter_open_container(It, DBUS_TYPE_VARIANT, "a(iiay)", &Variant);
         AppendPixmaps(&Variant, Is("IconPixmap") ? LogoIcons() : NoImages);
