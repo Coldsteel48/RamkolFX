@@ -85,12 +85,73 @@ sync() {
     fi
 }
 
+# semver_key 0.1.0-rc.2 -> "0 1 0 3 2": stage alpha=1 beta=2 rc=3, final=4.
+semver_key() {
+    [[ $1 =~ $re ]] || return 1
+    local rank
+    case ${BASH_REMATCH[3]:-} in
+        alpha) rank=1 ;; beta) rank=2 ;; rc) rank=3 ;; *) rank=4 ;;
+    esac
+    echo "${BASH_REMATCH[1]//./ } $rank ${BASH_REMATCH[4]:-0}"
+}
+
+# semver_gt A B: true if A sorts after B.
+semver_gt() {
+    local -a a b
+    read -ra a <<< "$(semver_key "$1")"
+    read -ra b <<< "$(semver_key "$2")"
+    local i
+    for i in 0 1 2 3 4; do
+        (( a[i] > b[i] )) && return 0
+        (( a[i] < b[i] )) && return 1
+    done
+    return 1
+}
+
+# VERSION must be newer than every release tag in this branch's history, and
+# CHANGELOG.md must have a section for it and only link to tags that exist
+# (v$V itself may not be tagged yet when this runs before tagging).
+check_history() {
+    if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
+        echo "error: shallow clone; fetch full history and tags (actions/checkout fetch-depth: 0)" >&2
+        exit 1
+    fi
+    local t err=0
+    while read -r t; do
+        [[ $t == "v$V" || ! ${t#v} =~ $re ]] && continue
+        if ! semver_gt "$V" "${t#v}"; then
+            echo "error: VERSION '$V' is not newer than existing release tag '$t'" >&2
+            err=1
+        fi
+    done < <(git tag --merged HEAD)
+
+    local vre=${V//./\\.}
+    if ! grep -qE "^## \[$vre\]( |$)" CHANGELOG.md; then
+        echo "error: CHANGELOG.md has no '## [$V]' section" >&2
+        err=1
+    fi
+    if ! grep -qE "^\[$vre\]: " CHANGELOG.md; then
+        echo "error: CHANGELOG.md has no '[$V]: ' link reference" >&2
+        err=1
+    fi
+    while read -r t; do
+        [[ $t == "v$V" ]] && continue
+        if ! git rev-parse -q --verify "refs/tags/$t" > /dev/null; then
+            echo "error: CHANGELOG.md links to tag '$t', which does not exist" >&2
+            err=1
+        fi
+    done < <(grep -E '^\[[^]]+\]: ' CHANGELOG.md | sed -E 's#\.\.\.|/# #g' \
+        | grep -oE '(^| )v[0-9][0-9A-Za-z.-]*' | tr -d ' ' | sort -u)
+    (( err == 0 )) || exit 1
+}
+
 check() {
     local tag="${1:-}"
     if [[ -n $tag && $tag != "v$V" ]]; then
         echo "error: tag '$tag' does not match VERSION '$V' (expected v$V)" >&2
         exit 1
     fi
+    check_history
     local before after
     before=$(git diff HEAD -- packaging flake.nix | sha256sum)
     sync

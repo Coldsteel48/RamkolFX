@@ -64,5 +64,5 @@ DESTDIR=%{buildroot} cmake --install build --component ramkolfx
 * Thu Nov 19 2026 Roman Levin (Coldsteel48) <noreply@github.com> - 0.1.1-1
 - Release 0.1.1
 
-* Wed Nov 18 2026 Roman Levin (Coldsteel48) <noreply@github.com> - 0.1.0-0.1.alpha1
-- Release 0.1.0-alpha.1 (first alpha)
+* Wed Nov 18 2026 Roman Levin (Coldsteel48) <noreply@github.com> - 0.1.0-1
+- Initial packaging

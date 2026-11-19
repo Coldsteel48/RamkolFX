@@ -298,13 +298,16 @@ GUI shows it under its logo. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 **Cutting a release** (the only manual step is editing `VERSION`):
 
 ```sh
-echo 0.1.0-alpha.2 > VERSION
+echo 0.2.0-alpha.1 > VERSION     # must be newer than the latest tag
 packaging/version.sh sync        # rewrites every distro recipe + flake.nix
-# add the release to CHANGELOG.md, commit
-git tag v0.1.0-alpha.2 && git push origin master v0.1.0-alpha.2
+# add a "## [0.2.0-alpha.1]" section + link to CHANGELOG.md, commit
+packaging/version.sh check       # catches the mistakes below before you tag
+git tag v0.2.0-alpha.1 && git push origin master v0.2.0-alpha.1
 ```
 
-CI refuses to build if the tag, `VERSION` and the recipes disagree
+CI refuses to build if the tag, `VERSION` and the recipes disagree, if
+`VERSION` is not newer than every earlier release tag, or if CHANGELOG.md
+has no section for `VERSION` or links to a tag that doesn't exist
 (`packaging/version.sh check <tag>`), then builds all packages and publishes
 the release. Distros spell pre-releases differently (`0.1.0~alpha.1` on
 Debian, `0.1.0_alpha1` on Arch/Alpine/Gentoo, `Release: 0.1.alpha1` on RPM);
