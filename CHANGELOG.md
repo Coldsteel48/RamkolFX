@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-20
+
 ### Added
 
 - Built-in EQ presets for music and game genres, next to the general ones:
@@ -69,7 +71,8 @@ First release. Feature set at this point:
   a Unix control socket.
 - Packages: Debian, RPM, Arch, Alpine, Gentoo ebuild, Nix flake.
 
-[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Coldsteel48/RamkolFX/releases/tag/v0.1.0
