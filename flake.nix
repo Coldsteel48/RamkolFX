@@ -25,7 +25,7 @@
           };
           ramkolfx = pkgs.stdenv.mkDerivation {
             pname = "ramkolfx";
-            version = "0.1.1";
+            version = "0.1.2";
             src = pkgs.lib.cleanSourceWith {
               src = ./.;
               filter = path: type:

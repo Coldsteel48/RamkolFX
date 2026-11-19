@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-20
+
 ### Fixed
 
 - The GUI window showed a generic icon in the title bar and taskbar instead
@@ -49,6 +51,7 @@ First release. Feature set at this point:
   a Unix control socket.
 - Packages: Debian, RPM, Arch, Alpine, Gentoo ebuild, Nix flake.
 
-[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Coldsteel48/RamkolFX/releases/tag/v0.1.0
