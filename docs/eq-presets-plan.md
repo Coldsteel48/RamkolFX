@@ -26,8 +26,30 @@ gives item 8 (ONNX genre auto-detect) the switching machinery for free.
   flipping the EQ back and forth.
 - Tweaking a slider while a preset is active marks it **"Custom
   (unsaved)"**; the stored preset is not modified until saved.
-- Built-in presets (Flat, Bass Boost, Vocal) are read-only; "Save as" on
-  one creates a copy, Delete is refused.
+- Built-in presets are read-only; "Save as" on one creates a copy,
+  Delete is refused. They come in categories the GUI's pickers show as
+  headed groups: General (Flat, Bass Boost, Treble Boost, Vocal,
+  Loudness, Late Night, Spoken Word, Movie), Music (Acoustic, Blues,
+  Classical, Electronic, Hip-Hop, Jazz, Metal, Pop, R&B, Reggae, Rock)
+  and Games (Action, FPS, Horror, Racing, RPG, RTS), then the user's
+  own. All are plain curves on the 10 ISO bands (reproducible by hand),
+  some with the bass enhancer on. There is no preamp or limiter after
+  the EQ, so they lean on cuts, and each curve's summed response
+  (neighbouring bands overlap) peaks at +6 dB at most - a unit test
+  measures it on the real filter. The bass enhancer's harmonics come on
+  top of that, so it isn't a no-clipping guarantee on loud masters.
+- A user preset whose name a newer daemon ships as a built-in is kept
+  as `<name> (custom)` (`(custom 2)`... if that's taken) when
+  `presets.conf` is loaded (`EqPresetCatalog`'s constructor, so its
+  bindings follow), and `presets.conf` is saved with it. `settings.conf`
+  records whether the active preset was a built-in
+  (`eq_preset.active_builtin`; files without it predate it, when the
+  built-ins were Flat, Bass Boost and Vocal), so the active preset
+  follows the rename too, and a user preset's name never resolves to a
+  built-in that has since taken it - even if `presets.conf` is gone.
+  `settings.conf` is rewritten with the new name only once
+  `presets.conf` has been saved with it; a failed save is logged and
+  retried next start.
 - Switching is **edge-triggered**: the rule is re-evaluated every 250ms
   (and right after any command that can change it), but a preset is only
   applied when the resolved target *changes* - so tweaks made while a
@@ -81,7 +103,10 @@ up again; the pre-binding snapshot is in memory only.
 - `ContentStreamListResponse` entries carry `bPlaying` and the app's
   bound preset; `Status` carries the current device's bound preset and
   why the active preset is active (manual / device / app + app name).
-- `EqPresetCatalogResponse` entries carry a built-in flag.
+- `EqPresetCatalogResponse` entries carry a category byte
+  (`EqPresetCategory`: User = 0, else a built-in's group). A client
+  keeps a value it doesn't know as a built-in under a generic "More"
+  header, so a newer daemon's categories don't break an older GUI.
 - `Status` carries `ActivePresetName` and `bPresetModified`, plus
   `EqRevision` / `PresetCatalogRevision` counters that tell a client to
   re-fetch the curve / the preset list after a change made elsewhere.

@@ -9,6 +9,8 @@
 // Encode -> decode round trips for the control protocol, plus rejection of
 // truncated/malformed payloads.
 
+#include <string>
+
 #include "ramkolfx/protocol.hpp"
 #include "test_harness.hpp"
 
@@ -120,14 +122,26 @@ TEST(ListOverflowDropsWholeEntries)
 
 TEST(EqPresetCatalogRoundTrip)
 {
-    const std::vector<EqPresetInfo> In{{"Flat", true}, {"mine", false}};
-    const auto Message = EncodeEqPresetCatalogResponse(In);
+    const std::vector<EqPresetInfo> In{
+        {"Flat", EqPresetCategory::General}, {"FPS", EqPresetCategory::Games}, {"mine", EqPresetCategory::User}};
+    auto Message = EncodeEqPresetCatalogResponse(In);
     const auto Out = DecodeEqPresetCatalogResponse(Payload(Message), PayloadLength(Message));
     REQUIRE(Out);
-    REQUIRE(Out->size() == 2);
-    CHECK((*Out)[0].Name == "Flat" && (*Out)[0].bBuiltIn);
-    CHECK((*Out)[1].Name == "mine" && !(*Out)[1].bBuiltIn);
+    REQUIRE(Out->size() == 3);
+    CHECK((*Out)[0].Name == "Flat" && (*Out)[0].Category == EqPresetCategory::General && (*Out)[0].IsBuiltIn());
+    CHECK((*Out)[1].Name == "FPS" && (*Out)[1].Category == EqPresetCategory::Games);
+    CHECK((*Out)[2].Name == "mine" && !(*Out)[2].IsBuiltIn());
     CHECK(!DecodeEqPresetCatalogResponse(Payload(Message), PayloadLength(Message) - 1));
+
+    // An unknown category byte (the last byte of the payload) - a newer
+    // daemon's - keeps the catalog, as a built-in under a generic header.
+    Message.back() = static_cast<uint8>(EqPresetCategory::Count) + 3;
+    const auto Newer = DecodeEqPresetCatalogResponse(Payload(Message), PayloadLength(Message));
+    REQUIRE(Newer);
+    REQUIRE(Newer->size() == 3);
+    CHECK((*Newer)[0].Name == "Flat" && (*Newer)[2].Name == "mine");
+    CHECK((*Newer)[2].IsBuiltIn());
+    CHECK(std::string(EqPresetCategoryLabel((*Newer)[2].Category)) == "More");
 }
 
 TEST(ContentStreamListRoundTrip)

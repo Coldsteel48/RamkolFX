@@ -179,6 +179,11 @@ private:
     // popups.
     void DrawPresetControls();
 
+    // Draws EqPresets as selectables grouped under category headers, for
+    // use inside an open combo; Current is shown selected. Returns the
+    // clicked preset's name (a copy, so the caller may refresh EqPresets).
+    std::optional<std::string> DrawPresetSelectables(const std::string& Current) const;
+
     // While the current output device is bound (the "This device" toggle
     // is on), moves its binding to PresetName - so picking or saving a
     // preset with the toggle on means "use this one for this device".

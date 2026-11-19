@@ -29,6 +29,7 @@ TEST(RoundTripKeepsDeviceModes)
     In.Mode = SpatialMode::Basic;
     In.OutputDeviceName = "alsa_output.speakers";
     In.ActivePresetName = "Vocal";
+    In.bActivePresetBuiltIn = true;
     In.DeviceSpatialModes = {{"alsa_output.speakers", SpatialMode::Off},
                              {"bluez_output.headphones", SpatialMode::Advanced},
                              {"weird=name", SpatialMode::Basic}};
@@ -40,6 +41,7 @@ TEST(RoundTripKeepsDeviceModes)
     CHECK(Out->Mode == SpatialMode::Basic);
     CHECK(Out->OutputDeviceName == "alsa_output.speakers");
     CHECK(Out->ActivePresetName == "Vocal");
+    CHECK(Out->bActivePresetBuiltIn == std::optional<bool>(true));
     CHECK(Out->DeviceSpatialModes == In.DeviceSpatialModes);
 }
 
@@ -54,6 +56,7 @@ TEST(OldFileWithoutDeviceModesLoads)
     REQUIRE(Out);
     CHECK(Out->Mode == SpatialMode::Advanced);
     CHECK(Out->DeviceSpatialModes.empty());
+    CHECK(!Out->bActivePresetBuiltIn); // unknown, not "user preset"
 }
 
 TEST(InvalidDeviceModesAreDropped)

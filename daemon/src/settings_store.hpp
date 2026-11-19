@@ -57,6 +57,12 @@ struct PersistedSettings
     std::string ActivePresetName;
     bool bPresetModified = false;
 
+    // Whether ActivePresetName named a built-in when saved, so a later
+    // build that ships a built-in with a user preset's name doesn't pass
+    // the user's curve off as it (see EqPresetCatalog::ResolveStoredName).
+    // nullopt: read from a file written before this was recorded.
+    std::optional<bool> bActivePresetBuiltIn;
+
     // Spatial mode remembered per output device (keyed by PipeWire node
     // name), so e.g. headphones can stay on Advanced while speakers stay
     // Off. Mode above is still the live mode; this map is what switching

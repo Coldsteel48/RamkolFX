@@ -7,6 +7,24 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+### Added
+
+- Built-in EQ presets for music and game genres, next to the general ones:
+  Treble Boost, Loudness, Late Night, Spoken Word, Movie; Acoustic, Blues,
+  Classical, Electronic, Hip-Hop, Jazz, Metal, Pop, R&B, Reggae, Rock;
+  Action, FPS, Horror, Racing, RPG, RTS. The preset pickers group them
+  under General / Music / Games headers, with your own presets last.
+
+### Changed
+
+- A saved preset with the same name as one of the new built-ins (say, your
+  own "Rock") is kept as "Rock (custom)", with its device/app bindings,
+  instead of being dropped. If it was the active preset it stays active
+  under the new name, and it is never mistaken for the built-in.
+- Bass Boost is a little gentler (+5/+4/+3/+1.5 dB instead of
+  +6/+5/+4/+2) so its overlapping bands peak at +6 dB rather than +7 dB.
+  No built-in curve now boosts more than 6 dB anywhere.
+
 ## [0.1.2] - 2026-11-20
 
 ### Fixed

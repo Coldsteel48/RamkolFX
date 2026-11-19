@@ -493,7 +493,10 @@ std::optional<std::vector<EqPresetInfo>> DecodeEqPresetCatalogResponse(const uin
             {
                 return false;
             }
-            Info.bBuiltIn = P[Offset++] != 0;
+            // Any byte is accepted: an unknown one is a newer daemon's
+            // built-in category (see EqPresetCategory), and dropping the
+            // whole catalog over it would leave an older GUI with none.
+            Info.Category = static_cast<EqPresetCategory>(P[Offset++]);
             return true;
         });
 }
@@ -602,7 +605,7 @@ std::vector<uint8> EncodeEqPresetCatalogResponse(const std::vector<EqPresetInfo>
                                [](std::vector<uint8>& Entry, const EqPresetInfo& Info)
                                {
                                    AppendString(Entry, Info.Name);
-                                   Entry.push_back(Info.bBuiltIn ? 1 : 0);
+                                   Entry.push_back(static_cast<uint8>(Info.Category));
                                });
 }
 
@@ -820,6 +823,24 @@ bool HasControlCharacters(const std::string& Name)
                        [](unsigned char C) { return C < 0x20 || C == 0x7F; });
 }
 } // namespace
+
+const char* EqPresetCategoryLabel(EqPresetCategory Category)
+{
+    switch (Category)
+    {
+    case EqPresetCategory::User:
+        return "Your presets";
+    case EqPresetCategory::General:
+        return "General";
+    case EqPresetCategory::Music:
+        return "Music";
+    case EqPresetCategory::Games:
+        return "Games";
+    case EqPresetCategory::Count:
+        break;
+    }
+    return "More";
+}
 
 std::optional<std::string> NormalizePresetName(const std::string& Name)
 {

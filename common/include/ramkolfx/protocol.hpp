@@ -288,13 +288,44 @@ bool IsValidTargetName(const std::string& Name);
 // drift from what the daemon accepts.
 std::optional<std::string> NormalizePresetName(const std::string& Name);
 
+// Which group a preset belongs to. User = saved by the user; every other
+// value is a built-in shipped with the daemon, grouped for the GUI's
+// preset pickers. Sent as one byte, so new values go before Count. A
+// decoder keeps a value it doesn't know (a newer daemon's category) as-is
+// rather than rejecting the catalog: it's still a built-in, just one this
+// build has no header text for.
+enum class EqPresetCategory : uint8
+{
+    User = 0,
+    General = 1,
+    Music = 2,
+    Games = 3,
+    Count,
+};
+
+// The one rule for what may be overwritten or deleted, shared by the
+// daemon's EqPreset and the wire's EqPresetInfo so the two can't drift.
+constexpr bool IsBuiltInPresetCategory(EqPresetCategory Category)
+{
+    return Category != EqPresetCategory::User;
+}
+
+// Header shown above a category's presets in the GUI's preset pickers
+// ("More" for a category this build doesn't know).
+const char* EqPresetCategoryLabel(EqPresetCategory Category);
+
 // One entry of the EqPresetCatalogResponse list. Built-in presets ship
 // with the daemon and can't be overwritten or deleted (saving under a
 // built-in's name is refused; "save as" a new name instead).
 struct EqPresetInfo
 {
     std::string Name;
-    bool bBuiltIn = false;
+    EqPresetCategory Category = EqPresetCategory::User;
+
+    bool IsBuiltIn() const
+    {
+        return IsBuiltInPresetCategory(Category);
+    }
 };
 
 // A real hardware playback sink the daemon can pin HardwareOutput to.

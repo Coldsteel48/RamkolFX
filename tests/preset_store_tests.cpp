@@ -9,8 +9,12 @@
 // EqPresetCatalog rules (built-in protection, naming, bindings) and
 // PresetStore/KeyValueFile persistence.
 
+#include <algorithm>
+#include <cmath>
+#include <complex>
 #include <cstdio>
 #include <fstream>
+#include <vector>
 
 #include <unistd.h>
 
@@ -48,8 +52,8 @@ TEST(BuiltInsComeFirstAndAreReadOnly)
 {
     EqPresetCatalog Catalog;
     const auto Infos = Catalog.Infos();
-    REQUIRE(Infos.size() == 3);
-    CHECK(Infos[0].Name == "Flat" && Infos[0].bBuiltIn);
+    REQUIRE(Infos.size() == BuiltInEqPresets().size());
+    CHECK(Infos[0].Name == "Flat" && Infos[0].IsBuiltIn());
     CHECK(Catalog.Save("Flat", DefaultHwEqBands(), {}) == Result::BuiltInReadOnly);
     CHECK(Catalog.Save("  Flat ", DefaultHwEqBands(), {}) == Result::BuiltInReadOnly);
     CHECK(Catalog.Remove("Flat") == Result::BuiltInReadOnly);
@@ -65,12 +69,14 @@ TEST(SaveSortsOverwritesAndNormalizes)
     CHECK(Stored == "Zed");
     CHECK(Catalog.Save("Alpha", DefaultHwEqBands(), {}) == Result::Ok);
 
+    const size_t BuiltInCount = BuiltInEqPresets().size();
     auto Infos = Catalog.Infos();
-    REQUIRE(Infos.size() == 5);
-    CHECK(Infos[3].Name == "Alpha" && Infos[4].Name == "Zed" && !Infos[4].bBuiltIn);
+    REQUIRE(Infos.size() == BuiltInCount + 2);
+    CHECK(Infos[BuiltInCount].Name == "Alpha" && Infos[BuiltInCount + 1].Name == "Zed");
+    CHECK(Infos[BuiltInCount + 1].Category == EqPresetCategory::User);
 
     CHECK(Catalog.Save("Zed", BandsWithGain(3, -2.0f), {}) == Result::Ok);
-    CHECK(Catalog.Infos().size() == 5);
+    CHECK(Catalog.Infos().size() == BuiltInCount + 2);
     REQUIRE(Catalog.Find("Zed"));
     CHECK(Catalog.Find("Zed")->Bands[3].GainDb == -2.0f);
 }
@@ -141,12 +147,148 @@ TEST(PresetStoreRoundTrip)
     EqPresetCatalog Loaded(Store.Load());
     const EqPreset* Mine = Loaded.Find("Mine");
     REQUIRE(Mine);
-    CHECK(!Mine->bBuiltIn);
+    CHECK(!Mine->IsBuiltIn());
     CHECK(Mine->Bands[3].GainDb == -2.0f && Mine->Bands[7].FilterType == EqFilterType::Notch);
     CHECK(Mine->Bass.bEnabled && Mine->Bass.CutoffHz == 70.0f && Mine->Bass.Mix == 0.25f);
     CHECK(Loaded.Find("Other = weird"));
     CHECK(Loaded.DeviceBinding("alsa_out=1") == "Mine");
     CHECK(Loaded.AppBinding("mpv") == "Vocal");
+}
+
+TEST(BuiltInPresetsAreWellFormed)
+{
+    const auto& BuiltIns = BuiltInEqPresets();
+    REQUIRE(BuiltIns.size() > 3);
+    CHECK(BuiltIns[0].Name == "Flat");
+    CHECK(&BuiltInEqPresets() == &BuiltIns); // built once, shared
+    CHECK(FindBuiltInEqPreset("Rock") && !FindBuiltInEqPreset("rock"));
+    for (size_t i = 0; i < BuiltIns.size(); ++i)
+    {
+        const EqPreset& Preset = BuiltIns[i];
+        CHECK(NormalizePresetName(Preset.Name) == Preset.Name);
+        CHECK(Preset.IsBuiltIn());
+        // Grouped: categories never go backwards, so each gets one header.
+        CHECK(i == 0 || Preset.Category >= BuiltIns[i - 1].Category);
+        for (size_t j = i + 1; j < BuiltIns.size(); ++j)
+        {
+            CHECK(BuiltIns[j].Name != Preset.Name);
+        }
+        // Within what the GUI's sliders can show and reproduce.
+        for (const EqBand& Band : Preset.Bands)
+        {
+            CHECK(Band.GainDb >= -12.0f && Band.GainDb <= 12.0f);
+        }
+        CHECK(Preset.Bass.CutoffHz >= 40.0f && Preset.Bass.CutoffHz <= 250.0f);
+        CHECK(Preset.Bass.Drive >= 0.0f && Preset.Bass.Drive <= 1.0f);
+        CHECK(Preset.Bass.Mix >= 0.0f && Preset.Bass.Mix <= 1.0f);
+    }
+    for (EqPresetCategory Category : {EqPresetCategory::General, EqPresetCategory::Music, EqPresetCategory::Games})
+    {
+        CHECK(std::any_of(BuiltIns.begin(), BuiltIns.end(),
+                          [&](const EqPreset& P) { return P.Category == Category; }));
+    }
+}
+
+TEST(BuiltInCurvesPeakAtMostSixDb)
+{
+    // There's no preamp or limiter after the EQ (docs/eq-presets-plan.md),
+    // so hold every built-in's actual summed response - neighbouring bands
+    // overlap - to +6 dB. Measured on the real filter: its impulse
+    // response's spectrum on a 1/24-octave grid, 20 Hz..20 kHz.
+    constexpr float SampleRate = 48000.0f;
+    constexpr uint32 Frames = 24000; // the lowest band's ringing is long gone by 0.5 s
+    for (const EqPreset& Preset : BuiltInEqPresets())
+    {
+        std::vector<float> Impulse(Frames * 2, 0.0f);
+        Impulse[0] = Impulse[1] = 1.0f;
+        GraphicEqFilter(Preset.Bands, SampleRate).Process(Impulse.data(), 2, Impulse.data(), 2, Frames);
+
+        double PeakDb = -100.0;
+        for (double Hz = 20.0; Hz < 20000.0; Hz *= std::pow(2.0, 1.0 / 24.0))
+        {
+            const std::complex<double> Step = std::polar(1.0, -2.0 * M_PI * Hz / SampleRate);
+            std::complex<double> Phase = 1.0;
+            std::complex<double> Sum = 0.0;
+            for (uint32 i = 0; i < Frames; ++i)
+            {
+                Sum += static_cast<double>(Impulse[i * 2]) * Phase;
+                Phase *= Step;
+            }
+            PeakDb = std::max(PeakDb, 20.0 * std::log10(std::abs(Sum)));
+        }
+        if (PeakDb > 6.0)
+        {
+            fprintf(stderr, "  %s peaks at %+.2f dB\n", Preset.Name.c_str(), PeakDb);
+        }
+        CHECK(PeakDb <= 6.0);
+    }
+}
+
+TEST(UserPresetShadowedByNewBuiltInIsRenamed)
+{
+    // A presets.conf from before "Rock" and "Jazz" were built-ins, where
+    // "Rock (custom)" is also taken further down the file.
+    test::TempPath Path;
+    {
+        std::ofstream File(Path.Get());
+        File << "preset.count=3\n"
+             << "preset.0.name=Rock\n"
+             << "preset.0.hweq.0.gain=7\n"
+             << "preset.1.name=Jazz\n"
+             << "preset.2.name=Rock (custom)\n"
+             << "device_binding.count=1\n"
+             << "device_binding.0.target=headphones\n"
+             << "device_binding.0.preset=Rock\n"
+             << "app_binding.count=2\n"
+             << "app_binding.0.target=mpv\n"
+             << "app_binding.0.preset=Jazz\n"
+             << "app_binding.1.target=Firefox\n"
+             << "app_binding.1.preset=Rock (custom)\n";
+    }
+    PresetStore Store(Path.Get());
+    EqPresetCatalog Catalog(Store.Load());
+    CHECK(Catalog.RenamedUserPresets());
+    const EqPreset* Mine = Catalog.Find("Rock (custom 2)");
+    REQUIRE(Mine);
+    CHECK(!Mine->IsBuiltIn() && Mine->Bands[0].GainDb == 7.0f);
+    REQUIRE(Catalog.Find("Rock"));
+    CHECK(Catalog.Find("Rock")->IsBuiltIn());
+    CHECK(Catalog.Find("Rock (custom)") && Catalog.Find("Jazz (custom)"));
+    CHECK(Catalog.DeviceBinding("headphones") == "Rock (custom 2)");
+    CHECK(Catalog.AppBinding("mpv") == "Jazz (custom)");
+    CHECK(Catalog.AppBinding("Firefox") == "Rock (custom)");
+
+    // settings.conf's active preset follows the rename when it named the
+    // user's preset - flagged so, or from a file older than the flag.
+    CHECK(Catalog.ResolveStoredName("Rock", false) == "Rock (custom 2)");
+    CHECK(Catalog.ResolveStoredName("Rock", std::nullopt) == "Rock (custom 2)");
+    CHECK(Catalog.ResolveStoredName("Rock", true) == "Rock");
+    CHECK(Catalog.ResolveStoredName("Rock (custom)", false) == "Rock (custom)");
+
+    // Saved back, it loads with nothing left to rename.
+    CHECK(Store.Save(Catalog.ToFileContents()));
+    const EqPresetCatalog Reloaded(Store.Load());
+    CHECK(!Reloaded.RenamedUserPresets());
+    CHECK(Reloaded.ToFileContents().UserPresets.size() == 3);
+    CHECK(Reloaded.DeviceBinding("headphones") == "Rock (custom 2)");
+}
+
+TEST(StoredActivePresetNeverPicksUpANewBuiltIn)
+{
+    // presets.conf missing or unreadable: nothing says the user had a
+    // "Rock", but settings.conf does - its curve is theirs, not the
+    // built-in's, so the name must not resolve to the built-in.
+    EqPresetCatalog Catalog;
+    REQUIRE(Catalog.Save("Mine", DefaultHwEqBands(), {}) == Result::Ok);
+    CHECK(Catalog.ResolveStoredName("Rock", false).empty());
+    CHECK(Catalog.ResolveStoredName("Rock", std::nullopt).empty()); // pre-flag file: Rock wasn't a built-in then
+    CHECK(Catalog.ResolveStoredName("Rock", true) == "Rock");
+    CHECK(Catalog.ResolveStoredName("Vocal", std::nullopt) == "Vocal"); // was a built-in then too
+    CHECK(Catalog.ResolveStoredName("Mine", false) == "Mine");
+    CHECK(Catalog.ResolveStoredName("Mine", std::nullopt) == "Mine");
+    CHECK(Catalog.ResolveStoredName("Mine", true).empty());
+    CHECK(Catalog.ResolveStoredName("Gone", false).empty());
+    CHECK(Catalog.ResolveStoredName("", std::nullopt).empty());
 }
 
 TEST(PresetStoreMissingAndCorruptFiles)
@@ -159,13 +301,13 @@ TEST(PresetStoreMissingAndCorruptFiles)
         std::ofstream File(Path.Get());
         File << "not a key value line\n"
              << "preset.count=4\n"
-             << "preset.0.name=Flat\n"      // collides with a built-in
+             << "preset.0.name=   \n"       // invalid
              << "preset.1.name=Good\n"
              << "preset.1.hweq.2.gain=oops\n" // unparseable -> default
              << "preset.1.hweq.3.gain=5\n"
              << "preset.1.hweq.4.type=99\n"   // out of range -> default
              << "preset.2.name=Good\n"      // duplicate
-             << "preset.3.name=   \n";      // invalid
+             << "preset.3.name=\n";         // invalid
     }
     const auto Contents = PresetStore(Path.Get()).Load();
     REQUIRE(Contents.UserPresets.size() == 1);

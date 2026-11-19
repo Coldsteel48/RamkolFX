@@ -36,8 +36,8 @@ std::string BandKey(const std::string& Prefix, size_t Index, const char* Field)
 // Builds a built-in preset from per-band gains on the default ISO graphic
 // EQ curve (same frequencies/Q the GUI's simple-mode sliders use), so
 // every built-in is reproducible by hand in simple mode.
-EqPreset MakeGraphicPreset(const char* Name, const std::array<float, MaxEqBands>& GainsDb,
-                           const BassEnhancerSettings& Bass)
+EqPreset MakeGraphicPreset(EqPresetCategory Category, const char* Name, const std::array<float, MaxEqBands>& GainsDb,
+                           const BassEnhancerSettings& Bass = {})
 {
     EqPreset Preset;
     Preset.Name = Name;
@@ -47,13 +47,132 @@ EqPreset MakeGraphicPreset(const char* Name, const std::array<float, MaxEqBands>
         Preset.Bands[i].GainDb = GainsDb[i];
     }
     Preset.Bass = Bass;
-    Preset.bBuiltIn = true;
+    Preset.Category = Category;
     return Preset;
+}
+
+BassEnhancerSettings BassEnhancerOn(float CutoffHz, float Drive, float Mix)
+{
+    return {.bEnabled = true, .CutoffHz = CutoffHz, .Drive = Drive, .Mix = Mix};
 }
 
 bool ByName(const EqPreset& A, const EqPreset& B)
 {
     return A.Name < B.Name;
+}
+
+std::vector<EqPreset> MakeBuiltInEqPresets()
+{
+    // There is no preamp or limiter after the EQ, so these lean on cuts
+    // and keep boosts moderate: each curve's summed response (overlapping
+    // bands add up) peaks at +6 dB at most - preset_store_tests measures
+    // it on the real filter. The bass enhancer adds harmonics on top of
+    // that rather than low-end level, so it's the gentler way to add
+    // weight, but it isn't free headroom either.
+    constexpr auto General = EqPresetCategory::General;
+    constexpr auto Music = EqPresetCategory::Music;
+    constexpr auto Games = EqPresetCategory::Games;
+
+    // clang-format off
+    //                                                   31.5  63   125   250   500   1k    2k    4k    8k    16k
+    return {
+        MakeGraphicPreset(General, "Flat",         {0,    0,    0,    0,    0,    0,    0,    0,    0,    0}),
+        MakeGraphicPreset(General, "Bass Boost",   {5,    4,    3,    1.5f, 0,    0,    0,    0,    0,    0},
+                          BassEnhancerOn(60, 0.5f, 0.5f)),
+        MakeGraphicPreset(General, "Treble Boost", {0,    0,    0,    0,    0,    0,    1,    2.5f, 4,    4}),
+        MakeGraphicPreset(General, "Vocal",        {-3,   -2,   -1,   0,    1,    3,    3.5f, 2.5f, 0,    -1}),
+        // Low-volume listening: lifts the lows and highs the ear loses first.
+        MakeGraphicPreset(General, "Loudness",     {4,    3,    1.5f, 0,    -1,   -1,   0,    1,    2.5f, 3}),
+        // Tames booms so the volume can stay down, keeps dialogue clear.
+        MakeGraphicPreset(General, "Late Night",   {-5,   -4,   -2,   0,    0,    1,    2,    1.5f, 0,    -1}),
+        // Podcasts, audiobooks, calls: rumble out, speech presence up.
+        MakeGraphicPreset(General, "Spoken Word",  {-6,   -4,   -1.5f, 0,   1,    2,    3,    2,    0,    -2}),
+        MakeGraphicPreset(General, "Movie",        {3,    3,    1.5f, 0,    -1,   0.5f, 2,    2,    1.5f, 1},
+                          BassEnhancerOn(80, 0.4f, 0.4f)),
+
+        MakeGraphicPreset(Music,   "Acoustic",     {1,    1,    1.5f, 1,    0,    0,    1,    2,    2,    1.5f}),
+        MakeGraphicPreset(Music,   "Blues",        {2,    2,    1.5f, 1,    0,    -0.5f, 1,   2,    1,    0}),
+        MakeGraphicPreset(Music,   "Classical",    {2.5f, 2,    1,    0,    0,    0,    0,    0.5f, 1.5f, 2}),
+        MakeGraphicPreset(Music,   "Electronic",   {5,    4,    1.5f, -1,   -2,   0,    0.5f, 2,    3,    3.5f},
+                          BassEnhancerOn(70, 0.6f, 0.5f)),
+        MakeGraphicPreset(Music,   "Hip-Hop",      {5,    4.5f, 2,    0,    -1.5f, -0.5f, 1,  1,    1.5f, 1},
+                          BassEnhancerOn(60, 0.5f, 0.5f)),
+        MakeGraphicPreset(Music,   "Jazz",         {2,    1.5f, 1,    1.5f, -1,   -1,   0,    1,    2,    2.5f}),
+        MakeGraphicPreset(Music,   "Metal",        {4,    3,    0,    -2,   -3,   -1,   2,    3.5f, 3,    1.5f}),
+        MakeGraphicPreset(Music,   "Pop",          {1,    2,    1.5f, 0,    -1,   0.5f, 2,    2.5f, 2,    1.5f}),
+        MakeGraphicPreset(Music,   "R&B",          {4,    4,    2,    -1,   -1.5f, 1,   2,    1.5f, 1.5f, 1},
+                          BassEnhancerOn(60, 0.4f, 0.4f)),
+        MakeGraphicPreset(Music,   "Reggae",       {4,    4,    2,    0,    -1.5f, -1,  0,    1,    0.5f, 0},
+                          BassEnhancerOn(70, 0.4f, 0.4f)),
+        MakeGraphicPreset(Music,   "Rock",         {4,    3,    1.5f, -1,   -2,   -0.5f, 1.5f, 3,   3.5f, 3}),
+
+        MakeGraphicPreset(Games,   "Action",       {4,    4,    2,    0,    -1,   0,    1.5f, 2.5f, 2,    1.5f},
+                          BassEnhancerOn(70, 0.5f, 0.5f)),
+        // Footsteps and positional cues up, explosions and rumble down.
+        MakeGraphicPreset(Games,   "FPS",          {-4,   -3,   -1.5f, 0,   0,    1,    2.5f, 4,    3,    1}),
+        // Quiet detail and ambience forward.
+        MakeGraphicPreset(Games,   "Horror",       {2,    1.5f, 0,    -1,   -1,   0,    1.5f, 3,    3.5f, 3}),
+        // Engine growl and tyre noise.
+        MakeGraphicPreset(Games,   "Racing",       {3,    3,    2.5f, 1,    -1,   0,    1,    2,    1.5f, 1},
+                          BassEnhancerOn(80, 0.4f, 0.4f)),
+        // Orchestral score plus dialogue.
+        MakeGraphicPreset(Games,   "RPG",          {3,    2,    1,    0,    -0.5f, 1,   2,    1.5f, 1.5f, 2}),
+        // Unit voices and alerts over a busy battle mix.
+        MakeGraphicPreset(Games,   "RTS",          {-2,   -1,   0,    0,    0.5f, 2,    2.5f, 1.5f, 0.5f, 0}),
+    };
+    // clang-format on
+}
+
+// The built-ins of every release before settings.conf recorded whether
+// the active preset was one (eq_preset.active_builtin). Frozen: it says
+// what an old file's name meant, not what this build ships.
+bool WasBuiltInBeforeFlagExisted(const std::string& Name)
+{
+    return Name == "Flat" || Name == "Bass Boost" || Name == "Vocal";
+}
+
+// Gives every user preset whose name a built-in now has (one saved
+// before that built-in shipped) a free "<name> (custom)" name instead.
+// Runs once all names are known, so a new name can't collide with a
+// preset further down. Returns old name -> new name.
+std::map<std::string, std::string> RenameShadowedUserPresets(std::vector<EqPreset>& Presets)
+{
+    std::map<std::string, std::string> Renamed;
+    const auto IsTaken = [&](const std::string& Name)
+    {
+        return FindBuiltInEqPreset(Name) ||
+               std::any_of(Presets.begin(), Presets.end(), [&](const EqPreset& P) { return P.Name == Name; });
+    };
+    for (auto It = Presets.begin(); It != Presets.end();)
+    {
+        if (!FindBuiltInEqPreset(It->Name))
+        {
+            ++It;
+            continue;
+        }
+        std::optional<std::string> NewName;
+        for (int Suffix = 1; !NewName || IsTaken(*NewName); ++Suffix)
+        {
+            NewName = NormalizePresetName(It->Name + (Suffix == 1 ? " (custom)"
+                                                                  : " (custom " + std::to_string(Suffix) + ")"));
+            if (!NewName)
+            {
+                break; // too long to suffix - can't happen with the built-in names, but never loop forever
+            }
+        }
+        if (!NewName)
+        {
+            fprintf(stderr, "[ramkolfxd] presets: skipping \"%s\" (name taken by a built-in)\n", It->Name.c_str());
+            It = Presets.erase(It);
+            continue;
+        }
+        fprintf(stderr, "[ramkolfxd] presets: \"%s\" is now a built-in; kept yours as \"%s\"\n", It->Name.c_str(),
+                NewName->c_str());
+        Renamed[It->Name] = *NewName;
+        It->Name = std::move(*NewName);
+        ++It;
+    }
+    return Renamed;
 }
 
 } // namespace
@@ -96,47 +215,51 @@ void ReadEqCurve(const KeyValueFile& File, const std::string& Prefix, std::array
     OutBass.Mix = File.GetFloat(Prefix + "bass_enhancer.mix", OutBass.Mix);
 }
 
-std::vector<EqPreset> BuiltInEqPresets()
+const std::vector<EqPreset>& BuiltInEqPresets()
 {
-    BassEnhancerSettings BassOff;
-    BassEnhancerSettings BassOn;
-    BassOn.bEnabled = true;
-
-    //                                     31.5   63   125  250  500   1k   2k   4k   8k  16k
-    return {
-        MakeGraphicPreset("Flat",       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, BassOff),
-        MakeGraphicPreset("Bass Boost", {6, 5, 4, 2, 0, 0, 0, 0, 0, 0}, BassOn),
-        MakeGraphicPreset("Vocal",      {-3, -2, -1, 0, 1, 3, 3.5f, 2.5f, 0, -1}, BassOff),
-    };
+    static const std::vector<EqPreset> BuiltIns = MakeBuiltInEqPresets();
+    return BuiltIns;
 }
 
-EqPresetCatalog::EqPresetCatalog(PresetFileContents Contents)
-    : BuiltIns(BuiltInEqPresets()), User(std::move(Contents.UserPresets))
+const EqPreset* FindBuiltInEqPreset(const std::string& Name)
 {
-    for (EqPreset& Preset : User)
-    {
-        Preset.bBuiltIn = false;
-    }
-    std::sort(User.begin(), User.end(), ByName);
-
-    for (auto& [Target, Preset] : Contents.DeviceBindings)
-    {
-        Bind(Devices, Target, Preset);
-    }
-    for (auto& [Target, Preset] : Contents.AppBindings)
-    {
-        Bind(Apps, Target, Preset);
-    }
-}
-
-const EqPreset* EqPresetCatalog::Find(const std::string& Name) const
-{
-    for (const EqPreset& Preset : BuiltIns)
+    for (const EqPreset& Preset : BuiltInEqPresets())
     {
         if (Preset.Name == Name)
         {
             return &Preset;
         }
+    }
+    return nullptr;
+}
+
+EqPresetCatalog::EqPresetCatalog(PresetFileContents Contents) : User(std::move(Contents.UserPresets))
+{
+    for (EqPreset& Preset : User)
+    {
+        Preset.Category = EqPresetCategory::User;
+    }
+    Renamed = RenameShadowedUserPresets(User);
+    std::sort(User.begin(), User.end(), ByName);
+
+    for (PresetBindingMap* Map : {&Contents.DeviceBindings, &Contents.AppBindings})
+    {
+        for (auto& [Target, Preset] : *Map)
+        {
+            if (const auto It = Renamed.find(Preset); It != Renamed.end())
+            {
+                Preset = It->second;
+            }
+            Bind(Map == &Contents.DeviceBindings ? Devices : Apps, Target, Preset);
+        }
+    }
+}
+
+const EqPreset* EqPresetCatalog::Find(const std::string& Name) const
+{
+    if (const EqPreset* BuiltIn = FindBuiltInEqPreset(Name))
+    {
+        return BuiltIn;
     }
     for (const EqPreset& Preset : User)
     {
@@ -148,6 +271,30 @@ const EqPreset* EqPresetCatalog::Find(const std::string& Name) const
     return nullptr;
 }
 
+std::string EqPresetCatalog::ResolveStoredName(const std::string& Name, std::optional<bool> bStoredAsBuiltIn) const
+{
+    if (Name.empty())
+    {
+        return {};
+    }
+    // A file from before the flag: back then any name but the three old
+    // built-ins was a user preset's.
+    const bool bWasBuiltIn = bStoredAsBuiltIn.value_or(WasBuiltInBeforeFlagExisted(Name));
+    std::string Current = Name;
+    if (!bWasBuiltIn)
+    {
+        if (const auto It = Renamed.find(Name); It != Renamed.end())
+        {
+            Current = It->second;
+        }
+    }
+    // Same kind as when stored, or it's not the same preset: a user
+    // preset's name that a built-in has since taken (and presets.conf
+    // didn't say so - say it was missing) must not pick up the built-in.
+    const EqPreset* Preset = Find(Current);
+    return Preset && Preset->IsBuiltIn() == bWasBuiltIn ? Current : std::string();
+}
+
 EqPresetCatalog::Result EqPresetCatalog::Save(const std::string& Name, const std::array<EqBand, MaxEqBands>& Bands,
                                               const BassEnhancerSettings& Bass, std::string* OutStoredName)
 {
@@ -156,7 +303,7 @@ EqPresetCatalog::Result EqPresetCatalog::Save(const std::string& Name, const std
     {
         return Result::InvalidName;
     }
-    if (const EqPreset* Existing = Find(*Normalized); Existing && Existing->bBuiltIn)
+    if (const EqPreset* Existing = Find(*Normalized); Existing && Existing->IsBuiltIn())
     {
         return Result::BuiltInReadOnly;
     }
@@ -184,7 +331,7 @@ EqPresetCatalog::Result EqPresetCatalog::Remove(const std::string& Name)
     {
         return Result::NotFound;
     }
-    if (Existing->bBuiltIn)
+    if (Existing->IsBuiltIn())
     {
         return Result::BuiltInReadOnly;
     }
@@ -242,14 +389,14 @@ std::string EqPresetCatalog::AppBinding(const std::string& AppName) const
 std::vector<EqPresetInfo> EqPresetCatalog::Infos() const
 {
     std::vector<EqPresetInfo> Out;
+    const std::vector<EqPreset>& BuiltIns = BuiltInEqPresets();
     Out.reserve(BuiltIns.size() + User.size());
-    for (const EqPreset& Preset : BuiltIns)
+    for (const std::vector<EqPreset>* List : {&BuiltIns, &User})
     {
-        Out.push_back({Preset.Name, true});
-    }
-    for (const EqPreset& Preset : User)
-    {
-        Out.push_back({Preset.Name, false});
+        for (const EqPreset& Preset : *List)
+        {
+            Out.push_back({Preset.Name, Preset.Category});
+        }
     }
     return Out;
 }
@@ -310,18 +457,16 @@ PresetFileContents PresetStore::Load() const
         return {};
     }
 
-    const std::vector<EqPreset> BuiltIns = BuiltInEqPresets();
+    PresetFileContents Contents;
+    std::vector<EqPreset>& Presets = Contents.UserPresets;
     const size_t Count = File->GetCount("preset.count");
-    std::vector<EqPreset> Presets;
     for (size_t i = 0; i < Count; ++i)
     {
         const std::string Prefix = "preset." + std::to_string(i) + ".";
         const std::optional<std::string> Name = NormalizePresetName(File->GetString(Prefix + "name", ""));
-        const auto SameName = [&](const EqPreset& P) { return Name && P.Name == *Name; };
-        if (!Name || std::any_of(BuiltIns.begin(), BuiltIns.end(), SameName) ||
-            std::any_of(Presets.begin(), Presets.end(), SameName))
+        if (!Name || std::any_of(Presets.begin(), Presets.end(), [&](const EqPreset& P) { return P.Name == *Name; }))
         {
-            fprintf(stderr, "[ramkolfxd] presets: skipping entry %zu (invalid, duplicate, or built-in name)\n", i);
+            fprintf(stderr, "[ramkolfxd] presets: skipping entry %zu (invalid or duplicate name)\n", i);
             continue;
         }
         EqPreset Preset;
@@ -330,7 +475,10 @@ PresetFileContents PresetStore::Load() const
         ReadEqCurve(*File, Prefix, Preset.Bands, Preset.Bass);
         Presets.push_back(std::move(Preset));
     }
-    return {std::move(Presets), ReadBindings(*File, "device"), ReadBindings(*File, "app")};
+
+    Contents.DeviceBindings = ReadBindings(*File, "device");
+    Contents.AppBindings = ReadBindings(*File, "app");
+    return Contents;
 }
 
 bool PresetStore::Save(const PresetFileContents& Contents) const

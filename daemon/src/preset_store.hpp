@@ -29,7 +29,12 @@ struct EqPreset
     std::string Name;
     std::array<EqBand, MaxEqBands> Bands;
     BassEnhancerSettings Bass;
-    bool bBuiltIn = false;
+    EqPresetCategory Category = EqPresetCategory::User;
+
+    bool IsBuiltIn() const
+    {
+        return IsBuiltInPresetCategory(Category);
+    }
 };
 
 // Writes/reads an EQ curve + bass enhancer as `<Prefix>hweq.<i>.<field>`
@@ -42,8 +47,14 @@ void WriteEqCurve(std::ostream& Out, const std::string& Prefix, const std::array
 void ReadEqCurve(const KeyValueFile& File, const std::string& Prefix, std::array<EqBand, MaxEqBands>& OutBands,
                  BassEnhancerSettings& OutBass);
 
-// The read-only presets shipped with the daemon, in catalog order.
-std::vector<EqPreset> BuiltInEqPresets();
+// The read-only presets shipped with the daemon, in catalog order (grouped
+// by category: General, Music, Games). Built once and shared.
+const std::vector<EqPreset>& BuiltInEqPresets();
+
+// The built-in called Name, or nullptr. Built-in names are fixed for a
+// given build and no user preset can take one, so whether a name is a
+// built-in needs no catalog (or lock) to answer.
+const EqPreset* FindBuiltInEqPreset(const std::string& Name);
 
 // Target (output device node.name, or app name) -> bound preset name.
 using PresetBindingMap = std::map<std::string, std::string>;
@@ -62,6 +73,13 @@ struct PresetFileContents
 // persists ToFileContents() through PresetStore. Invariant: every binding
 // names a preset that exists (Remove drops bindings to the removed
 // preset; the constructor drops dangling ones).
+//
+// The constructor also owns migrating to a build that ships new
+// built-ins: a user preset whose name a built-in now has (saved before
+// that built-in existed) is kept as "<name> (custom)" ("(custom 2)"...
+// if taken), and its bindings follow it. Any preset name stored outside
+// presets.conf goes through ResolveStoredName, which applies the same
+// renames - so no caller handles them itself.
 class EqPresetCatalog
 {
 public:
@@ -76,6 +94,23 @@ public:
     explicit EqPresetCatalog(PresetFileContents Contents = {});
 
     const EqPreset* Find(const std::string& Name) const;
+
+    // Resolves a preset name stored outside presets.conf (settings.conf's
+    // active preset) to the preset it meant. bStoredAsBuiltIn is whether
+    // it named a built-in when stored; nullopt means the file predates
+    // recording that (see the .cpp for how that's decided). Returns the
+    // name to use now - the renamed one if the constructor renamed that
+    // user preset - or empty if it no longer resolves, including when the
+    // name now belongs to a built-in but meant a user preset (whose curve
+    // is not the built-in's).
+    std::string ResolveStoredName(const std::string& Name, std::optional<bool> bStoredAsBuiltIn) const;
+
+    // True if the constructor renamed any user preset, i.e. presets.conf
+    // should be saved from ToFileContents() to make the renames stick.
+    bool RenamedUserPresets() const
+    {
+        return !Renamed.empty();
+    }
 
     // Creates or overwrites the user preset called Name (after
     // NormalizePresetName). Refuses built-in names. On Ok, OutStoredName
@@ -111,10 +146,10 @@ public:
 private:
     Result Bind(PresetBindingMap& Map, const std::string& Target, const std::string& PresetName);
 
-    std::vector<EqPreset> BuiltIns;
     std::vector<EqPreset> User; // kept sorted by Name
     PresetBindingMap Devices;
     PresetBindingMap Apps;
+    std::map<std::string, std::string> Renamed; // by the constructor: old name -> new name
 };
 
 // Loads/saves the user (non-built-in) presets and bindings as a key=value file at
@@ -126,9 +161,10 @@ public:
     PresetStore();
     explicit PresetStore(std::string InPath);
 
-    // Missing file -> empty contents. Presets with an invalid, duplicate,
-    // or built-in-colliding name are skipped (logged), not fatal; bindings
-    // are loaded as-is (EqPresetCatalog drops dangling ones).
+    // Missing file -> empty contents. Presets with an invalid or duplicate
+    // name are skipped (logged), not fatal. Loaded as stored otherwise:
+    // EqPresetCatalog renames ones a built-in now shadows and drops
+    // dangling bindings.
     PresetFileContents Load() const;
 
     bool Save(const PresetFileContents& Contents) const;

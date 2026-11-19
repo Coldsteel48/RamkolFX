@@ -157,7 +157,8 @@ Downstream of the spatial stage: a 10-band graphic EQ (`HwEqStage`) and a
 psychoacoustic bass enhancer (`BassEnhancerStage`), both live-adjustable
 per-band from the GUI's "Equalizer & Bass" tab (`SetHwEqBand` /
 `SetBassEnhancer`). The EQ curve plus bass enhancer can be saved as named
-presets (built-ins: Flat, Bass Boost, Vocal) and bound to an output
+presets (built-ins grouped as General, Music genres and Game genres -
+Rock, Jazz, Hip-Hop, FPS, RTS, Racing and more) and bound to an output
 device or to an app: the daemon tracks which apps are playing into the
 virtual sink and auto-switches to the bound preset, restoring the
 previous sound when they stop - see

@@ -360,17 +360,36 @@ int AudioEngine::Run()
     BassEnhancer = std::make_unique<BassEnhancerStage>(BassEnhancerSettingsState,
                                                         static_cast<float>(HardwareOutput::SampleRate));
 
+    bool bRewriteActivePreset = false;
     {
         std::lock_guard<std::mutex> Lock(PresetMutex);
+        // The catalog renames user presets a new built-in shadows (see
+        // EqPresetCatalog); saving makes presets.conf match it. If that
+        // fails, both files keep the old names, which resolve the same
+        // way next start - so settings.conf is only rewritten below once
+        // presets.conf has the new ones.
         PresetCatalog = EqPresetCatalog(PresetFile.Load());
-        if (LoadedSettings && PresetCatalog.Find(LoadedSettings->ActivePresetName))
+        bool bPresetFileCurrent = true;
+        if (PresetCatalog.RenamedUserPresets() && !PresetFile.Save(PresetCatalog.ToFileContents()))
         {
-            ActivePresetName = LoadedSettings->ActivePresetName;
-            bPresetModified = LoadedSettings->bPresetModified;
+            bPresetFileCurrent = false;
+            fprintf(stderr, "[ramkolfxd] presets: couldn't save the renamed presets to presets.conf; "
+                            "they're renamed for this session only and will be retried next start\n");
         }
-        // else: no preset was active, or it was deleted from presets.conf
-        // since - the curve itself was restored above either way, it just
-        // no longer has a name.
+        if (LoadedSettings)
+        {
+            ActivePresetName = PresetCatalog.ResolveStoredName(LoadedSettings->ActivePresetName,
+                                                               LoadedSettings->bActivePresetBuiltIn);
+            if (!ActivePresetName.empty())
+            {
+                bPresetModified = LoadedSettings->bPresetModified;
+            }
+            // else: no preset was active, it was deleted from presets.conf
+            // since, or its name is now a built-in's - the curve itself was
+            // restored above either way, it just no longer has a name.
+            bRewriteActivePreset = bPresetFileCurrent && (ActivePresetName != LoadedSettings->ActivePresetName ||
+                                                          !LoadedSettings->bActivePresetBuiltIn);
+        }
     }
 
     // Directories the daemon watches for user-supplied SOFA files - unlike
@@ -502,16 +521,27 @@ int AudioEngine::Run()
     }
     const bool bDeviceModesChanged = ApplyDeviceSpatialMode(InitialOutputDevice);
 
-    if (!LoadedSettings || LoadedSettings->OutputDeviceName != InitialOutputDevice || bDeviceModesChanged)
+    if (!LoadedSettings || LoadedSettings->OutputDeviceName != InitialOutputDevice || bDeviceModesChanged ||
+        bRewriteActivePreset)
     {
         // First run (nothing persisted yet) or the persisted device is
         // gone - remember whatever we resolved to instead so the next
         // start (and the GUI's picker) reflect it rather than re-running
-        // this fallback every time.
+        // this fallback every time. Also when the active preset resolved
+        // differently than stored (renamed, or no longer valid) or the
+        // file predates the built-in flag, so the next start reads it
+        // as resolved here.
         PersistedSettings ToSave = LoadedSettings.value_or(PersistedSettings{});
         ToSave.OutputDeviceName = InitialOutputDevice;
         ToSave.Mode = Mode.load(std::memory_order_relaxed);
         ToSave.DeviceSpatialModes = DeviceSpatialModes;
+        if (bRewriteActivePreset)
+        {
+            // No other thread runs yet, so these need no lock.
+            ToSave.ActivePresetName = ActivePresetName;
+            ToSave.bPresetModified = bPresetModified;
+            ToSave.bActivePresetBuiltIn = FindBuiltInEqPreset(ActivePresetName) != nullptr;
+        }
         Settings.Save(ToSave);
     }
 
@@ -1050,6 +1080,7 @@ void AudioEngine::PersistCurrentSettings()
     ToSave.OutputDeviceName = CurrentStatus.OutputDeviceName;
     ToSave.ActivePresetName = CurrentStatus.ActivePresetName;
     ToSave.bPresetModified = CurrentStatus.bPresetModified;
+    ToSave.bActivePresetBuiltIn = FindBuiltInEqPreset(CurrentStatus.ActivePresetName) != nullptr;
     {
         std::lock_guard<std::mutex> Lock(DeviceModeMutex);
         ToSave.DeviceSpatialModes = DeviceSpatialModes;

@@ -97,8 +97,8 @@ Shared code linked into both `ramkolfxd` (daemon) and `ramkolfx-gui`.
 
 ### `PresetStore` / `EqPresetCatalog` (+ `EqPreset`)
 - **File:** `daemon/src/preset_store.hpp` (+ `.cpp`)
-- **Responsibility:** Named EQ presets (a full HW EQ curve plus bass enhancer settings). `EqPresetCatalog` is the in-memory catalog — read-only built-ins (Flat, Bass Boost, Vocal) in front of the user presets — plus the device and app bindings; deleting a preset drops every binding to it. `PresetStore` persists the user presets and bindings to `presets.conf`. See `docs/eq-presets-plan.md`.
-- **Key interface:** `EqPresetCatalog::Find`, `Save`, `Remove`, `BindDevice`, `BindApp`, `DeviceBinding`, `AppBinding`, `Infos`, `ToFileContents`; `PresetStore::Load`, `Save`; `BuiltInEqPresets`, `WriteEqCurve`/`ReadEqCurve`.
+- **Responsibility:** Named EQ presets (a full HW EQ curve plus bass enhancer settings). `EqPresetCatalog` is the in-memory catalog — read-only built-ins (General, Music and Games categories; a user preset saved under a name a later built-in took is renamed `<name> (custom)` by the catalog's constructor, bindings included, and `ResolveStoredName` maps the active preset remembered in `settings.conf` the same way) in front of the user presets — plus the device and app bindings; deleting a preset drops every binding to it. `PresetStore` persists the user presets and bindings to `presets.conf`. See `docs/eq-presets-plan.md`.
+- **Key interface:** `EqPresetCatalog::Find`, `ResolveStoredName`, `Save`, `Remove`, `BindDevice`, `BindApp`, `DeviceBinding`, `AppBinding`, `Infos`, `ToFileContents`; `PresetStore::Load`, `Save`; `BuiltInEqPresets`, `FindBuiltInEqPreset`, `WriteEqCurve`/`ReadEqCurve`.
 - **Collaborators:** Owned by `AudioEngine` (`PresetFile`, `PresetCatalog`, under `PresetMutex`); read by `AutoSwitchController`. Part of the `ramkolfx_presets` static library shared with the unit tests.
 
 ### `AppActivityTracker` / `ResolveAutoSwitchTarget` / `AutoSwitchController` (+ `AutoSwitchTarget`, `EqState`)

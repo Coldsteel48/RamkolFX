@@ -1207,24 +1207,16 @@ void App::DrawAppPresetCard()
     ImGui::BeginDisabled(!Selected);
     ImGui::SetNextItemWidth(-1);
     const char* Preview = Selected && !Selected->BoundPreset.empty() ? Selected->BoundPreset.c_str() : "(none)";
-    if (ImGui::BeginCombo("##app_preset_select", Preview))
+    if (ImGui::BeginCombo("##app_preset_select", Preview, ImGuiComboFlags_HeightLarge))
     {
         std::optional<std::string> Choice;
         if (ImGui::Selectable("(none)", Selected && Selected->BoundPreset.empty()))
         {
             Choice = std::string();
         }
-        for (size_t i = 0; i < EqPresets.size(); ++i)
+        if (auto Picked = DrawPresetSelectables(Selected ? Selected->BoundPreset : std::string()))
         {
-            const EqPresetInfo& Info = EqPresets[i];
-            if (i == 0 || Info.bBuiltIn != EqPresets[i - 1].bBuiltIn)
-            {
-                ImGui::Separator();
-            }
-            if (ImGui::Selectable(Info.Name.c_str(), Selected && Selected->BoundPreset == Info.Name))
-            {
-                Choice = Info.Name;
-            }
+            Choice = std::move(Picked);
         }
         ImGui::EndCombo();
         if (Choice && Selected && Apply(Client.BindAppPreset(Selected->Name, *Choice)))
@@ -1267,6 +1259,30 @@ void App::RebindDeviceIfBound(const std::string& PresetName)
     }
 }
 
+std::optional<std::string> App::DrawPresetSelectables(const std::string& Current) const
+{
+    // Built-ins arrive grouped by category, then the user's presets - a
+    // header wherever the category changes. Own ID scope, so a preset
+    // named like an entry the caller draws next to these (the app
+    // combo's "(none)") can't share its ImGui ID.
+    std::optional<std::string> Picked;
+    ImGui::PushID("eq_presets");
+    for (size_t i = 0; i < EqPresets.size(); ++i)
+    {
+        const EqPresetInfo& Info = EqPresets[i];
+        if (i == 0 || Info.Category != EqPresets[i - 1].Category)
+        {
+            ImGui::SeparatorText(EqPresetCategoryLabel(Info.Category));
+        }
+        if (ImGui::Selectable(Info.Name.c_str(), Info.Name == Current))
+        {
+            Picked = Info.Name;
+        }
+    }
+    ImGui::PopID();
+    return Picked;
+}
+
 void App::DrawPresetControls()
 {
     const std::string& Active = LastStatus.ActivePresetName;
@@ -1284,34 +1300,23 @@ void App::DrawPresetControls()
     // Preset picker. Selecting the already-active preset re-applies it,
     // which is how a "Custom (unsaved)" tweak gets reverted.
     ImGui::SetNextItemWidth(-1);
-    if (ImGui::BeginCombo("##eq_preset_select", Active.empty() ? "(none)" : Active.c_str()))
+    if (ImGui::BeginCombo("##eq_preset_select", Active.empty() ? "(none)" : Active.c_str(),
+                          ImGuiComboFlags_HeightLarge))
     {
-        for (size_t i = 0; i < EqPresets.size(); ++i)
-        {
-            const EqPresetInfo& Info = EqPresets[i];
-            if (i > 0 && Info.bBuiltIn != EqPresets[i - 1].bBuiltIn)
-            {
-                ImGui::Separator();
-            }
-            if (ImGui::Selectable(Info.Name.c_str(), Info.Name == Active))
-            {
-                // Apply can replace EqPresets (PresetCatalogRevision moved),
-                // which invalidates Info - copy the name and stop iterating.
-                const std::string Name = Info.Name;
-                if (Apply(Client.ApplyEqPreset(Name)))
-                {
-                    RebindDeviceIfBound(Name);
-                }
-                break;
-            }
-        }
+        // Applied after the list is drawn: Apply can replace EqPresets
+        // (PresetCatalogRevision moved), and Active refers into LastStatus.
+        const std::optional<std::string> Picked = DrawPresetSelectables(Active);
         ImGui::EndCombo();
+        if (Picked && Apply(Client.ApplyEqPreset(*Picked)))
+        {
+            RebindDeviceIfBound(*Picked);
+        }
     }
 
     // Looked up only now, after the combo: any Apply above may have
     // replaced EqPresets, so a pointer taken earlier could dangle.
     const EqPresetInfo* ActiveInfo = Active.empty() ? nullptr : FindPreset(Active);
-    const bool bActiveIsUserPreset = ActiveInfo && !ActiveInfo->bBuiltIn;
+    const bool bActiveIsUserPreset = ActiveInfo && !ActiveInfo->IsBuiltIn();
 
     ImGui::PushStyleColor(ImGuiCol_Button, palette::AccentGradientEndV4);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.024f, 0.071f, 0.11f, 1.0f));
@@ -1373,8 +1378,8 @@ void App::DrawPresetControls()
         const std::optional<std::string> Normalized = NormalizePresetName(SavePresetNameBuffer);
         const std::string Name = Normalized.value_or(std::string());
         const EqPresetInfo* Existing = Normalized ? FindPreset(Name) : nullptr;
-        const bool bCanSave = Normalized && !(Existing && Existing->bBuiltIn);
-        if (Existing && Existing->bBuiltIn)
+        const bool bCanSave = Normalized && !(Existing && Existing->IsBuiltIn());
+        if (Existing && Existing->IsBuiltIn())
         {
             ImGui::TextColored(palette::WarningV4, "Built-in presets can't be overwritten");
         }

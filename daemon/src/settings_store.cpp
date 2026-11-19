@@ -96,6 +96,10 @@ std::optional<PersistedSettings> SettingsStore::Load() const
     ReadEqCurve(*File, "", Result.HwEqBands, Result.BassEnhancer);
     Result.ActivePresetName = File->GetString("eq_preset.active", Result.ActivePresetName);
     Result.bPresetModified = File->GetBool("eq_preset.modified", Result.bPresetModified);
+    if (File->Has("eq_preset.active_builtin"))
+    {
+        Result.bActivePresetBuiltIn = File->GetBool("eq_preset.active_builtin", false);
+    }
 
     const size_t DeviceModeCount = File->GetCount("device_mode.count");
     for (size_t i = 0; i < DeviceModeCount; ++i)
@@ -126,6 +130,10 @@ void SettingsStore::Save(const PersistedSettings& InSettings) const
     WriteEqCurve(Out, "", InSettings.HwEqBands, InSettings.BassEnhancer);
     Out << "eq_preset.active=" << InSettings.ActivePresetName << "\n";
     Out << "eq_preset.modified=" << (InSettings.bPresetModified ? 1 : 0) << "\n";
+    if (InSettings.bActivePresetBuiltIn)
+    {
+        Out << "eq_preset.active_builtin=" << (*InSettings.bActivePresetBuiltIn ? 1 : 0) << "\n";
+    }
     Out << "device_mode.count=" << InSettings.DeviceSpatialModes.size() << "\n";
     size_t DeviceIndex = 0;
     for (const auto& [Device, DeviceMode] : InSettings.DeviceSpatialModes)
