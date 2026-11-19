@@ -1,3 +1,9 @@
+ramkolfx (0.1.1-1) unstable; urgency=medium
+
+  * Release 0.1.1.
+
+ -- Roman Levin (Coldsteel48) <noreply@github.com>  Thu, 19 Nov 2026 21:56:47 +0200
+
 ramkolfx (0.1.0~alpha.1-1) unstable; urgency=medium
 
   * Release 0.1.0-alpha.1 (first alpha).

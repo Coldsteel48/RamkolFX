@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-19
+
 ### Added
 
 - GUI Settings popup: start at login (XDG autostart, launches with the new
@@ -35,5 +37,6 @@ First alpha. Feature set at this point:
 - Packages: Debian, RPM, Arch, Alpine, Gentoo ebuild, Nix flake.
 - `--version` on both binaries; version shown in the GUI header.
 
-[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.0-alpha.1...v0.1.1
 [0.1.0-alpha.1]: https://github.com/Coldsteel48/RamkolFX/releases/tag/v0.1.0-alpha.1

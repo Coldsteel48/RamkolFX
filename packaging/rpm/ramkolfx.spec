@@ -2,9 +2,9 @@
 
 Name:           ramkolfx
 # upstream_version / Version / Release are maintained by packaging/version.sh
-%global upstream_version 0.1.0-alpha.1
-Version:        0.1.0
-Release:        0.1.alpha1
+%global upstream_version 0.1.1
+Version:        0.1.1
+Release:        1
 Summary:        3D spatial audio, EQ and bass enhancer for PipeWire
 License:        GPL-3.0-only
 URL:            https://github.com/Coldsteel48/RamkolFX
@@ -61,5 +61,8 @@ DESTDIR=%{buildroot} cmake --install build --component ramkolfx
 %doc %{_docdir}/RamkolFX/
 
 %changelog
+* Thu Nov 19 2026 Roman Levin (Coldsteel48) <noreply@github.com> - 0.1.1-1
+- Release 0.1.1
+
 * Wed Nov 18 2026 Roman Levin (Coldsteel48) <noreply@github.com> - 0.1.0-0.1.alpha1
 - Release 0.1.0-alpha.1 (first alpha)

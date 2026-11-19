@@ -286,8 +286,8 @@ touching the rest of the pipeline.
 ## Versioning
 
 RamkolFX follows [Semantic Versioning](https://semver.org/). The current
-version lives in the [`VERSION`](VERSION) file and is **alpha**: expect rough
-edges, and until 1.0 anything (control protocol, settings/preset formats,
+version lives in the [`VERSION`](VERSION) file. It is pre-1.0: expect rough
+edges, and until then anything (control protocol, settings/preset formats,
 CLI) may change between releases. Pre-releases are tagged
 `vMAJOR.MINOR.PATCH-alpha.N`, then `-beta.N`, `-rc.N`, then the plain
 release; GitHub marks every one of those except the last as a pre-release.
