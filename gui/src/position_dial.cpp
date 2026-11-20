@@ -43,6 +43,14 @@ constexpr float PulsePeriodSeconds = 1.0f;
 constexpr float PulseScaleMax = 1.25f;
 constexpr float PulseAlphaMin = 0.55f;
 
+// Channel-activity animation (DrawPositionDial's Activity): at full level
+// a cone grows to ActivityScaleMax and its glow by ActivityGlowGrowth,
+// with glow alpha rising from the static glow's to ActivityGlowAlphaMax.
+constexpr float ActivityScaleMax = 1.3f;
+constexpr float ActivityGlowGrowth = 0.6f;
+constexpr int StaticGlowAlpha = 55;
+constexpr int ActivityGlowAlphaMax = 190;
+
 // Draws one speaker's cone shape, rotated to face Direction (the same
 // unit vector used to place its handle - see AzimuthToUnitVector), with
 // two ridge lines for a driver-cone look. Perp is Direction rotated 90
@@ -135,7 +143,8 @@ bool DrawPositionDial(const char* Label, std::array<float, SpeakerCount>& Azimut
                       std::array<float, SpeakerCount>& DistancesMeters,
                       const std::array<bool, SpeakerCount>& Muted, bool bMirrorEnabled,
                       int* OutChangedIndex, int* OutMirroredIndex, int* OutMuteToggledIndex,
-                      int* OutSoloIndex, float Scale, bool bTestNoiseEnabled, float PulseTimeSeconds)
+                      int* OutSoloIndex, float Scale, bool bTestNoiseEnabled, float PulseTimeSeconds,
+                      const std::array<float, SpeakerCount>* Activity, float LfeActivity)
 {
     *OutChangedIndex = -1;
     *OutMirroredIndex = -1;
@@ -172,6 +181,21 @@ bool DrawPositionDial(const char* Label, std::array<float, SpeakerCount>& Azimut
             ImVec2(Center.x + SpokeDir.x * InnerRadiusPx, Center.y + SpokeDir.y * InnerRadiusPx),
             ImVec2(Center.x + SpokeDir.x * OuterRadiusPx, Center.y + SpokeDir.y * OuterRadiusPx),
             IM_COL32(255, 255, 255, 13), 1.0f * Scale);
+    }
+
+    // LFE has no position, so its activity glows the center, under the
+    // reticle.
+    if (Activity)
+    {
+        const float Lfe = std::clamp(LfeActivity, 0.0f, 1.0f);
+        if (Lfe > 0.0f)
+        {
+            DrawList->AddCircleFilled(Center, 14.0f * Scale * (1.0f + 0.8f * Lfe),
+                                      IM_COL32(56, 189, 248, static_cast<int>(150 * Lfe)));
+        }
+        const ImVec2 LfeTextSize = ImGui::CalcTextSize("LFE");
+        DrawList->AddText(ImVec2(Center.x - LfeTextSize.x * 0.5f, Center.y + 17.0f * Scale), palette::TextMuted,
+                          "LFE");
     }
 
     // Center crosshair reticle.
@@ -226,8 +250,10 @@ bool DrawPositionDial(const char* Label, std::array<float, SpeakerCount>& Azimut
         }
 
         const bool bIsMuted = Muted[i];
-        const bool bPulsing = bTestNoiseEnabled && !bIsMuted;
-        const float SpeakerScale = Scale * (bPulsing ? PulseScale : 1.0f);
+        const bool bPulsing = !Activity && bTestNoiseEnabled && !bIsMuted;
+        const float Level = (Activity && !bIsMuted) ? std::clamp((*Activity)[i], 0.0f, 1.0f) : 0.0f;
+        const float ConeScale = bPulsing ? PulseScale : 1.0f + (ActivityScaleMax - 1.0f) * Level;
+        const float SpeakerScale = Scale * ConeScale;
         const float AlphaMul = bPulsing ? PulseAlphaMul : 1.0f;
 
         const ImU32 ConeFillColor = bIsMuted   ? IM_COL32(58, 66, 80, 255)
@@ -240,9 +266,12 @@ bool DrawPositionDial(const char* Label, std::array<float, SpeakerCount>& Azimut
         {
             // Soft glow behind the cone for every active speaker, matching
             // the reference design's drop-shadow accent glow; brighter
-            // while pulsing.
-            const int GlowAlpha = static_cast<int>((bPulsing ? 90 : 55) * AlphaMul);
-            DrawList->AddCircleFilled(HandlePos, ScaledHandleRadius * 1.9f * (bPulsing ? PulseScale : 1.0f),
+            // while pulsing, or with the channel's level in activity view.
+            const int GlowAlpha =
+                bPulsing ? static_cast<int>(90 * AlphaMul)
+                         : StaticGlowAlpha + static_cast<int>((ActivityGlowAlphaMax - StaticGlowAlpha) * Level);
+            const float GlowScale = bPulsing ? PulseScale : 1.0f + ActivityGlowGrowth * Level;
+            DrawList->AddCircleFilled(HandlePos, ScaledHandleRadius * 1.9f * GlowScale,
                                       IM_COL32(56, 189, 248, GlowAlpha));
         }
 

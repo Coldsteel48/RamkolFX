@@ -62,6 +62,9 @@ enum class Opcode : uint8
     GetBassEnhancerState = 0x17,
     DeleteEqPreset = 0x18,
     BindDevicePreset = 0x19,
+    // 0x1A-0x1F are reserved for the content-detection requests
+    // (docs/content-detect-plan.md), developed in parallel.
+    GetChannelLevels = 0x20,
     // Responses
     StatusResponse = 0x81,
     ErrorResponse = 0x82,
@@ -71,6 +74,7 @@ enum class Opcode : uint8
     EqPresetCatalogResponse = 0x86,
     HwEqStateResponse = 0x87,
     BassEnhancerStateResponse = 0x88,
+    ChannelLevelsResponse = 0x90, // 0x89+ likewise reserved for content detection
 };
 
 // The active spatialization DSP path. Off is a static-gain downmix
@@ -268,6 +272,24 @@ struct Status
     std::string PresetSourceApp;
 };
 
+// Per-channel activity of the 7.1 signal entering the spatializer, for the
+// GUI's speaker-dial activity view (GetChannelLevels). Each value is the
+// linear peak amplitude (0 = silence, 1 = full scale; can exceed 1 for
+// clipping input) seen on that channel since the previous GetChannelLevels
+// request - the daemon resets its peak-hold on every read, so with more
+// than one client polling each sees only the peaks since *any* client's
+// last read (fine for a cosmetic meter). Measured after per-speaker mute
+// and near-field gain, so a muted speaker reads silent, and on whatever is
+// actually being spatialized: real audio, or test noise while that's on.
+struct ChannelLevels
+{
+    std::array<float, SpeakerCount> SpeakerPeak{}; // FL,FR,FC,RL,RR,SL,SR - same order as Status
+    float LfePeak = 0.0f;
+};
+
+// Wire size of ChannelLevels: one float per speaker, then LFE.
+inline constexpr size_t ChannelLevelsWireSize = 4 * (SpeakerCount + 1);
+
 // Longest accepted EQ preset name, in bytes (after trimming whitespace).
 inline constexpr size_t MaxEqPresetNameLength = 64;
 
@@ -406,6 +428,10 @@ std::optional<std::vector<ContentStreamInfo>> DecodeContentStreamListResponse(co
 std::optional<std::vector<EqPresetInfo>> DecodeEqPresetCatalogResponse(const uint8* Payload,
                                                                          uint16 PayloadLength);
 
+// Decodes a ChannelLevelsResponse payload. Returns nullopt if
+// PayloadLength isn't exactly ChannelLevelsWireSize.
+std::optional<ChannelLevels> DecodeChannelLevelsResponse(const uint8* Payload, uint16 PayloadLength);
+
 // Encodes a full status response message (header + payload), ready to
 // write directly to the socket.
 std::vector<uint8> EncodeStatusResponse(const Status& InStatus);
@@ -431,6 +457,9 @@ std::vector<uint8> EncodeHwEqStateResponse(const std::array<EqBand, MaxEqBands>&
 
 // Encodes a full BassEnhancerStateResponse message (header + payload).
 std::vector<uint8> EncodeBassEnhancerStateResponse(const BassEnhancerSettings& Settings);
+
+// Encodes a full ChannelLevelsResponse message (header + payload).
+std::vector<uint8> EncodeChannelLevelsResponse(const ChannelLevels& Levels);
 
 // Encodes a full content stream list response message. Same drop-whole-
 // entries-past-MaxPayloadSize behavior as EncodeDeviceListResponse.
@@ -466,6 +495,7 @@ std::vector<uint8> EncodeGetContentStreamsRequest();
 std::vector<uint8> EncodeBindAppPresetRequest(const std::string& AppName, const std::string& PresetName);
 std::vector<uint8> EncodeBindDevicePresetRequest(const std::string& DeviceName, const std::string& PresetName);
 std::vector<uint8> EncodeGetEqPresetCatalogRequest();
+std::vector<uint8> EncodeGetChannelLevelsRequest();
 
 // Resolves the default control socket path: $XDG_RUNTIME_DIR/ramkolfx/control.sock,
 // falling back to /tmp/ramkolfx-<uid>/control.sock if XDG_RUNTIME_DIR isn't set.

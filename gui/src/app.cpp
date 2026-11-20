@@ -9,6 +9,7 @@
 #include "app.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -28,6 +29,24 @@ constexpr float ReconnectIntervalSeconds = 1.0f;
 constexpr float StatusPollIntervalSeconds = 0.25f;
 constexpr float DevicePollIntervalSeconds = 2.0f; // hotplug doesn't need to feel instant
 constexpr float PositionSendIntervalSeconds = 0.03f; // ~33 Hz cap while dragging
+constexpr float LevelPollIntervalSeconds = 1.0f / 30.0f; // smooth enough for the dial animation
+
+// Channel-activity display mapping: peaks are shown on a dB scale from
+// ActivityFloorDb (0) to full scale (1), rise instantly and fall by
+// ActivityReleasePerSecond of that range per second - fast enough that
+// beats read as separate pulses.
+constexpr float ActivityFloorDb = -48.0f;
+constexpr float ActivityReleasePerSecond = 1.8f;
+
+float PeakToActivity(float Peak)
+{
+    if (!(Peak > 0.0f)) // also catches NaN
+    {
+        return 0.0f;
+    }
+    const float Db = 20.0f * std::log10(Peak);
+    return std::clamp((Db - ActivityFloorDb) / -ActivityFloorDb, 0.0f, 1.0f);
+}
 
 // Shared, unscaled (multiply by DpiScale at the call site) layout
 // constants - kept in one place so the CardScope padding values used when
@@ -84,6 +103,8 @@ void App::Tick(float DeltaTimeSeconds)
                         EqPresets = std::move(*PresetResult);
                     }
                     DevicePollTimerSeconds = DevicePollIntervalSeconds;
+                    bChannelLevelsUnsupported = false; // may be a newer daemon now
+                    bLevelPollPrimed = false;
                     bConnected = true;
                 }
                 else
@@ -144,7 +165,61 @@ void App::Tick(float DeltaTimeSeconds)
         TestNoisePulseTimeSeconds = 0.0f;
     }
 
+    UpdateChannelActivity(DeltaTimeSeconds);
+
     DrawUI();
+}
+
+void App::UpdateChannelActivity(float DeltaTimeSeconds)
+{
+    const float Release = ActivityReleasePerSecond * DeltaTimeSeconds;
+    for (float& Activity : SpeakerActivity)
+    {
+        Activity = std::max(0.0f, Activity - Release);
+    }
+    LfeActivity = std::max(0.0f, LfeActivity - Release);
+
+    // Tick() only runs while the window is visible, so a hidden window
+    // never polls either.
+    const bool bPolling = bConnected && !bChannelLevelsUnsupported && Preferences.bShowChannelActivity &&
+                          Preferences.ActiveTabIndex == 0;
+    if (!bPolling)
+    {
+        LevelPollTimerSeconds = 0.0f;
+        bLevelPollPrimed = false;
+        return;
+    }
+
+    LevelPollTimerSeconds -= DeltaTimeSeconds;
+    if (LevelPollTimerSeconds > 0.0f)
+    {
+        return;
+    }
+    LevelPollTimerSeconds = LevelPollIntervalSeconds;
+
+    const std::optional<ChannelLevels> Levels = Client.RequestChannelLevels();
+    if (!Levels)
+    {
+        if (Client.IsConnected())
+        {
+            bChannelLevelsUnsupported = true;
+        }
+        else
+        {
+            MarkDisconnected();
+        }
+        return;
+    }
+    if (!bLevelPollPrimed)
+    {
+        bLevelPollPrimed = true;
+        return;
+    }
+    for (size_t i = 0; i < SpeakerCount; ++i)
+    {
+        SpeakerActivity[i] = std::max(SpeakerActivity[i], PeakToActivity(Levels->SpeakerPeak[i]));
+    }
+    LfeActivity = std::max(LfeActivity, PeakToActivity(Levels->LfePeak));
 }
 
 void App::OnWindowHidden()
@@ -650,7 +725,8 @@ void App::DrawSpatialTab()
         const bool bDialChanged = DrawPositionDial(
             "speaker_dial", LastStatus.SpeakerAzimuthDegrees, LastStatus.SpeakerDistanceMeters,
             LastStatus.SpeakerMuted, Preferences.bMirrorModeEnabled, &ChangedIndex, &MirroredIndex, &MuteToggledIndex,
-            &SoloIndex, DpiScale, LastStatus.bTestNoiseEnabled, TestNoisePulseTimeSeconds);
+            &SoloIndex, DpiScale, LastStatus.bTestNoiseEnabled, TestNoisePulseTimeSeconds,
+            Preferences.bShowChannelActivity ? &SpeakerActivity : nullptr, LfeActivity);
 
         ImGui::SetCursorScreenPos(ImVec2(RadarCardMin.x, RadarCardMin.y + RadarCardSize));
 
@@ -769,6 +845,25 @@ void App::DrawSpatialTab()
         if (DrawToggleSwitch("test_noise", &bTestNoiseEnabled, DpiScale))
         {
             Apply(Client.SetTestNoiseEnabled(bTestNoiseEnabled));
+        }
+
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Channel activity");
+        ImGui::SameLine();
+        RightAlignCursor(RightColumnStart.x, RadarCardSize, ToggleTrackWidth * DpiScale);
+        if (DrawToggleSwitch("channel_activity", &Preferences.bShowChannelActivity, DpiScale))
+        {
+            PersistGuiPreferences();
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("When on, each speaker on the dial pulses with the live level of its channel, "
+                               "so you can see which channels the playing audio actually uses.\nThe glow in "
+                               "the center is the LFE (subwoofer) channel.");
+        }
+        if (Preferences.bShowChannelActivity && bChannelLevelsUnsupported)
+        {
+            ImGui::TextColored(palette::TextMutedV4, "Restart the RamkolFX daemon to enable this.");
         }
     }
     ImGui::EndGroup();

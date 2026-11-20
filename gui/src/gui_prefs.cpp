@@ -41,6 +41,7 @@ GuiPreferences LoadGuiPreferences()
         return Result;
     }
     Result.bMirrorModeEnabled = File->GetBool("mirror_left_right", Result.bMirrorModeEnabled);
+    Result.bShowChannelActivity = File->GetBool("show_channel_activity", Result.bShowChannelActivity);
     Result.bAdvancedEqMode = File->GetBool("advanced_eq_mode", Result.bAdvancedEqMode);
     Result.bAdvancedBassMode = File->GetBool("advanced_bass_mode", Result.bAdvancedBassMode);
     Result.ActiveTabIndex = File->GetLong("active_tab_index", Result.ActiveTabIndex) == 1 ? 1 : 0;
@@ -56,6 +57,7 @@ void SaveGuiPreferences(const GuiPreferences& InPreferences)
 
     std::ostringstream Out;
     Out << "mirror_left_right=" << (InPreferences.bMirrorModeEnabled ? 1 : 0) << "\n";
+    Out << "show_channel_activity=" << (InPreferences.bShowChannelActivity ? 1 : 0) << "\n";
     Out << "advanced_eq_mode=" << (InPreferences.bAdvancedEqMode ? 1 : 0) << "\n";
     Out << "advanced_bass_mode=" << (InPreferences.bAdvancedBassMode ? 1 : 0) << "\n";
     Out << "active_tab_index=" << InPreferences.ActiveTabIndex << "\n";

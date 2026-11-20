@@ -111,6 +111,15 @@ private:
     // one physical speaker at a time regardless of what's actually playing.
     void FillTestNoise(float* Interleaved, uint32 Frames);
 
+    // Raises each 7.1 channel's ChannelPeaks entry to the largest absolute
+    // sample in this block. Realtime-safe: only relaxed atomic CAS on 8
+    // floats per block, after one plain pass over the buffer.
+    void MeterChannelPeaks(const float* Interleaved, uint32 Frames);
+
+    // Reads every ChannelPeaks entry and resets it to 0 (peak-hold since
+    // the previous call) - control thread, for GetChannelLevels.
+    ChannelLevels TakeChannelLevels();
+
     // Returns whichever concrete stage Mode currently selects.
     DspStage& ActiveStage();
 
@@ -382,6 +391,15 @@ private:
     // copied into rather than mutating the captured buffer in place, since
     // that buffer belongs to VirtualSink.
     std::vector<float> InputScratch;
+
+    // Peak absolute sample per 7.1 channel (VirtualSink frame order, LFE
+    // included - SpeakerCount + 1 == VirtualSink::Channels, checked in
+    // audio_engine.cpp) of InputScratch as fed to the DSP stage, held until the
+    // next TakeChannelLevels(). The audio thread only ever raises a value
+    // and the control thread only ever resets it to 0, so a CAS-max on
+    // one side and an exchange on the other never lose more than the one
+    // block that raced the reset.
+    std::array<std::atomic<float>, SpeakerCount + 1> ChannelPeaks{};
 };
 
 } // namespace ramkolfx

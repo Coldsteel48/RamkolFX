@@ -205,6 +205,26 @@ TEST(BindRequests)
     CHECK(!DecodeCommand(Opcode::BindAppPreset, Payload(Message), PayloadLength(Message)));
 }
 
+TEST(ChannelLevelsRoundTrip)
+{
+    const auto Request = EncodeGetChannelLevelsRequest();
+    const auto Command = DecodeCommand(Opcode::GetChannelLevels, Payload(Request), PayloadLength(Request));
+    CHECK(Command && Command->CommandOpcode == Opcode::GetChannelLevels);
+
+    ChannelLevels In;
+    In.SpeakerPeak = {0.0f, 0.1f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f};
+    In.LfePeak = 0.125f;
+    const auto Message = EncodeChannelLevelsResponse(In);
+    const auto Header = TryReadHeader(Message.data(), Message.size());
+    REQUIRE(Header);
+    CHECK(Header->MessageOpcode == Opcode::ChannelLevelsResponse);
+    const auto Out = DecodeChannelLevelsResponse(Payload(Message), PayloadLength(Message));
+    REQUIRE(Out);
+    CHECK(Out->SpeakerPeak == In.SpeakerPeak);
+    CHECK(Out->LfePeak == In.LfePeak);
+    CHECK(!DecodeChannelLevelsResponse(Payload(Message), PayloadLength(Message) - 1));
+}
+
 TEST(RetiredOpcodesRejected)
 {
     const uint8 Dummy[4] = {0, 1, 'x', 0};

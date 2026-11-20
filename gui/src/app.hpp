@@ -219,6 +219,26 @@ private:
     // the speaker dial's test-noise pulse animation. Purely cosmetic - see
     // DrawPositionDial's PulseTimeSeconds parameter.
     float TestNoisePulseTimeSeconds = 0.0f;
+
+    // Channel-activity view (Preferences.bShowChannelActivity): what the
+    // speaker dial draws per speaker / for LFE, 0..1, already smoothed
+    // (instant rise, steady fall) - see UpdateChannelActivity.
+    std::array<float, SpeakerCount> SpeakerActivity{};
+    float LfeActivity = 0.0f;
+    float LevelPollTimerSeconds = 0.0f;
+
+    // False until the first GetChannelLevels after polling (re)starts has
+    // been read and thrown away: the daemon holds peaks until someone
+    // reads them, so that first reply can be minutes old.
+    bool bLevelPollPrimed = false;
+
+    // The connected daemon answered GetChannelLevels with an error - it
+    // predates the request. Stops polling until the next reconnect.
+    bool bChannelLevelsUnsupported = false;
+
+    // Polls the daemon's channel levels while the activity view is on and
+    // showing, and decays the displayed levels every frame.
+    void UpdateChannelActivity(float DeltaTimeSeconds);
 };
 
 } // namespace ramkolfx::gui

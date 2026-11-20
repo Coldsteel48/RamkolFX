@@ -66,6 +66,10 @@ public:
     std::optional<Status> BindDevicePreset(const std::string& DeviceName, const std::string& PresetName);
     std::optional<Status> BindAppPreset(const std::string& AppName, const std::string& PresetName);
     std::optional<std::vector<ContentStreamInfo>> RequestContentStreams();
+    // Peak levels since the previous call (see protocol.hpp's
+    // ChannelLevels). An older daemon that doesn't know this request
+    // answers with an ErrorResponse: nullopt with the connection still up.
+    std::optional<ChannelLevels> RequestChannelLevels();
 
 private:
     struct RawResponse

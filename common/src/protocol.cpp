@@ -350,6 +350,8 @@ std::optional<Command> DecodeCommand(Opcode InOpcode, const uint8* Payload, uint
     }
     case Opcode::GetEqPresetCatalog:
         return OutCommand;
+    case Opcode::GetChannelLevels:
+        return OutCommand;
     default:
         return std::nullopt;
     }
@@ -463,6 +465,21 @@ std::optional<BassEnhancerSettings> DecodeBassEnhancerStateResponse(const uint8*
         return std::nullopt;
     }
     return ReadBassEnhancerSettings(Payload);
+}
+
+std::optional<ChannelLevels> DecodeChannelLevelsResponse(const uint8* Payload, uint16 PayloadLength)
+{
+    if (PayloadLength != static_cast<uint16>(ChannelLevelsWireSize))
+    {
+        return std::nullopt;
+    }
+    ChannelLevels Levels;
+    for (size_t i = 0; i < SpeakerCount; ++i)
+    {
+        Levels.SpeakerPeak[i] = ReadFloatBE(Payload + 4 * i);
+    }
+    Levels.LfePeak = ReadFloatBE(Payload + 4 * SpeakerCount);
+    return Levels;
 }
 
 std::optional<std::vector<ContentStreamInfo>> DecodeContentStreamListResponse(const uint8* Payload,
@@ -584,6 +601,19 @@ std::vector<uint8> EncodeBassEnhancerStateResponse(const BassEnhancerSettings& S
     Out.reserve(HeaderSize + Payload.size());
     AppendHeader(Out, Opcode::BassEnhancerStateResponse, static_cast<uint16>(Payload.size()));
     Out.insert(Out.end(), Payload.begin(), Payload.end());
+    return Out;
+}
+
+std::vector<uint8> EncodeChannelLevelsResponse(const ChannelLevels& Levels)
+{
+    std::vector<uint8> Out;
+    Out.reserve(HeaderSize + ChannelLevelsWireSize);
+    AppendHeader(Out, Opcode::ChannelLevelsResponse, static_cast<uint16>(ChannelLevelsWireSize));
+    for (const float Peak : Levels.SpeakerPeak)
+    {
+        AppendFloatBE(Out, Peak);
+    }
+    AppendFloatBE(Out, Levels.LfePeak);
     return Out;
 }
 
@@ -797,6 +827,13 @@ std::vector<uint8> EncodeGetEqPresetCatalogRequest()
 {
     std::vector<uint8> Out;
     AppendHeader(Out, Opcode::GetEqPresetCatalog, 0);
+    return Out;
+}
+
+std::vector<uint8> EncodeGetChannelLevelsRequest()
+{
+    std::vector<uint8> Out;
+    AppendHeader(Out, Opcode::GetChannelLevels, 0);
     return Out;
 }
 

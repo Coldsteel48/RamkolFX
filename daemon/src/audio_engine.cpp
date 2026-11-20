@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <ctime>
 #include <cerrno>
 #include <cstdio>
@@ -692,6 +693,7 @@ void AudioEngine::HandleVirtualSinkAudio(const float* Interleaved, uint32 Frames
         std::memcpy(InputScratch.data(), Interleaved, sizeof(float) * Frames * VirtualSink::Channels);
     }
     ApplySpeakerGains(InputScratch.data(), Frames);
+    MeterChannelPeaks(InputScratch.data(), Frames);
 
     ActiveStage().Process(InputScratch.data(), VirtualSink::Channels, DspScratch.data(),
                            HardwareOutput::Channels, Frames);
@@ -743,6 +745,43 @@ void AudioEngine::ApplySpeakerGains(float* Interleaved, uint32 Frames)
             Frame[SpeakerToFrameIndex[Speaker]] *= Gains[Speaker];
         }
     }
+}
+
+static_assert(SpeakerCount + 1 == VirtualSink::Channels, "ChannelPeaks covers every 7.1 channel");
+
+void AudioEngine::MeterChannelPeaks(const float* Interleaved, uint32 Frames)
+{
+    float BlockPeaks[VirtualSink::Channels] = {};
+    for (uint32 FrameIndex = 0; FrameIndex < Frames; ++FrameIndex)
+    {
+        const float* Frame = Interleaved + FrameIndex * VirtualSink::Channels;
+        for (uint32 Channel = 0; Channel < VirtualSink::Channels; ++Channel)
+        {
+            BlockPeaks[Channel] = std::max(BlockPeaks[Channel], std::fabs(Frame[Channel]));
+        }
+    }
+
+    for (uint32 Channel = 0; Channel < VirtualSink::Channels; ++Channel)
+    {
+        std::atomic<float>& Held = ChannelPeaks[Channel];
+        float Current = Held.load(std::memory_order_relaxed);
+        while (BlockPeaks[Channel] > Current &&
+               !Held.compare_exchange_weak(Current, BlockPeaks[Channel], std::memory_order_relaxed))
+        {
+        }
+    }
+}
+
+ChannelLevels AudioEngine::TakeChannelLevels()
+{
+    ChannelLevels Levels;
+    for (size_t Speaker = 0; Speaker < SpeakerCount; ++Speaker)
+    {
+        Levels.SpeakerPeak[Speaker] =
+            ChannelPeaks[SpeakerToFrameIndex[Speaker]].exchange(0.0f, std::memory_order_relaxed);
+    }
+    Levels.LfePeak = ChannelPeaks[LFE].exchange(0.0f, std::memory_order_relaxed);
+    return Levels;
 }
 
 void AudioEngine::FillTestNoise(float* Interleaved, uint32 Frames)
@@ -800,6 +839,11 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
     {
         std::lock_guard<std::mutex> Lock(BassEnhancerMutex);
         return EncodeBassEnhancerStateResponse(BassEnhancerSettingsState);
+    }
+
+    if (InCommand.CommandOpcode == Opcode::GetChannelLevels)
+    {
+        return EncodeChannelLevelsResponse(TakeChannelLevels());
     }
 
     if (InCommand.CommandOpcode == Opcode::GetHrtfCatalog)

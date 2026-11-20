@@ -34,6 +34,12 @@ struct GuiPreferences
     // protocol.hpp's BassEnhancerSettings.
     bool bAdvancedBassMode = false;
 
+    // The speaker dial animates each speaker by the live level of the
+    // channel feeding it (see App::Tick / DrawPositionDial's Activity),
+    // instead of drawing them static. Polls the daemon ~30x/s while on and
+    // the Spatial tab is showing.
+    bool bShowChannelActivity = false;
+
     // Which of the two top-level tabs (0 = Spatial Audio & Speakers, 1 =
     // Equalizer & Bass) is showing (and was when the GUI last closed) -
     // only one tab's DrawXxxTab() runs per frame, so the AlwaysAutoResize

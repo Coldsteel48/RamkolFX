@@ -265,4 +265,9 @@ std::optional<std::vector<ContentStreamInfo>> ControlClient::RequestContentStrea
     return RequestDecoded(EncodeGetContentStreamsRequest(), Opcode::ContentStreamListResponse, DecodeContentStreamListResponse);
 }
 
+std::optional<ChannelLevels> ControlClient::RequestChannelLevels()
+{
+    return RequestDecoded(EncodeGetChannelLevelsRequest(), Opcode::ChannelLevelsResponse, DecodeChannelLevelsResponse);
+}
+
 } // namespace ramkolfx::gui

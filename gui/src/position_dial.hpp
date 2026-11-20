@@ -70,12 +70,21 @@ inline constexpr float PositionDialSize = 260.0f;
 // today by muting every other speaker (see the caller's *OutSoloIndex
 // handling), so Muted[i] alone is always the correct "is this speaker
 // currently part of the mix" signal - no separate solo state needed here.
+//
+// When Activity is non-null, each speaker is instead animated by its own
+// live level ((*Activity)[i], 0 = silent .. 1 = full scale, already
+// smoothed by the caller): louder = bigger cone and brighter glow, so you
+// can see which channels are actually playing. LfeActivity (same scale)
+// glows the dial's center, where the LFE channel - which has no position -
+// is drawn. Takes precedence over the test-noise pulse, since the levels
+// already include the test noise while it's on.
 bool DrawPositionDial(const char* Label, std::array<float, SpeakerCount>& AzimuthsDegrees,
                       std::array<float, SpeakerCount>& DistancesMeters,
                       const std::array<bool, SpeakerCount>& Muted, bool bMirrorEnabled,
                       int* OutChangedIndex, int* OutMirroredIndex, int* OutMuteToggledIndex,
                       int* OutSoloIndex, float Scale = 1.0f, bool bTestNoiseEnabled = false,
-                      float PulseTimeSeconds = 0.0f);
+                      float PulseTimeSeconds = 0.0f, const std::array<float, SpeakerCount>* Activity = nullptr,
+                      float LfeActivity = 0.0f);
 
 // Display label for speaker Index (0..SpeakerCount-1), in the same fixed
 // order DrawPositionDial uses (FL,FR,FC,RL,RR,SL,SR). Exported so callers
