@@ -10,6 +10,7 @@
 // model labels into classes, smoothing them into one stable class, and
 // pacing inference inside the performance budget.
 
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 #include <numbers>
@@ -71,6 +72,34 @@ TEST(LabelMapFoldsByNameTakingTheMax)
     CHECK(ScoreOf(Map.Fold(Short), DetectedClass::Jazz) == 0.0f);
 }
 
+TEST(LabelMapPrefersClassesTheModelNamesOutright)
+{
+    // A genre head after the AudioSet labels: its rock output replaces
+    // "Rock music"; Jazz keeps its AudioSet labels; "other" and unknown
+    // keys feed nothing.
+    const std::vector<std::string> Labels{"Speech", "Music",          "Rock music",     "Jazz",
+                                          "ramkolfx:rock", "ramkolfx:other", "ramkolfx:bogus"};
+    std::vector<std::string> Missing;
+    const LabelMap Map = LabelMap::Build(Labels, &Missing);
+    CHECK(std::find(Missing.begin(), Missing.end(), "Punk rock") == Missing.end()); // Rock is covered
+    CHECK(std::find(Missing.begin(), Missing.end(), "Swing music") != Missing.end());
+
+    const std::vector<float> ModelScores{0.1f, 0.8f, 0.9f, 0.3f, 0.2f, 0.7f, 0.6f};
+    const ClassScores Folded = Map.Fold(ModelScores);
+    CHECK(ScoreOf(Folded, DetectedClass::Rock) == 0.2f); // the head's, not "Rock music"
+    CHECK(ScoreOf(Folded, DetectedClass::Jazz) == 0.3f);
+    CHECK(ScoreOf(Folded, DetectedClass::Music) == 0.8f);
+    for (size_t c = 0; c < DetectedClassCount; ++c)
+    {
+        const auto Class = static_cast<DetectedClass>(c);
+        if (Class != DetectedClass::Speech && Class != DetectedClass::Music && Class != DetectedClass::Rock &&
+            Class != DetectedClass::Jazz)
+        {
+            CHECK(ScoreOf(Folded, Class) == 0.0f);
+        }
+    }
+}
+
 // --- DetectionSmoother --------------------------------------------------------
 
 TEST(NothingDetectedUntilConfirmed)
@@ -105,8 +134,57 @@ TEST(CoarseClassesAndGenreFloor)
 TEST(FilmCuesMakeItAMovie)
 {
     DetectionSmoother Smoother;
+    // The film average starts from a prior of no cues, so it takes a
+    // window or two longer than the confirm time.
     Feed(Smoother, Scores({{DetectedClass::Speech, 0.8f}, {DetectedClass::Movie, 0.5f}}), 0, 4000);
+    CHECK(Smoother.Current() != DetectedClass::Movie);
+    Feed(Smoother, Scores({{DetectedClass::Speech, 0.8f}, {DetectedClass::Movie, 0.5f}}), 6000, 8000);
     CHECK(Smoother.Current() == DetectedClass::Movie);
+}
+
+TEST(ActionWithoutClearSpeechOrMusicIsAMovie)
+{
+    // Explosions and engines: neither Speech nor Music reaches the
+    // coarse threshold, the film cues do.
+    DetectionSmoother Smoother;
+    Feed(Smoother,
+         Scores({{DetectedClass::Speech, 0.2f}, {DetectedClass::Music, 0.2f}, {DetectedClass::Movie, 0.4f}}), 0,
+         10000);
+    CHECK(Smoother.Current() == DetectedClass::Movie);
+}
+
+TEST(BurstyFilmCuesAddUp)
+{
+    // Dialogue with a gunshot every third window: the cues' long average
+    // stays above the threshold, so it's a Movie, not Speech, and stays
+    // one through the dialogue in between.
+    DetectionSmoother Smoother;
+    const ClassScores Dialogue = Scores({{DetectedClass::Speech, 0.6f}, {DetectedClass::Movie, 0.05f}});
+    const ClassScores Shot = Scores({{DetectedClass::Speech, 0.6f}, {DetectedClass::Movie, 0.8f}});
+    for (int64_t T = 0; T <= 30000; T += 2000)
+    {
+        Smoother.AddScores((T / 2000) % 3 == 0 ? Shot : Dialogue, T);
+    }
+    CHECK(Smoother.Current() == DetectedClass::Movie);
+
+    // A podcast with the odd stray cue stays Speech - even one that
+    // opens on it.
+    DetectionSmoother Podcast;
+    for (int64_t T = 0; T <= 30000; T += 2000)
+    {
+        Podcast.AddScores((T / 2000) % 8 == 0 ? Shot : Dialogue, T);
+    }
+    CHECK(Podcast.Current() == DetectedClass::Speech);
+}
+
+TEST(MovieFoldSumsItsCues)
+{
+    const std::vector<std::string> Labels{"Speech", "Gunshot, gunfire", "Vehicle", "Wind", "Explosion"};
+    const LabelMap Map = LabelMap::Build(Labels);
+    CHECK(std::abs(ScoreOf(Map.Fold(std::vector<float>{0.9f, 0.1f, 0.15f, 0.05f, 0.0f}), DetectedClass::Movie) -
+                   0.3f) < 1e-6f);
+    // Capped at 1.
+    CHECK(ScoreOf(Map.Fold(std::vector<float>{0.0f, 0.9f, 0.8f, 0.7f, 0.6f}), DetectedClass::Movie) == 1.0f);
 }
 
 TEST(QuietPassageHoldsTheClass)

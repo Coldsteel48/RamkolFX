@@ -30,7 +30,20 @@ const std::initializer_list<ClassFold> DefaultFold = {
     {DetectedClass::Speech,
      {"Speech", "Narration, monologue", "Conversation", "Male speech, man speaking",
       "Female speech, woman speaking"}},
-    {DetectedClass::Movie, {"Explosion", "Gunshot, gunfire", "Vehicle", "Soundtrack music"}},
+    // Film cues: the sound events that set a film or a game apart from a
+    // podcast or a song - weapons, vehicles, impacts, weather, outdoor
+    // and large-room ambience, animals. Each one is rare and small, so
+    // the class sums them (see SummedClass) rather than taking the max.
+    // Measured on the phase 7 test set: a film scene's windows average
+    // 0.14-0.46, a podcast's at most 0.08, a song's at most 0.13.
+    // ("Soundtrack music" is out: it fires on songs more than on films.)
+    {DetectedClass::Movie,
+     {"Explosion", "Boom", "Gunshot, gunfire", "Machine gun", "Fusillade", "Artillery fire", "Vehicle", "Car",
+      "Motor vehicle (road)", "Race car, auto racing", "Aircraft", "Helicopter", "Smash, crash", "Shatter",
+      "Breaking", "Whack, thwack", "Thunk", "Whoosh, swoosh, swish", "Sound effect", "Wind", "Rain", "Thunder",
+      "Fire", "Eruption", "Outside, urban or manmade", "Outside, rural or natural", "Siren", "Alarm", "Screaming",
+      "Inside, large room or hall", "Air horn, truck horn", "Vehicle horn, car horn, honking",
+      "Boat, Water vehicle", "Animal", "Door", "Slam"}},
     {DetectedClass::Music, {"Music"}},
     {DetectedClass::Rock,
      {"Rock music", "Rock and roll", "Punk rock", "Grunge", "Progressive rock", "Psychedelic rock"}},
@@ -48,6 +61,13 @@ const std::initializer_list<ClassFold> DefaultFold = {
     {DetectedClass::Acoustic, {"Folk music", "Country", "Bluegrass", "Acoustic guitar"}},
 };
 
+// Classes whose score is the sum of their labels (capped at 1) rather
+// than the max: many small, independent cues adding up.
+bool SummedClass(DetectedClass Class)
+{
+    return Class == DetectedClass::Movie;
+}
+
 bool IsMusicSide(DetectedClass Class)
 {
     return Class == DetectedClass::Music || IsGenreClass(Class);
@@ -57,8 +77,23 @@ bool IsMusicSide(DetectedClass Class)
 LabelMap LabelMap::Build(const std::vector<std::string>& ModelLabels, std::vector<std::string>* OutMissing)
 {
     LabelMap Map;
+    constexpr std::string_view Prefix = "ramkolfx:";
+    for (size_t i = 0; i < ModelLabels.size(); ++i)
+    {
+        if (ModelLabels[i].starts_with(Prefix))
+        {
+            if (const auto Class = DetectedClassFromKey(ModelLabels[i].substr(Prefix.size())))
+            {
+                Map.Members[static_cast<size_t>(*Class)].push_back(i);
+            }
+        }
+    }
     for (const ClassFold& Fold : DefaultFold)
     {
+        if (!Map.Members[static_cast<size_t>(Fold.Class)].empty())
+        {
+            continue; // named outright by the model
+        }
         for (const char* Label : Fold.Labels)
         {
             const auto It = std::find(ModelLabels.begin(), ModelLabels.end(), Label);
@@ -82,13 +117,15 @@ ClassScores LabelMap::Fold(std::span<const float> ModelScores) const
     ClassScores Out{};
     for (size_t Class = 0; Class < DetectedClassCount; ++Class)
     {
+        const bool bSum = SummedClass(static_cast<DetectedClass>(Class));
         for (const size_t Index : Members[Class])
         {
             if (Index < ModelScores.size())
             {
-                Out[Class] = std::max(Out[Class], ModelScores[Index]);
+                Out[Class] = bSum ? Out[Class] + ModelScores[Index] : std::max(Out[Class], ModelScores[Index]);
             }
         }
+        Out[Class] = std::min(Out[Class], 1.0f);
     }
     return Out;
 }
@@ -110,15 +147,17 @@ DetectedClass DetectionSmoother::Decide() const
     const float Music = ScoreOf(Evidence, DetectedClass::Music);
     const float Cues = ScoreOf(Evidence, DetectedClass::Movie);
 
+    // Film cues first: an action scene often has neither clear speech nor
+    // clear music, and a dialogue scene's speech is no podcast's.
+    if (Cues >= Tuning.MovieThreshold - Bias(CurrentClass == DetectedClass::Movie))
+    {
+        return DetectedClass::Movie;
+    }
     // Anything detected at all? Lowered while holding a class, so a quiet
     // passage doesn't drop it.
     if (std::max(Speech, Music) < Tuning.CoarseThreshold - Bias(CurrentClass != DetectedClass::None))
     {
         return DetectedClass::None;
-    }
-    if (Cues >= Tuning.MovieThreshold - Bias(CurrentClass == DetectedClass::Movie))
-    {
-        return DetectedClass::Movie;
     }
     if (Speech + Bias(CurrentClass == DetectedClass::Speech) >= Music + Bias(IsMusicSide(CurrentClass)))
     {
@@ -163,6 +202,8 @@ void DetectionSmoother::AddTrackBoundary(int64_t NowMs)
     bHaveEma = false;
     GenreSum = {};
     GenreWeight = 0.0f;
+    FilmSum = 0.0f;
+    FilmWeight = Tuning.FilmPriorWindows;
     Candidate = DetectedClass::None;
     CandidateSinceMs = NowMs;
     BoundaryAtMs = NowMs;
@@ -171,6 +212,7 @@ void DetectionSmoother::AddTrackBoundary(int64_t NowMs)
 void DetectionSmoother::AddScores(const ClassScores& Scores, int64_t NowMs)
 {
     const double ElapsedMs = bHaveEma ? static_cast<double>(std::max<int64_t>(0, NowMs - LastSampleMs)) : 0.0;
+    const bool bHadEma = bHaveEma;
     if (!bHaveEma)
     {
         Ema = Scores;
@@ -196,6 +238,14 @@ void DetectionSmoother::AddScores(const ClassScores& Scores, int64_t NowMs)
         GenreSum[i] = GenreSum[i] * Decay + Scores[i];
         Evidence[i] = GenreSum[i] / GenreWeight;
     }
+    const auto FilmDecay = static_cast<float>(std::exp(-ElapsedMs / static_cast<double>(Tuning.FilmTauMs)));
+    if (!bHadEma)
+    {
+        FilmWeight = Tuning.FilmPriorWindows; // a fresh spell (Reset) or a new track
+    }
+    FilmWeight = FilmWeight * FilmDecay + 1.0f;
+    FilmSum = FilmSum * FilmDecay + ScoreOf(Scores, DetectedClass::Movie);
+    ScoreOf(Evidence, DetectedClass::Movie) = FilmSum / FilmWeight;
 
     const DetectedClass Decided = Decide();
     if (Decided != Candidate)

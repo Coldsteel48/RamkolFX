@@ -50,6 +50,13 @@ public:
     // The default fold (approximate until phase 0 locks it), matched by
     // AudioSet display name. Names the model doesn't have are skipped and
     // listed in OutMissing, if given.
+    //
+    // A model can also name a class outright: a "ramkolfx:<class key>"
+    // label ("ramkolfx:rock", see DetectedClassKey) feeds that class, and
+    // a class fed that way drops its AudioSet labels - a trained genre
+    // head overrides AudioSet's weak genre labels without code changes.
+    // Its AudioSet labels then don't count as missing. Unknown
+    // "ramkolfx:" keys are ignored (a head's catch-all "other" output).
     static LabelMap Build(const std::vector<std::string>& ModelLabels, std::vector<std::string>* OutMissing = nullptr);
 
     // ModelScores must have as many entries as the label list Build saw;
@@ -72,10 +79,21 @@ struct DetectionTuning
 {
     // Time constant of the per-class score EMA.
     int64_t EmaTauMs = 3000;
-    // Speech or Music must reach this for any class to be detected.
+    // Speech or Music must reach this for any class to be detected
+    // (Movie aside: action often has neither).
     float CoarseThreshold = 0.5f;
-    // Film-cue strength that turns Speech/Music into Movie.
-    float MovieThreshold = 0.25f;
+    // Film-cue average (see FilmTauMs) that makes it a Movie, whatever
+    // Speech and Music say. Phase 7's test set: songs peak at ~0.19 over
+    // 10 s, podcasts at ~0.11; action scenes average 0.2-0.46.
+    float MovieThreshold = 0.22f;
+    // Film cues come in bursts (a gunshot window, then quiet dialogue),
+    // so their evidence is a long weighted mean like the genres', not the
+    // short EMA, restarted at track boundaries.
+    int64_t FilmTauMs = 20000;
+    // The film average starts as this many windows of no cues, fading
+    // like real ones: one loud window at the start (a door slam in a
+    // podcast's intro) can't make a Movie on its own.
+    float FilmPriorWindows = 2.0f;
     // Genre evidence is a track-long average rather than the short EMA:
     // genre is a property of the track, and one window's genre scores
     // are noisy and low (AudioSet's genre labels are sparse; on real
@@ -143,8 +161,8 @@ public:
     // class is on its way to confirming: what's playing may no longer be
     // it.
     bool MayBeChanging(int64_t NowMs) const;
-    // The evidence Decide() works on: the short EMA for Speech, Music and
-    // Movie, the track-long genre average for genres.
+    // The evidence Decide() works on: the short EMA for Speech and
+    // Music, the long averages for Movie and the genres.
     const ClassScores& Smoothed() const
     {
         return Evidence;
@@ -159,6 +177,8 @@ private:
     ClassScores Ema{};
     ClassScores GenreSum{}; // decayed sums; mean = GenreSum / GenreWeight
     float GenreWeight = 0.0f;
+    float FilmSum = 0.0f; // the same for the film cues, with FilmTauMs
+    float FilmWeight = 0.0f;
     ClassScores Evidence{};
     bool bHaveEma = false;
     int64_t LastSampleMs = 0;
