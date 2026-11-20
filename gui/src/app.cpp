@@ -61,10 +61,10 @@ constexpr float NestedCardPadding = 14.0f;
 constexpr float ColumnGap = 22.0f; // gap between the spatial tab's two columns
 } // namespace
 
-App::App(float InDpiScale, float InTargetContentWidth, const GuiPreferences& InPreferences,
+App::App(float InDpiScale, float InMinContentWidth, const GuiPreferences& InPreferences,
          MinimizeToTrayBlocker InMinimizeToTrayBlocker)
-    : DpiScale(InDpiScale), TargetContentWidth(InTargetContentWidth), Preferences(InPreferences),
-      MinimizeBlocker(InMinimizeToTrayBlocker),
+    : DpiScale(InDpiScale), MinContentWidth(InMinContentWidth), TargetContentWidth(InMinContentWidth),
+      Preferences(InPreferences), MinimizeBlocker(InMinimizeToTrayBlocker),
       bMinimizeToTraySupported(InMinimizeToTrayBlocker == MinimizeToTrayBlocker::None)
 {
 }
@@ -301,7 +301,28 @@ bool App::WantsTrayIcon() const
 
 void App::DrawUI()
 {
-    ImGui::Begin("RamkolFX Control", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    // The UI *is* the OS window: one ImGui window pinned to the whole
+    // viewport every frame, with no title bar, move, resize, collapse or
+    // rounding - so there's no inner panel to drag off somewhere. Content
+    // taller than the OS window scrolls; narrower than the design width
+    // scrolls sideways rather than squashing the layout.
+    {
+        const ImGuiViewport* Viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(Viewport->WorkPos);
+        ImGui::SetNextWindowSize(Viewport->WorkSize);
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::Begin("RamkolFX Control", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::PopStyleVar(2);
+
+    // Lay out to the window's real width (minus any scrollbar), floored at
+    // the width the UI was designed for. Measuring it live is safe now: the
+    // ImGui window's size comes from the OS window, not from its content.
+    TargetContentWidth = std::max(MinContentWidth, ImGui::GetContentRegionAvail().x);
 
     // Branding row: gradient logo mark + name/subtitle on the left,
     // connection status pill on the right.
@@ -341,11 +362,13 @@ void App::DrawUI()
         }
 
         // Right edge lines up with the tab bar / panel below (both
-        // TargetContentWidth wide from the window's content start).
+        // TargetContentWidth wide from the window's content start, which
+        // moves left as the window scrolls sideways).
         const char* SettingsLabel = "Settings";
         const float SettingsWidth = ImGui::CalcTextSize(SettingsLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f;
         ImGui::SameLine();
-        RightAlignCursor(ImGui::GetWindowPos().x + ImGui::GetStyle().WindowPadding.x, TargetContentWidth,
+        RightAlignCursor(ImGui::GetWindowPos().x - ImGui::GetScrollX() + ImGui::GetStyle().WindowPadding.x,
+                         TargetContentWidth,
                          SettingsWidth);
         if (ImGui::Button(SettingsLabel))
         {
@@ -555,14 +578,9 @@ void App::DrawSpatialTab()
     // window width and push the right column off its right edge.
     //
     // TabContentWidth is derived from App::TargetContentWidth - the same
-    // fixed quantity DrawEqTab() uses - rather than from
-    // ImGui::GetContentRegionAvail(), because for an AlwaysAutoResize
-    // window that value is self-referential (it reflects whatever the
-    // window's own size last converged to), so two tabs with genuinely
-    // different natural content widths would settle at two different
-    // steady-state values forever, even with a perfectly static OS-level
-    // window - measuring it live here would silently reintroduce the very
-    // per-tab width drift this is fixing. The right column gets a fixed
+    // per-frame value DrawEqTab() uses, measured once in DrawUI() before
+    // either tab draws - so both tabs always lay out to the same width,
+    // whatever their own natural content width. The right column gets a fixed
     // size (the radar card); the left column gets whatever's left,
     // floored at MinLeftColumnWidth as a defensive minimum.
     const float TabContentWidth = TargetContentWidth - 2.0f * PanelPadding * DpiScale;
@@ -892,8 +910,7 @@ void App::DrawSpatialTab()
 void App::DrawEqTab()
 {
     // Same formula (and same App::TargetContentWidth) as DrawSpatialTab()
-    // - see its comment for why this can't be measured live via
-    // GetContentRegionAvail() instead.
+    // - see its comment.
     const float TabContentWidth = TargetContentWidth - 2.0f * PanelPadding * DpiScale;
     const ImVec2 TabStart = ImGui::GetCursorScreenPos();
 
@@ -1023,11 +1040,8 @@ void App::DrawEqTab()
     ImGui::Spacing();
     {
         // Derived from TabContentWidth, not a live GetContentRegionAvail()
-        // read - same self-referential-width trap TabContentWidth itself
-        // dodges (see its comment above): reading it here would size these
-        // cards off whatever the window's *previous* frame happened to
-        // converge to, drifting them out of sync with the Bass Enhancer
-        // card and EQ bars below, which both hug TabContentWidth exactly.
+        // read, so these cards stay in step with the Bass Enhancer card and
+        // EQ bars below, which both hug TabContentWidth exactly.
         const float CardWidth = (TabContentWidth - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
         const float CardHeight = 138.0f * DpiScale;
 

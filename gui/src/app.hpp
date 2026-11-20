@@ -24,10 +24,9 @@ namespace ramkolfx::gui
 class App
 {
 public:
-    // InTargetContentWidth is how wide (in already-DPI-scaled screen
-    // pixels) both tabs' content should target - see the comment at its
-    // computation in main.cpp for why it has to come from the fixed OS
-    // window size rather than be measured live via ImGui.
+    // InMinContentWidth is the narrowest (in already-DPI-scaled screen
+    // pixels) both tabs' content is laid out to - the width the UI was
+    // designed at. A wider OS window gets a wider layout.
     // Why minimize-to-tray can't work in this session, if it can't - the
     // Settings popup then disables that toggle and says why. main.cpp
     // works it out once and applies the same value to its own startup
@@ -42,7 +41,7 @@ public:
         // window can't be taken off the X11 taskbar.
         BuiltWithoutX11,
     };
-    App(float InDpiScale, float InTargetContentWidth, const GuiPreferences& InPreferences,
+    App(float InDpiScale, float InMinContentWidth, const GuiPreferences& InPreferences,
         MinimizeToTrayBlocker InMinimizeToTrayBlocker);
 
     // Daemon reconnects and status/device polling, then drawing the UI.
@@ -99,9 +98,12 @@ private:
 
     float DpiScale = 1.0f;
 
-    // Fixed target width (already DPI-scaled) both DrawSpatialTab() and
-    // DrawEqTab() lay their content out to, so the two tabs read as the
-    // same size - see the constructor comment and main.cpp's computation.
+    // The floor for TargetContentWidth - see the constructor.
+    float MinContentWidth = 0.0f;
+    // The width (already DPI-scaled) both DrawSpatialTab() and DrawEqTab()
+    // lay their content out to, so the two tabs read as the same size:
+    // the OS window's content width, measured once per frame in DrawUI(),
+    // floored at MinContentWidth.
     float TargetContentWidth = 0.0f;
 
     // Local-only UX state, never sent to the daemon - mirror mode, advanced

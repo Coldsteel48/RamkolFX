@@ -41,13 +41,14 @@ namespace
 // other size the UI computes is this times DpiScale. Sized to comfortably
 // fit the widest/tallest tab (the two-column Spatial Audio & Speakers tab,
 // and the Equalizer & Bass tab with advanced bass tuning + advanced band
-// editing both open) without needing a manual resize - see
-// ImGuiWindowFlags_AlwaysAutoResize in App::DrawUI(), which only autosizes
-// ImGui's own virtual window within this fixed OS-level window, not the
-// other way around. SDL_WINDOW_RESIZABLE (below) remains a manual escape
-// hatch for anything unusually wide (e.g. a long device/HRTF name).
+// editing both open) without needing a manual resize. The UI fills the OS
+// window (see App::DrawUI()): resized larger, the layout widens with it;
+// smaller, it scrolls instead of squashing below BaseWindowWidth.
 constexpr int BaseWindowWidth = 1000;
 constexpr int BaseWindowHeight = 1000;
+// Just keeps the window from being resized down to nothing.
+constexpr int MinWindowWidth = 480;
+constexpr int MinWindowHeight = 360;
 constexpr float BaseFontSizePixels = 13.0f; // ImGui's own default bake size
 
 // While the window is hidden in the tray or minimized nothing is drawn and
@@ -406,6 +407,8 @@ int main(int argc, char** argv)
         fprintf(stderr, "[ramkolfx-gui] SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 1;
     }
+    SDL_SetWindowMinimumSize(Window, static_cast<int>(MinWindowWidth * DpiScale),
+                             static_cast<int>(MinWindowHeight * DpiScale));
 
     // The window's own icon: what X11 desktops show, and Wayland ones that
     // support xdg-toplevel-icon (KDE Plasma does) - it also covers running
@@ -425,6 +428,10 @@ int main(int argc, char** argv)
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    // No imgui.ini: the one window is pinned to the OS window every frame,
+    // so there's no layout worth saving - and ImGui would otherwise write
+    // it into whatever directory the GUI happened to be started from.
+    ImGui::GetIO().IniFilename = nullptr;
     ImGui::StyleColorsDark();
     ApplyPaletteStyle();
     ImGui::GetStyle().ScaleAllSizes(DpiScale);
@@ -440,18 +447,11 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // The width both tabs target so they read as the same size - derived
-    // from the same fixed BaseWindowWidth that sizes the OS window itself
-    // (minus the window's own left+right padding), not from ImGui's
-    // GetContentRegionAvail() at runtime: for an AlwaysAutoResize window,
-    // that value is self-referential (it tracks whatever content the
-    // window's own size last converged to), so two tabs with different
-    // natural content widths converge to two different steady-state
-    // values even though the OS-level window is a fixed physical size -
-    // querying it live would just reintroduce that per-tab drift.
-    const float TargetContentWidth = BaseWindowWidth * DpiScale - ImGui::GetStyle().WindowPadding.x * 2.0f;
+    // The narrowest the tabs are laid out to: the design width's content
+    // area (BaseWindowWidth minus the window's own left+right padding).
+    const float MinContentWidth = BaseWindowWidth * DpiScale - ImGui::GetStyle().WindowPadding.x * 2.0f;
 
-    ramkolfx::gui::App App(DpiScale, TargetContentWidth, Preferences, MinimizeBlocker);
+    ramkolfx::gui::App App(DpiScale, MinContentWidth, Preferences, MinimizeBlocker);
 
     bool bQuit = false;
     // In the tray, as opposed to on screen or minimized to the taskbar.

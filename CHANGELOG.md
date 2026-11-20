@@ -35,6 +35,11 @@ follows [Semantic Versioning](https://semver.org/) — see
   into RamkolFX, so they get your distro's security fixes. Building from
   source still uses the pinned copies unless you pass
   `-DRAMKOLFX_SYSTEM_MYSOFA=ON` / `-DRAMKOLFX_SYSTEM_KISSFFT=ON`.
+- **The control window is now one real window.** The controls fill the
+  whole window, instead of sitting in a panel inside it that could be
+  dragged off-screen. A larger window gets a wider layout, and one
+  narrower or shorter than the controls scrolls. The GUI no longer writes
+  an `imgui.ini` file into the folder it was started from.
 
 ## [0.2.2] - 2026-11-20
 
