@@ -6,7 +6,7 @@ EAPI=8
 inherit xdg cmake
 
 # MY_PV (upstream SemVer tag) is maintained by packaging/version.sh from ../../../../VERSION.
-MY_PV="0.2.1"
+MY_PV="0.2.2"
 
 DESCRIPTION="3D spatial audio, EQ and bass enhancer for PipeWire"
 HOMEPAGE="https://github.com/Coldsteel48/RamkolFX"
