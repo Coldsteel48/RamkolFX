@@ -25,7 +25,7 @@
           };
           ramkolfx = pkgs.stdenv.mkDerivation {
             pname = "ramkolfx";
-            version = "0.1.3";
+            version = "0.2.0";
             src = pkgs.lib.cleanSourceWith {
               src = ./.;
               filter = path: type:
@@ -49,6 +49,7 @@
               "-DRAMKOLFX_BUILD_GUI=ON"
               "-DRAMKOLFX_BUILD_TESTS=OFF"
               "-DRAMKOLFX_HRTF_DATA_DIR=${placeholder "out"}/share/ramkolfx/hrtf"
+              "-DRAMKOLFX_MODEL_DATA_DIR=${placeholder "out"}/share/ramkolfx/models"
               "-DRAMKOLFX_SYSTEMD_USER_UNIT_DIR=${placeholder "out"}/lib/systemd/user"
             ];
             # Skip the statically-linked dependencies' own install rules.

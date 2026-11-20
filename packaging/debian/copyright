@@ -15,6 +15,13 @@ Copyright: see data/hrtf/README.md and the per-database LICENSE.txt files
  SONICOM: MIT)
 License: various
 
+Files: data/models/*
+Copyright: 2022 Florian Schmid
+License: MIT
+ EfficientAT mn10_as AudioSet tagger (https://github.com/fschmid56/EfficientAT),
+ exported to ONNX by tools/model/export_efficientat.py; see
+ data/models/README.md. Full text in data/models/LICENSE-EfficientAT.
+
 Files: daemon/third_party/onnxruntime/*
 Copyright: Microsoft Corporation
 License: MIT

@@ -7,6 +7,48 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-20
+
+### Added
+
+- **Auto-detect (AI) EQ presets (experimental).** Bind an app (say, your
+  browser) or an output device to "Auto-detect (AI)" instead of a fixed
+  preset. A local audio classifier then listens to what's playing and
+  picks the preset for it.
+  - **Choosing the preset:** an editable class -> preset table maps
+    Speech -> Spoken Word, Movie -> Movie, and for music the best-scoring
+    genre -> its genre preset.
+  - **Switching:** it switches within a few seconds of a new song (a gap
+    of silence marks one), and waits out ambiguous stretches.
+  - **Manual changes:** changing the EQ by hand pauses it for that app's
+    session.
+  - **Requirements:** ONNX Runtime 1.17 or newer, which is loaded at run
+    time. Without it, Auto-detect shows as unavailable.
+  - **Model:** EfficientAT `mn10_as` (MIT).
+  - **Hardware and cost:** it runs on the CPU, or on an Intel NPU via
+    OpenVINO when one validates against the CPU; the GPU is opt-in. It
+    stays under 1% of a core at the lowest scheduling priority, and frees
+    its memory after 5 idle minutes.
+  - **GUI:** Auto-detect entries in the app and device preset cards, a
+    live "AI: Jazz 82%" readout, and an Auto-detect card with the device
+    choice, CPU use and the class table.
+  - **Known limit:** genre picks are a weak guess for now (the model is
+    much better at speech / music / film than at genres).
+- **Channel activity on the Spatial tab:** a toggle animates each speaker
+  on the dial by the live level of its own 7.1 channel (the LFE lights
+  the center), so you can see which channels the audio actually uses.
+- `ramkolfx-detect-bench` (built, not installed) measures Auto-detect
+  against its CPU, memory and audio-thread budget. Setting
+  `RAMKOLFX_DETECT_DUMP=<dir>` on the daemon logs each detection run's top
+  labels and saves the audio window it judged.
+
+### Changed
+
+- The control protocol gained requests 0x1A-0x1E and 0x20 and replies
+  0x89 and 0x90. The new fields are optional on the wire, so a 0.1.x GUI
+  keeps working with this daemon. A 0.2.0 GUI talking to an older daemon
+  disables the new features and asks for a daemon restart.
+
 ## [0.1.3] - 2026-11-20
 
 ### Added
@@ -71,7 +113,8 @@ First release. Feature set at this point:
   a Unix control socket.
 - Packages: Debian, RPM, Arch, Alpine, Gentoo ebuild, Nix flake.
 
-[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.0...v0.1.1

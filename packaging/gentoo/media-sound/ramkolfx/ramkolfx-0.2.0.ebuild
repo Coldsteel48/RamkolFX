@@ -6,7 +6,7 @@ EAPI=8
 inherit xdg cmake
 
 # MY_PV (upstream SemVer tag) is maintained by packaging/version.sh from ../../../../VERSION.
-MY_PV="0.1.3"
+MY_PV="0.2.0"
 
 DESCRIPTION="3D spatial audio, EQ and bass enhancer for PipeWire"
 HOMEPAGE="https://github.com/Coldsteel48/RamkolFX"
@@ -41,6 +41,7 @@ BDEPEND="virtual/pkgconfig"
 src_configure() {
 	local mycmakeargs=(
 		-DRAMKOLFX_HRTF_DATA_DIR="${EPREFIX}/usr/share/ramkolfx/hrtf"
+		-DRAMKOLFX_MODEL_DATA_DIR="${EPREFIX}/usr/share/ramkolfx/models"
 		-DRAMKOLFX_BUILD_GUI=$(usex gui)
 		-DRAMKOLFX_BUILD_TESTS=OFF
 		-DFETCHCONTENT_FULLY_DISCONNECTED=ON

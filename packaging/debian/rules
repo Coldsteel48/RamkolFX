@@ -10,6 +10,7 @@ override_dh_auto_configure:
 	cmake -S . -B $(B) -G Ninja \
 	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
 	  -DRAMKOLFX_HRTF_DATA_DIR=/usr/share/ramkolfx/hrtf \
+	  -DRAMKOLFX_MODEL_DATA_DIR=/usr/share/ramkolfx/models \
 	  -DRAMKOLFX_BUILD_GUI=ON -DRAMKOLFX_BUILD_TESTS=OFF \
 	  $$(sh packaging/ci/vendor-flags.sh $(CURDIR)/debian/deps)
 
