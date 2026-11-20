@@ -118,15 +118,110 @@ higher threshold. AudioSet labels fold into classes through a static
 | Blues    | Blues                                                                 | Blues          |
 | Reggae   | Reggae, Ska                                                           | Reggae         |
 | Acoustic | Folk, Country, Bluegrass, Acoustic guitar                             | Acoustic       |
+| Game     | None: decided from stream metadata, not audio (see Game detection)    | Action         |
 
 - The class table is **global** (shared by every Auto binding) and
   user-editable: any class can point at any preset, user presets
   included, or at nothing ("no switch").
-- No new built-in presets: the General/Music built-ins already cover
-  every class.
-- Games are not a v1 class: from audio alone a game is hard to tell from
-  a film. Follow-up (phase 6): stream metadata (`media.role=Game`, or a
-  wine/proton/steam process) as a cheap, accurate non-ML signal.
+- No new built-in presets: the General/Music/Games built-ins already
+  cover every class.
+- Games aren't recognised from audio: a game sounds too much like a film.
+  The Game class comes from what PipeWire says about the stream instead
+  (phase 6, below).
+
+## Game detection (phase 6)
+
+A game is recognised from the stream's metadata and its process, not
+from the audio: that is cheap, reliable, and immune to Discord or game
+dialogue being heard as Speech.
+
+**Signals.** A playback stream counts as a game if any of these holds:
+
+1. **`media.role` is `Game`** (any case). SDL's audio backends set this
+   by default (to confirm on a real game), so most native Linux games
+   and emulators are covered.
+2. **A Wine process.** The process binary is `wine`, `wine64`,
+   `wine-preloader`, `wine64-preloader`, or ends in `.exe`. That covers
+   Proton, Lutris, Heroic and Bottles. A non-game run through Wine (a
+   music player, say) is a false positive; the user binds it to a preset
+   to override.
+3. **Steam launched it.** The process environment has a non-empty
+   `SteamAppId` or `SteamGameId` other than `0`, read from
+   `/proc/<pid>/environ`.
+
+**Which process.** Measured on PipeWire 1.4:
+
+- Streams through the PulseAudio layer (`pipewire-pulse`; Wine and most
+  apps) carry `application.process.id` and `application.process.binary`
+  on the node. Their client object's `pipewire.sec.pid` is
+  `pipewire-pulse` itself, so it is useless.
+- Native PipeWire streams carry no `application.*` keys on the node; the
+  client object's `pipewire.sec.pid` (from the socket's credentials,
+  set by the server) is the real process.
+- So: the node's `application.process.id`, else the client's
+  `pipewire.sec.pid`. The binary is the node's
+  `application.process.binary`, else the basename of `/proc/<pid>/exe`.
+- A client-reported pid may belong to another pid namespace (a Flatpak
+  or Steam container). The environment is only read when the basename of
+  `/proc/<pid>/exe` matches the reported binary, so a stranger's
+  environment is never read in its place. Signals 1 and 2 don't need
+  `/proc` at all.
+
+**Where.** `DeviceRegistry` already binds every playback stream for its
+state. It records each client's `pipewire.sec.pid` from the registry
+and decides "game or not" once per stream when the node's properties
+arrive (again if they change). The decision is pure
+(`game_detection.*`, with `/proc` behind a root path the tests can
+fake). `ContentStreamInfo` gains `bGame`.
+
+**Resolution.** The resolution rule is unchanged; the resolved binding
+gains `bGame`:
+
+- An **app** Auto binding: the winning app is a game.
+- A **device** Auto binding: any app that is playing (or within the 2 s
+  grace) is a game. If you're gaming, the game wins over whatever else
+  plays alongside it.
+
+`bGame` is part of the binding's identity, so a game starting or
+stopping under a device Auto binding starts detection afresh, like a
+new binding.
+
+**While a game is in effect** (`AutoDetectSession`):
+
+- The class is Game, at 100%, straight away: no confirm time.
+- The audio model doesn't run, so the worker stays off: no tap, no
+  inference, no silence tracking.
+- Tweaking the EQ holds the curve until the game stops (the binding
+  changes). There are no track boundaries to re-check on.
+
+**Wire and storage.**
+
+- `DetectedClass::Game` is a new value after the genres. `IsGenreClass`
+  becomes an explicit `Rock..Acoustic` range rather than "everything
+  after Rock".
+- The class table stores it as `detected.game` in `presets.conf`; its
+  default preset is Action.
+- `ContentStreamListResponse` gets a second trailer block: one `bGame`
+  byte per entry after the `bAutoDetect` block. Older GUIs ignore it,
+  and an older daemon's list decodes as all false.
+- An older GUI shows the new class as "Unknown".
+
+**GUI.** The Game row appears in the class table like any other class.
+The app list marks streams detected as games.
+
+**Later, not in phase 6:**
+
+- **Game genre.** Per-app binding already covers this: bind the game to
+  FPS or RPG. An optional online lookup would map `SteamAppId` to the
+  Steam store's genres, then to a Games preset (phase 11). That sends
+  data off the machine, so it must be opt-in.
+- **Overriding a false positive.** A "not a game" flag per app, if
+  binding to a preset turns out not to be enough.
+- **Games without ONNX Runtime.** The Game class needs no model, so Auto
+  bindings could work for games even when the runtime is missing. Today
+  the GUI disables Auto entries then, so this waits.
+- **More launchers.** Environment markers from other launchers (umu,
+  Lutris, Heroic), if Wine and `media.role` miss real cases.
 
 ## Architecture
 
@@ -439,4 +534,43 @@ in `data/models/` with its license, installed to
      Debian's `libonnxruntime.so.1.21`.
    - *To do:* an e2e test that runs `pw-play` speech and music into an
      Auto-bound app, then checks the switch and the restore.
-6. **(Follow-up) Game detection** from stream metadata.
+
+The phases below come after the first release of Auto-detect, in this
+order. Game detection comes first: it needs no license decisions and
+fixes the most common case for this app. Model work waits for a test set
+that can show whether a change helps.
+
+6. **Game detection** from stream metadata. *(In progress.)* See
+   [Game detection](#game-detection-phase-6).
+7. **Test set and scoring.** About 100 of the user's tracks with known
+   genres, plus podcasts, film clips and game recordings. A script runs
+   a model over them and reports per-class accuracy and a confusion
+   table. This is phase 0b; without it no model change can be judged.
+8. **Model plumbing.** Three changes, none of which needs a new model:
+   - *Classes from metadata.* The model's metadata maps its labels to
+     classes, instead of the AudioSet names hard-coded in `DefaultFold`.
+     A model with non-AudioSet labels (`rock`, `jazz`) then loads; today
+     it is refused for lacking Speech/Music labels.
+   - *An optional second model.* A genre model that runs only on
+     windows the first model hears as music.
+   - *A reload command.* A replaced model file is picked up without a
+     daemon restart. Today a new file is only read on the next load:
+     after a restart, a "Run detection on" change, or the 5-minute idle
+     unload.
+9. **A better genre model.** It needs a permissive license, since
+   non-commercial weights conflict with the commercial license. That
+   rules out Essentia's Discogs and Jamendo models. The options are a
+   small genre head trained on mn10's embeddings (the licenses of FMA,
+   MTG-Jamendo and GTZAN need checking), or a bigger EfficientAT model
+   (mn40/dymn, MIT; same weak AudioSet genre labels). Also: when the
+   player reports a genre over MPRIS (`xesam:genre`; local players do,
+   Spotify doesn't), trust it over the model.
+10. **More genres** (Latin, Country split from Acoustic, Ambient/New-age,
+    Soundtrack, World), chosen by what phase 9's model can actually tell
+    apart. A genre only earns a class if its preset sounds different
+    from the existing ones.
+11. **(Optional) Online game-genre lookup:** `SteamAppId` -> Steam store
+    genres -> a Games preset, cached locally. Opt-in, off by default:
+    it breaks "everything runs locally". The official API has coarse
+    genres only (Action, RPG, Strategy, Racing); FPS and Horror are user
+    tags it doesn't expose.

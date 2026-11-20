@@ -301,7 +301,9 @@ touching the rest of the pipeline.
 6. ~~Parametric EQ: 10-band graphic EQ + psychoacoustic bass enhancer, both live-adjustable from the GUI's Equalizer & Bass tab~~
 7. ~~Named EQ presets with per-device and per-app auto-switching~~
 8. ONNX-based automatic EQ preset selection / genre auto-detect: Auto-detect
-   bindings landed (experimental); genre accuracy needs a music-tagging model
+   bindings landed (experimental). Next: game detection from stream
+   metadata, then a test set and a better genre model (see
+   [docs/content-detect-plan.md](docs/content-detect-plan.md#phases))
 9. GUI polish aimed at non-audio-engineer users — two-tab layout
    (Spatial Audio & Speakers / Equalizer & Bass) and the preset cards have
    landed; ongoing refinement
