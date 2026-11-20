@@ -31,7 +31,7 @@ separately-panned point sources.
 
 | Spatial Audio & Speakers | Equalizer & Bass |
 | --- | --- |
-| ![Spatial Audio & Speakers tab](docs/screenshots/spatial-audio-speakers.png) | ![Equalizer & Bass tab](docs/screenshots/equalizer-bass.png) |
+| ![Spatial Audio & Speakers tab](docs/screenshots/spatial-audio-and-speakers.png) | ![Equalizer & Bass tab](docs/screenshots/equalizer-and-bass.png) |
 
 ## Download
 
