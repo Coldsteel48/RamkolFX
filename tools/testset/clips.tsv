@@ -1,0 +1,148 @@
+# Auto-detect test set (docs/content-detect-plan.md, phase 7).
+# tools/testset/fetch.py downloads each line's section into
+# <testset>/<class>/<name>.<ext>; ramkolfx-detect-score scores it.
+#
+# Tab-separated: class, name, source, start (s), seconds.
+# - class: a folder name the scorer knows (Speech, Movie, Music, Rock,
+#   Metal, Pop, Hip-Hop, R&B, Electronic, Jazz, Classical, Blues, Reggae,
+#   Acoustic, Game). Game clips are reported but not scored.
+# - source: a URL, or a search (the first YouTube hit). Pin a URL once a
+#   search lands on the wrong video; <name>.source.txt says what it got.
+# - Music clips skip the intro. "Music" is music with no genre class of
+#   its own: it shows how often a genre is forced on it.
+#
+# A starter list of well-known, clearly-genred material; replace it with
+# what you actually listen to - that's what the score should reflect.
+
+
+# Rock
+Rock	ac-dc-back-in-black	AC/DC - Back In Black official audio	60	60
+Rock	led-zeppelin-whole-lotta-love	Led Zeppelin - Whole Lotta Love official audio	60	60
+Rock	nirvana-smells-like-teen-spirit	Nirvana - Smells Like Teen Spirit official audio	60	60
+Rock	foo-fighters-everlong	Foo Fighters - Everlong official audio	60	60
+Rock	queens-of-the-stone-age-no-one-knows	Queens of the Stone Age - No One Knows official audio	60	60
+Rock	ramones-blitzkrieg-bop	Ramones - Blitzkrieg Bop official audio	60	60
+Rock	arctic-monkeys-do-i-wanna-know	Arctic Monkeys - Do I Wanna Know official audio	60	60
+
+# Metal
+Metal	metallica-master-of-puppets	Metallica - Master of Puppets official audio	60	60
+Metal	iron-maiden-the-trooper	Iron Maiden - The Trooper official audio	60	60
+Metal	slayer-raining-blood	Slayer - Raining Blood official audio	60	60
+Metal	black-sabbath-paranoid	Black Sabbath - Paranoid official audio	60	60
+Metal	pantera-walk	Pantera - Walk official audio	60	60
+Metal	rammstein-du-hast	Rammstein - Du Hast official audio	60	60
+Metal	megadeth-symphony-of-destruction	Megadeth - Symphony of Destruction official audio	60	60
+
+# Pop
+Pop	michael-jackson-billie-jean	Michael Jackson - Billie Jean official audio	60	60
+Pop	taylor-swift-shake-it-off	Taylor Swift - Shake It Off official audio	60	60
+Pop	dua-lipa-levitating	Dua Lipa - Levitating official audio	60	60
+Pop	abba-dancing-queen	ABBA - Dancing Queen official audio	60	60
+Pop	ed-sheeran-shape-of-you	Ed Sheeran - Shape of You official audio	60	60
+Pop	britney-spears-toxic	Britney Spears - Toxic official audio	60	60
+Pop	katy-perry-firework	Katy Perry - Firework official audio	60	60
+
+# Hip-Hop
+Hip-Hop	50-cent-in-da-club	50 Cent - In Da Club official audio	60	60
+Hip-Hop	dr-dre-still-d-r-e	Dr. Dre - Still D.R.E. official audio	60	60
+Hip-Hop	eminem-lose-yourself	Eminem - Lose Yourself official audio	60	60
+Hip-Hop	the-notorious-b-i-g-juicy	The Notorious B.I.G. - Juicy official audio	60	60
+Hip-Hop	kendrick-lamar-humble	Kendrick Lamar - HUMBLE. official audio	60	60
+Hip-Hop	nas-n-y-state-of-mind	Nas - N.Y. State of Mind official audio	60	60
+Hip-Hop	wu-tang-clan-c-r-e-a-m	Wu-Tang Clan - C.R.E.A.M. official audio	60	60
+
+# R&B
+R&B	marvin-gaye-what-s-going-on	Marvin Gaye - What's Going On official audio	60	60
+R&B	aretha-franklin-respect	Aretha Franklin - Respect official audio	60	60
+R&B	james-brown-i-got-you-i-feel-good	James Brown - I Got You (I Feel Good) official audio	60	60
+R&B	alicia-keys-fallin	Alicia Keys - Fallin' official audio	60	60
+R&B	stevie-wonder-superstition	Stevie Wonder - Superstition official audio	60	60
+R&B	al-green-let-s-stay-together	Al Green - Let's Stay Together official audio	60	60
+R&B	destiny-s-child-say-my-name	Destiny's Child - Say My Name official audio	60	60
+
+# Electronic
+Electronic	daft-punk-around-the-world	Daft Punk - Around the World official audio	60	60
+Electronic	deadmau5-strobe	deadmau5 - Strobe official audio	60	60
+Electronic	skrillex-scary-monsters-and-nice-sprites	Skrillex - Scary Monsters and Nice Sprites official audio	60	60
+Electronic	avicii-levels	Avicii - Levels official audio	60	60
+Electronic	the-chemical-brothers-block-rockin-beats	The Chemical Brothers - Block Rockin' Beats official audio	60	60
+Electronic	darude-sandstorm	Darude - Sandstorm official audio	60	60
+Electronic	pendulum-watercolour	Pendulum - Watercolour official audio	60	60
+
+# Jazz
+Jazz	miles-davis-so-what	Miles Davis - So What official audio	60	60
+Jazz	dave-brubeck-take-five	Dave Brubeck - Take Five official audio	60	60
+Jazz	john-coltrane-giant-steps	John Coltrane - Giant Steps official audio	60	60
+Jazz	duke-ellington-take-the-a-train	Duke Ellington - Take the A Train official audio	60	60
+Jazz	bill-evans-waltz-for-debby	Bill Evans - Waltz for Debby official audio	60	60
+Jazz	herbie-hancock-cantaloupe-island	Herbie Hancock - Cantaloupe Island official audio	60	60
+Jazz	benny-goodman-sing-sing-sing	Benny Goodman - Sing Sing Sing official audio	60	60
+
+# Classical
+Classical	beethoven-symphony-no-5-first-movement	Beethoven - Symphony No. 5 first movement official audio	60	60
+Classical	bach-cello-suite-no-1-prelude	Bach - Cello Suite No. 1 Prelude official audio	60	60
+Classical	vivaldi-four-seasons-spring	Vivaldi - Four Seasons Spring official audio	60	60
+Classical	mozart-eine-kleine-nachtmusik	Mozart - Eine kleine Nachtmusik official audio	60	60
+Classical	chopin-nocturne-op-9-no-2	Chopin - Nocturne Op. 9 No. 2 official audio	60	60
+Classical	wagner-ride-of-the-valkyries	Wagner - Ride of the Valkyries official audio	60	60
+Classical	puccini-nessun-dorma-pavarotti	Puccini - Nessun dorma Pavarotti official audio	60	60
+
+# Blues
+Blues	b-b-king-the-thrill-is-gone	B.B. King - The Thrill Is Gone official audio	60	60
+Blues	muddy-waters-mannish-boy	Muddy Waters - Mannish Boy official audio	60	60
+Blues	john-lee-hooker-boom-boom	John Lee Hooker - Boom Boom official audio	60	60
+Blues	robert-johnson-cross-road-blues	Robert Johnson - Cross Road Blues official audio	60	60
+Blues	stevie-ray-vaughan-pride-and-joy	Stevie Ray Vaughan - Pride and Joy official audio	60	60
+Blues	howlin-wolf-smokestack-lightnin	Howlin' Wolf - Smokestack Lightnin' official audio	60	60
+Blues	gary-moore-still-got-the-blues	Gary Moore - Still Got the Blues official audio	60	60
+
+# Reggae
+Reggae	bob-marley-is-this-love	Bob Marley - Is This Love official audio	60	60
+Reggae	bob-marley-could-you-be-loved	Bob Marley - Could You Be Loved official audio	60	60
+Reggae	peter-tosh-legalize-it	Peter Tosh - Legalize It official audio	60	60
+Reggae	toots-and-the-maytals-pressure-drop	Toots and the Maytals - Pressure Drop official audio	60	60
+Reggae	jimmy-cliff-the-harder-they-come	Jimmy Cliff - The Harder They Come official audio	60	60
+Reggae	ub40-red-red-wine	UB40 - Red Red Wine official audio	60	60
+Reggae	desmond-dekker-israelites	Desmond Dekker - Israelites official audio	60	60
+
+# Acoustic
+Acoustic	johnny-cash-folsom-prison-blues	Johnny Cash - Folsom Prison Blues official audio	60	60
+Acoustic	bob-dylan-blowin-in-the-wind	Bob Dylan - Blowin' in the Wind official audio	60	60
+Acoustic	simon-and-garfunkel-the-boxer	Simon & Garfunkel - The Boxer official audio	60	60
+Acoustic	dolly-parton-jolene	Dolly Parton - Jolene official audio	60	60
+Acoustic	nick-drake-pink-moon	Nick Drake - Pink Moon official audio	60	60
+Acoustic	flatt-and-scruggs-foggy-mountain-breakdown	Flatt & Scruggs - Foggy Mountain Breakdown official audio	60	60
+Acoustic	john-denver-take-me-home-country-roads	John Denver - Take Me Home, Country Roads official audio	60	60
+
+# Music without a genre class (Latin, ambient, world, film score)
+Music	buena-vista-social-club-chan-chan	Buena Vista Social Club - Chan Chan official audio	60	60
+Music	brian-eno-an-ending-ascent	Brian Eno - An Ending (Ascent)	30	60
+Music	ravi-shankar-raga	Ravi Shankar - Raga Jog	120	60
+Music	hans-zimmer-time	Hans Zimmer - Time Inception soundtrack	60	60
+
+# Speech: podcasts, audiobooks, talks, news (past any intro jingle)
+Speech	librivox-pride-and-prejudice	LibriVox Pride and Prejudice chapter 1 audiobook	60	90
+Speech	librivox-sherlock-holmes	LibriVox Adventures of Sherlock Holmes A Scandal in Bohemia	120	90
+Speech	ted-ken-robinson	Ken Robinson Do schools kill creativity TED	120	90
+Speech	lex-fridman-podcast	Lex Fridman Podcast full episode	600	90
+Speech	joe-rogan-experience	Joe Rogan Experience full episode	900	90
+Speech	hardcore-history	Dan Carlin Hardcore History full episode	900	90
+Speech	mit-ocw-lecture	MIT OpenCourseWare 6.006 Introduction to Algorithms lecture 1	300	90
+Speech	bbc-world-service-news	BBC World Service news bulletin	60	90
+
+# Movie: film scenes, action and dialogue over a score
+Movie	saving-private-ryan-omaha	Saving Private Ryan Omaha Beach scene	60	90
+Movie	mad-max-fury-road-chase	Mad Max Fury Road chase scene	30	90
+Movie	heat-bank-shootout	Heat bank shootout scene	30	90
+Movie	inception-hallway-fight	Inception hallway fight scene	20	90
+Movie	interstellar-docking	Interstellar docking scene	20	90
+Movie	dark-knight-interrogation	The Dark Knight interrogation scene	20	90
+Movie	jurassic-park-t-rex	Jurassic Park T-Rex breakout scene	60	90
+Movie	no-country-gas-station	No Country for Old Men coin toss scene	20	90
+
+# Game: gameplay without commentary (not scored; see what audio alone says)
+Game	battlefield-1-gameplay	Battlefield 1 gameplay no commentary	300	90
+Game	elden-ring-gameplay	Elden Ring gameplay no commentary	300	90
+Game	forza-horizon-5-gameplay	Forza Horizon 5 gameplay no commentary	300	90
+Game	witcher-3-gameplay	The Witcher 3 gameplay no commentary	300	90
+Game	counter-strike-2-gameplay	Counter-Strike 2 competitive gameplay no commentary	300	90

@@ -105,7 +105,7 @@ higher threshold. AudioSet labels fold into classes through a static
 | Class    | AudioSet labels folded in (approx.)                                   | Default preset |
 |----------|-----------------------------------------------------------------------|----------------|
 | Speech   | Speech, Narration, Conversation                                       | Spoken Word    |
-| Movie    | Film cues (Explosion, Gunshot, Vehicle, Soundtrack music) over Speech or Music | Movie   |
+| Movie    | Film cues summed (weapons, vehicles, impacts, weather, outdoor ambience; see below), with or without Speech/Music | Movie |
 | Music    | Music, no confident genre                                              | (no switch)    |
 | Rock     | Rock music, Rock and roll, Punk, Grunge, Progressive/Psychedelic rock | Rock           |
 | Metal    | Heavy metal                                                           | Metal          |
@@ -399,11 +399,11 @@ in `data/models/` with its license, installed to
 
 **Phase 0a export (mn10_as, done; tuning still open):**
 
-- **Format:** 24 MB fp32 at opset 17. The input is a 3 s, 32 kHz mono waveform `[1, 96000]`; the output is 527 sigmoid probabilities.
+- **Format:** 24 MB fp32 at opset 17. The input is a 5 s, 32 kHz mono waveform `[1, 160000]` (3 s until phase 9's sweep); the output is 527 sigmoid probabilities.
 - **Front end:** EfficientAT's eval-mode mel front end runs in the graph as plain ops: pre-emphasis, a reflect-padded DFT as a strided conv, the Kaldi mel banks, log and `(x + 4.5) / 5`. It matches `AugmentMelSTFT` to 3e-5, and the scores match to 1e-6.
 - **Minimum context:**
   - *Problem:* mn10 was trained on 10 s clips. Below ~400 mel frames (4 s) the zero-padded borders dominate its last feature map, and the head saturates: every logit goes positive, so random labels come out at 1.0.
-  - *Fix:* the graph tiles the window's 300 frames to 500 (`ramkolfx.context_frames`). That agrees with 10 s predictions about as well as a real 5 s window, costs the same, and answers after 3 s of sound instead of 5 s.
+  - *Fix:* the graph tiles a short window's frames to 500 (`ramkolfx.context_frames`). A tiled 3 s window agrees with 10 s predictions about as well as a real 5 s one, but on the phase 7 test set the real 5 s window scores better (see phase 9), so that's what ships now.
   - *Rule:* don't export a window that ends up under ~400 frames.
 - **Cost on the dev machine (single thread):**
   - CPU per run: 10.5 ms (p95 10.8 ms).
@@ -556,6 +556,82 @@ that can show whether a change helps.
    genres, plus podcasts, film clips and game recordings. A script runs
    a model over them and reports per-class accuracy and a confusion
    table. This is phase 0b; without it no model change can be judged.
+   *(Tools done; the list is a starter one.)*
+   - *The list:* [`tools/testset/clips.tsv`](../tools/testset/clips.tsv),
+     102 clips: 7 per genre, 4 Music without a genre class, 8 Speech, 8
+     Movie, 5 Game. Each line is a class, a name, a URL or search, and a
+     section. It is a starter list of well-known material; replace it
+     with what you listen to.
+   - *Fetching:* `tools/testset/fetch.py` (yt-dlp + ffmpeg) downloads
+     each section into `~/.local/share/ramkolfx/testset/<Class>/`,
+     outside the repo since the clips are copyrighted. It keeps the
+     downloaded stream as is (~1 MB a clip) and writes a
+     `<name>.source.txt` naming the video a search landed on. Re-running
+     fetches only new lines.
+   - *Scoring:* `build/daemon/ramkolfx-detect-score` (built, not
+     installed) replays each clip the way the daemon hears it: 48 kHz
+     mono, 100 ms silence chunks, the worker's cadence (fast, then slow
+     once settled), the same `LabelMap` and `DetectionSmoother`. The CPU
+     governor is left out, so a busy machine doesn't change the result.
+     - *Verdict:* the class held longest in the clip.
+     - *Reported per class:* accuracy, the share of the clip's time on
+       the right class, time to the first class, switches per clip, and
+       a confusion table.
+     - *Game clips:* shown but not scored, since games come from metadata.
+   - *Comparing:* `--out run.tsv` saves the verdicts and the smoother's
+     final evidence per clip. `--baseline run.tsv` on a later run lists
+     the clips each change fixed or broke. `--model` scores another
+     model, `--verbose` prints every inference.
+
+   - *Baseline (mn10, starter list, 2026-11-20):* 64 of 97 scored clips
+     right (66%).
+     - *Perfect:* Speech, Hip-Hop, Jazz, Classical and Reggae, 7/7 or
+       8/8 each. 50 Cent is Hip-Hop, so the phase 0a gap was that one
+       window, not the model.
+     - *Mostly right:* Rock, Metal, R&B and Acoustic, 5/7 each;
+       Electronic 6/7.
+     - *Weak:* Pop 1/7 (mostly heard as R&B) and Blues 1/7 (spread over
+       Rock, R&B, Jazz and Acoustic). These are the genre model's limits
+       (phase 9).
+     - *Music 0/4:* a genre is always forced on music without one, by
+       design (the 0.01 floor).
+     - *Movie 0/8, a smoother problem rather than a model one:*
+       - Film cues come in bursts (a gunshot window reads 0.4–0.5, the
+         next 0.05). The 3 s EMA averages them below
+         `MovieThreshold`, so dialogue scenes come out as Speech.
+       - Action without dialogue or a clear score has neither Speech nor
+         Music at `CoarseThreshold`, so nothing is detected (Mad Max,
+         Inception).
+       - *Fixed (5/8, nothing else changed; 69 of 97 overall):*
+         - *Labels:* Movie now folds 36 sound-event labels (weapons,
+           vehicles, impacts, weather, outdoor and large-room ambience,
+           animals) by **sum**, capped at 1, not by max.
+           "Soundtrack music" is out: it fired on songs more than on
+           films.
+         - *Averaging:* the evidence is a long weighted mean
+           (`FilmTauMs` 20 s, restarted at track boundaries), which
+           starts from two windows of no cues so one loud window can't
+           decide it.
+         - *Decision:* Movie is judged before the coarse threshold,
+           at `MovieThreshold` 0.22.
+         - *Per clip, on the test set:* action scenes average 0.2–0.46;
+           songs peak at ~0.19 over 10 s, podcasts at ~0.11.
+         - *Still missed:* the two dialogue-only scenes (Dark Knight, No
+           Country) and Interstellar (0.14). A dialogue scene sounds
+           like a podcast to mn10.
+         - *Game recordings:* now Movie (4 of 5), a better fallback than
+           Speech when metadata misses a game.
+         - *Cost:* the first Movie lands ~30 s into a scene on average.
+         - *Side effect:* nature or rain recordings may read as Movie.
+     - *Game audio:* Speech, Electronic or nothing, never Movie;
+       metadata has to carry games.
+
+   ```sh
+   tools/testset/fetch.py                       # pipx install yt-dlp first
+   build/daemon/ramkolfx-detect-score --out baseline.tsv
+   # change the model or the tuning, rebuild, then:
+   build/daemon/ramkolfx-detect-score --baseline baseline.tsv
+   ```
 8. **Model plumbing.** Three changes, none of which needs a new model:
    - *Classes from metadata.* The model's metadata maps its labels to
      classes, instead of the AudioSet names hard-coded in `DefaultFold`.
@@ -575,6 +651,69 @@ that can show whether a change helps.
    (mn40/dymn, MIT; same weak AudioSet genre labels). Also: when the
    player reports a genre over MPRIS (`xesam:genre`; local players do,
    Spotify doesn't), trust it over the model.
+   *Tried so far (2026-11-20):*
+   - *Licence-clean data is scarce where it's needed.* Only ~7% of FMA
+     allows commercial use (CC BY, CC0, Public Domain Mark; no NC, ND or
+     ShareAlike). That leaves ~1,300 Rock and ~2,000 Electronic tracks,
+     but only 71 R&B (13 artists), 49 Blues and 15 Reggae (3 artists).
+     `tools/model/fma_select.py` picks them and `fma_fetch.py` reads
+     single clips out of `fma_large.zip` over HTTP ranges.
+   - *Per-genre weights on the AudioSet fold don't help.*
+     `tools/model/calibrate_genres.py` fits one weight per genre on 636
+     clean FMA tracks:
+     - *Held out by artist:* mean accuracy goes from 56% to 54%.
+     - *On the test set's genre clips:* 58 of 77 right before, 53 after.
+       The fitted weights don't transfer: R&B's 0.2 loses all 7 R&B
+       clips.
+     - *Conclusion:* the genre levels aren't the problem; mn10's genre
+       labels don't separate Pop, Blues and R&B, and FMA's indie catalogue
+       differs from what people play. Not shipped.
+   - *A head trained on the embedding loses.* `tools/model/genre_head.py`
+     trains a softmax over mn10's 960-number embedding (11 genres plus
+     "other") on the 755 clean FMA tracks:
+     - *Unseen FMA artists:* 46%, below the AudioSet fold's ~56% on the
+       same tracks.
+     - *Test set's genre and Music clips:* 33 of 81, against the fold's
+       58.
+     - *Conclusion:* this little noisy, indie-tagged data teaches less
+       than mn10 learned from AudioSet's ~2M clips.
+   - *Bigger models and longer windows help.* The whole test set scored
+     with `ramkolfx-detect-score`; CPU per run single-threaded on the
+     dev machine (i9-14900K); RSS from `ramkolfx-detect-bench`:
+
+     | Model, window | Right of 97 | ms/run | RSS added |
+     |---|---|---|---|
+     | mn10, 3 s (tiled to 5 s) | 69 | 10.6 | 49 MB |
+     | **mn10, 5 s (shipped)** | **71** | 14.0 | 49 MB |
+     | mn10, 10 s | 71 | 24.5 | |
+     | mn20, 3 s | 74 | 21.8 | |
+     | mn20, 5 s | 76 | 26.4 | 120 MB |
+     | mn20, 10 s | 72 | 47 | |
+     | mn30, 3 s | 70 | 40.4 | |
+     | mn40, 3 s | 77 | 65 | |
+     | mn40_ext, 3 s | 74 | 65 | |
+
+     - *Noise:* the order isn't monotonic (mn30 below mn20), so a few
+       clips either way is noise. On the FMA tracks every model scores
+       53–57%.
+     - *Why mn20 isn't shipped:* mn20 at 5 s is the best step up, but it
+       breaks the budget: 1.3% of a core at the fast cadence (the
+       governor would stretch it), 120 MB RSS against 60, and 73 MB on
+       disk. mn40 costs 65 ms.
+     - *int8 (static, QDQ, front end left in fp32) is unreliable:*
+       - mn20 at 5 s: 77 right, 19.6 ms.
+       - mn40: 59 right.
+       - mn10 at 5 s: 66 right, and no faster.
+     - *dymn models* (dymn20: mAP 0.493) don't export yet: an adaptive
+       pooling size isn't constant at trace time.
+     - *Speech pauses:* a 5 s window that had to be all sound held
+       podcasts and audiobooks back by up to 30 s, since pauses between
+       sentences break it. Now only the window's last 3 s must be sound
+       (`ContentDetectorTuning::MinAudibleMs`).
+   - *Still open:*
+     - mn20 at 5 s, if the budget can grow.
+     - A music-tagging model with a permissive licence.
+     - More licence-clean training data (Jamendo's API needs a key).
 10. **More genres** (Latin, Country split from Acoustic, Ambient/New-age,
     Soundtrack, World), chosen by what phase 9's model can actually tell
     apart. A genre only earns a class if its preset sounds different

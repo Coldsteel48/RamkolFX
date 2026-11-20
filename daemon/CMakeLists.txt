@@ -199,3 +199,8 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/ramkolfxd.1
 # (docs/content-detect-plan.md). Built so it can't rot, never installed.
 add_executable(ramkolfx-detect-bench bench/detect_bench.cpp)
 target_link_libraries(ramkolfx-detect-bench PRIVATE ramkolfx_detect)
+
+# Scores Auto-detect on a labelled test set (phase 7 of the plan;
+# tools/testset/ fetches one). Never installed.
+add_executable(ramkolfx-detect-score bench/detect_score.cpp)
+target_link_libraries(ramkolfx-detect-score PRIVATE ramkolfx_detect)

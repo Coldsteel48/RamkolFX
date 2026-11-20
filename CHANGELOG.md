@@ -7,6 +7,23 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+### Changed
+
+- **Auto-detect recognises films.** Gunfire, engines, impacts and
+  outdoor sound now add up over the last 20 seconds or so, so an action
+  scene counts as a Movie even without clear dialogue or music. On a
+  test set of 8 film scenes, 5 are now detected as films, up from none;
+  scenes that are only dialogue still count as Speech.
+- **Better genre picks.** Auto-detect now listens to 5 seconds of audio
+  at a time instead of 3, which gets more Pop songs right. It costs about
+  3 ms more per check. Pauses in speech no longer delay detection.
+
+### Added
+
+- **A test set for Auto-detect** (for developers): `tools/testset/`
+  fetches about 100 labelled clips, and `ramkolfx-detect-score` reports
+  how well detection does on them, class by class.
+
 ## [0.4.0] - 2026-11-20
 
 ### Added
