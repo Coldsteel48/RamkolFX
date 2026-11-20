@@ -44,6 +44,12 @@ struct ContentDetectorTuning
     bool bWatchBattery = true;
     SchedulerTuning Scheduler;
     SilenceTuning Silence;
+    // A window is classified once this much of its end (or all of it, if
+    // shorter) is unbroken sound, so a song's half-silent first second
+    // isn't judged. Not the whole window: speech pauses between
+    // sentences, and a 5 s run without one is rare - it held podcasts and
+    // audiobooks back by up to 30 s.
+    int64_t MinAudibleMs = 3000;
 };
 
 // Something the worker found, for AutoDetectSession: an inference result

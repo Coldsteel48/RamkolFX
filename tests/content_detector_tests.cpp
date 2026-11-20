@@ -251,6 +251,42 @@ TEST(SilenceIsSkippedAndAGapIsATrackBoundary)
     CHECK(Events.front().bTrackBoundary);
 }
 
+TEST(SpeechPausesDontHoldBackAWindow)
+{
+    // Speech-like input: 300 ms of sound, then a 100 ms pause, over and
+    // over. The fake's window is 500 ms, so it never holds unbroken sound.
+    // Tapped faster than real time, the worker may drain it all at once
+    // and look only at the end - so it ends on 300 ms of sound.
+    auto Speak = [](ContentDetector& Detector) {
+        for (int i = 0; i < 6; ++i)
+        {
+            TapAudio(Detector, 300);
+            TapAudio(Detector, 100, true);
+        }
+        TapAudio(Detector, 300);
+    };
+
+    // Only the window's last 200 ms need be sound: it's classified.
+    FakeState State;
+    ContentDetectorTuning Tuning = FastTuning();
+    Tuning.MinAudibleMs = 200;
+    ContentDetector Detector(FakeBackend(State), Tuning);
+    Detector.SetActive(true, 1);
+    REQUIRE(WaitFor([&] { return Loaded(Detector); }));
+    Speak(Detector);
+    CHECK(WaitFor([&] { return State.Runs > 0; }));
+
+    // The whole window must be sound: never.
+    FakeState Strict;
+    Tuning.MinAudibleMs = 1000; // more than the window: the window's length counts
+    ContentDetector StrictDetector(FakeBackend(Strict), Tuning);
+    StrictDetector.SetActive(true, 1);
+    REQUIRE(WaitFor([&] { return Loaded(StrictDetector); }));
+    Speak(StrictDetector);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    CHECK(Strict.Runs == 0);
+}
+
 namespace
 {
 // Waits for a track boundary event; the others are dropped.

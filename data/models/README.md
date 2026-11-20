@@ -25,16 +25,19 @@ builds the file from those weights; it says how to run it. The result
 follows the contract in `daemon/src/detect/onnx_classifier.hpp`:
 
 - **Format:** fp32 ONNX, opset 17, ~24 MB.
-- **Input:** `waveform` `[1, 96000]`: 3 s of 32 kHz mono audio.
+- **Input:** `waveform` `[1, 160000]`: 5 s of 32 kHz mono audio.
 - **Output:** `scores` `[1, 527]`: AudioSet probabilities.
 - **In-graph preprocessing:** EfficientAT's mel front end, as plain ops.
-  The 3 s window's 300 mel frames are tiled to 500, because mn10 was
-  trained on 10 s clips and saturates below ~400 frames.
+  The 5 s window gives 500 mel frames. mn10 was trained on 10 s clips
+  and saturates below ~400 frames, so a shorter window would be tiled to
+  500. A real 5 s window costs ~14 ms against a tiled 3 s one's ~11 ms,
+  and scores better on the test set (71 of 97 clips against 69).
+  Built with `--seconds 5.0`.
 - **Metadata:** `ramkolfx.sample_rate`, `ramkolfx.labels`,
   `ramkolfx.input_samples` and `ramkolfx.output`, plus the source.
 
 SHA-256 of the file as shipped:
-`df9a31966fcbf0bb2d46c559e76093e84c4bb73d10e59eee8adb98f39b52e5d5`
+`fe3c9318600dbc2ea6feecf5d81a2225a4b170fd628727454a3a0b1cbb0143a3`
 
 ## Known limits
 

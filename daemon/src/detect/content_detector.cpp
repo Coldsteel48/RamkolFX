@@ -535,7 +535,8 @@ void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
     ClassScores Folded{};
     std::string Error;
     if (!bPaused && Classifier && Now >= NextRunAtMs &&
-        Silence.AudibleMs() >= static_cast<int64_t>(ModelInput.size() * 1000 / Classifier->SampleRate()) &&
+        Silence.AudibleMs() >= std::min(Tuning.MinAudibleMs, static_cast<int64_t>(ModelInput.size() * 1000 /
+                                                                                  Classifier->SampleRate())) &&
         History.CopyLatest(Window))
     {
         const int64_t CpuStart = ThreadCpuTimeUs();

@@ -6,7 +6,8 @@
 # (see LICENSE-COMMERCIAL.md). Contributions are accepted only under the
 # terms of the Contributor License Agreement (see CLA.md).
 
-"""Export EfficientAT mn10_as to the RamkolFX classifier contract.
+"""Export an EfficientAT AudioSet model (mn10_as by default) to the
+RamkolFX classifier contract.
 
 One float input "waveform" [1, N] at 32 kHz mono -> one output "scores"
 [1, 527] of sigmoid probabilities, with the mel front end in the graph and
@@ -19,6 +20,10 @@ Rebuilds data/models/audio_classifier.onnx (see data/models/README.md):
     pip install torch torchaudio torchvision onnx onnxruntime numpy
     python -I tools/model/export_efficientat.py --repo EfficientAT \
         --weights mn10_as_mAP_471.pt --seconds 3.0 --out data/models/audio_classifier.onnx
+
+Other sizes: --arch mn --width 2.0 (mn20_as), 4.0 (mn40_as, mn40_as_ext);
+--arch dymn --width 1.0 / 2.0 (dymn10_as, dymn20_as). Weights are listed
+in EfficientAT's models/*/model.py (pretrained_models).
 """
 
 import argparse
@@ -40,17 +45,20 @@ FMIN = 0.0
 FMAX = SAMPLE_RATE // 2 - 2000 // 2  # AugmentMelSTFT's default (15 kHz)
 
 
-def import_efficientat(repo):
+def import_efficientat(repo, arch="mn"):
     # helpers.utils reads a CSV relative to the cwd on import; the model
-    # only needs NAME_TO_WIDTH from it.
+    # only needs NAME_TO_WIDTH from it (we always pass width_mult).
     helpers = types.ModuleType("helpers")
     utils = types.ModuleType("helpers.utils")
-    utils.NAME_TO_WIDTH = lambda name: {"mn10": 1.0}[name[:4]]
+    utils.NAME_TO_WIDTH = lambda name: 1.0
     helpers.utils = utils
     sys.modules["helpers"] = helpers
     sys.modules["helpers.utils"] = utils
     sys.path.insert(0, repo)
-    from models.mn.model import get_model  # noqa: E402
+    if arch == "dymn":
+        from models.dymn.model import get_model  # noqa: E402
+    else:
+        from models.mn.model import get_model  # noqa: E402
     from models.preprocess import AugmentMelSTFT  # noqa: E402
     return get_model, AugmentMelSTFT
 
@@ -132,17 +140,23 @@ def test_signals(n, rng):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
+    ap.add_argument("--arch", choices=["mn", "dymn"], default="mn")
+    ap.add_argument("--width", type=float, default=1.0, help="width multiplier: 1.0 = mn10/dymn10, 4.0 = mn40")
+    ap.add_argument("--name", default="mn10_as (mAP 0.471)", help="model name for the metadata")
     ap.add_argument("--weights", required=True)
     ap.add_argument("--seconds", type=float, default=1.0)
     ap.add_argument("--context-frames", type=int, default=500)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
-    get_model, AugmentMelSTFT = import_efficientat(args.repo)
+    get_model, AugmentMelSTFT = import_efficientat(args.repo, args.arch)
     labels = read_labels(f"{args.repo}/metadata/class_labels_indices.csv")
     assert len(labels) == 527, len(labels)
 
-    net = get_model(width_mult=1.0, pretrained_name=None, head_type="mlp")
+    if args.arch == "dymn":
+        net = get_model(width_mult=args.width, pretrained_name=None)
+    else:
+        net = get_model(width_mult=args.width, pretrained_name=None, head_type="mlp")
     state = torch.load(args.weights, map_location="cpu", weights_only=True)
     net.load_state_dict(state)
     net.eval()
@@ -181,7 +195,7 @@ def main():
         "ramkolfx.labels": "\n".join(labels),
         "ramkolfx.input_samples": str(n),
         "ramkolfx.output": "probabilities",
-        "ramkolfx.source": "EfficientAT mn10_as (mAP 0.471), https://github.com/fschmid56/EfficientAT, MIT",
+        "ramkolfx.source": f"EfficientAT {args.name}, https://github.com/fschmid56/EfficientAT, MIT",
         "ramkolfx.context_frames": str(model.context),
     }
     del m.metadata_props[:]
@@ -189,7 +203,7 @@ def main():
         entry = m.metadata_props.add()
         entry.key, entry.value = key, value
     m.producer_name = "ramkolfx-export"
-    m.doc_string = ("EfficientAT mn10_as AudioSet tagger (Schmid et al., MIT license) with an in-graph "
+    m.doc_string = (f"EfficientAT {args.name} AudioSet tagger (Schmid et al., MIT license) with an in-graph "
                     "mel front end; input: 32 kHz mono waveform [1, N]; output: 527 AudioSet probabilities.")
     onnx.checker.check_model(m)
     onnx.save(m, args.out)
