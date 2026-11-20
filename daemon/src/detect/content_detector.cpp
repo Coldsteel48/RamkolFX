@@ -304,6 +304,7 @@ void ContentDetector::Run()
         if (!bActive || CurrentAvailability != AutoDetectAvailability::Ok)
         {
             bTapEnabled.store(false, std::memory_order_relaxed);
+            PausedSinceMs = -1; // a pause before this says nothing about the next spell
             if (Classifier && bActive)
             {
                 Unload(Lock); // gave up while active
@@ -325,16 +326,40 @@ void ContentDetector::Run()
             }
             continue;
         }
-        if (!Classifier && !LoadClassifier(Lock, Device))
+        // Paused (the user set the EQ by hand), only silence is tracked,
+        // which needs no classifier: it goes after IdleUnloadMs, like
+        // when inactive, and comes back once detection resumes.
+        const bool bPaused = bPausedFlag.load(std::memory_order_relaxed);
+        if (!bPaused)
+        {
+            if (PausedSinceMs >= 0)
+            {
+                NextRunAtMs = 0; // resumed for a re-check or to learn: run as soon as there's a window
+            }
+            PausedSinceMs = -1;
+        }
+        else if (PausedSinceMs < 0)
+        {
+            PausedSinceMs = NowMs();
+        }
+        if (Classifier && bPaused && NowMs() - PausedSinceMs >= Tuning.IdleUnloadMs)
+        {
+            Unload(Lock, true); // still listening for the gap
+            continue;
+        }
+        if (!Classifier && !bPaused && !LoadClassifier(Lock, Device))
         {
             continue;
         }
-        if (SeenGeneration != SpellGeneration)
+        // Also after any other Unload (device change, failure) while
+        // paused, which skips the reload that would otherwise do this:
+        // deaf, the hold could never see a gap.
+        if (SeenGeneration != SpellGeneration || !bTapEnabled.load(std::memory_order_relaxed))
         {
             StartSpell();
         }
         Step(Lock);
-        if (!bStop && bActive && !bDeviceChanged && Classifier)
+        if (!bStop && bActive && !bDeviceChanged && (Classifier || bPaused))
         {
             Wake.wait_for(Lock, std::chrono::milliseconds(Tuning.PollIntervalMs));
         }
@@ -392,9 +417,12 @@ bool ContentDetector::LoadClassifier(std::unique_lock<std::mutex>& Lock, Inferen
     return true;
 }
 
-void ContentDetector::Unload(std::unique_lock<std::mutex>& Lock)
+void ContentDetector::Unload(std::unique_lock<std::mutex>& Lock, bool bKeepTap)
 {
-    bTapEnabled.store(false, std::memory_order_relaxed);
+    if (!bKeepTap)
+    {
+        bTapEnabled.store(false, std::memory_order_relaxed);
+    }
     std::unique_ptr<ContentClassifier> Old = std::move(Classifier);
     DeviceLabel.clear();
     Lock.unlock();
@@ -406,6 +434,7 @@ void ContentDetector::Unload(std::unique_lock<std::mutex>& Lock)
 void ContentDetector::StartSpell()
 {
     SeenGeneration = SpellGeneration;
+    PausedSinceMs = -1;
     History.Clear();
     Silence.Reset();
     ChunkFill = 0;
@@ -420,10 +449,12 @@ void ContentDetector::StartSpell()
 void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
 {
     const bool bSettled = bSettledFlag.load(std::memory_order_relaxed);
+    const bool bPaused = bPausedFlag.load(std::memory_order_relaxed);
     Lock.unlock();
 
+    // Paused, no inference runs, so the battery (which paces it) can wait.
     const int64_t Now = NowMs();
-    if (Tuning.bWatchBattery && (BatteryCheckedAtMs < 0 || Now - BatteryCheckedAtMs >= 60000))
+    if (Tuning.bWatchBattery && !bPaused && (BatteryCheckedAtMs < 0 || Now - BatteryCheckedAtMs >= 60000))
     {
         bOnBattery.store(IsOnBattery(), std::memory_order_relaxed);
         BatteryCheckedAtMs = Now;
@@ -431,7 +462,10 @@ void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
     const bool bBattery = bOnBattery.load(std::memory_order_relaxed);
 
     // Drain the tap in fixed chunks: silence, track boundaries, history.
-    std::vector<DetectionEvent> NewEvents;
+    // A boundary is noted as how many samples were drained before its
+    // chunk began.
+    std::vector<int64_t> BoundaryAt;
+    int64_t Popped = 0;
     size_t Count = 0;
     while ((Count = TapRing->Pop(Drained.data(), Drained.size())) > 0)
     {
@@ -445,24 +479,43 @@ void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
             if (ChunkFill == Chunk.size())
             {
                 const SilenceTracker::Result R = Silence.AddChunk(Rms(Chunk), Tuning.ChunkMs);
-                History.Append(Chunk);
+                if (Classifier) // kept while paused, so a re-check can start on what played since
+                {
+                    History.Append(Chunk);
+                }
                 ChunkFill = 0;
                 if (R.bBoundary)
                 {
-                    NewEvents.push_back({Now, true, {}});
+                    BoundaryAt.push_back(Popped + static_cast<int64_t>(Done) - static_cast<int64_t>(Chunk.size()));
                 }
             }
+        }
+        Popped += static_cast<int64_t>(Count);
+    }
+    // The tap is drained up to now (read after the drain, so no sample
+    // counted is newer than it), so a boundary's place in what was drained
+    // says when it was heard - which can be most of a poll interval before
+    // the worker got to it. AutoDetectSession tells a gap from before a
+    // hold from one after it by this. Popped includes the samples already
+    // in the next, partial chunk.
+    if (!BoundaryAt.empty())
+    {
+        const int64_t DrainedAt = NowMs();
+        for (int64_t& At : BoundaryAt)
+        {
+            At = DrainedAt - (Popped - At) * 1000 / static_cast<int64_t>(Tuning.InputRate);
         }
     }
 
     // Inference, if it's time and the whole window is sound.
-    const auto WindowMs = static_cast<int64_t>(ModelInput.size() * 1000 / Classifier->SampleRate());
     bool bRan = false;
     bool bFailed = false;
     int64_t CpuUs = 0;
     ClassScores Folded{};
     std::string Error;
-    if (Now >= NextRunAtMs && Silence.AudibleMs() >= WindowMs && History.CopyLatest(Window))
+    if (!bPaused && Classifier && Now >= NextRunAtMs &&
+        Silence.AudibleMs() >= static_cast<int64_t>(ModelInput.size() * 1000 / Classifier->SampleRate()) &&
+        History.CopyLatest(Window))
     {
         const int64_t CpuStart = ThreadCpuTimeUs();
         ToModelRate->Process(Window, ModelInput);
@@ -484,9 +537,16 @@ void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
     }
 
     Lock.lock();
-    for (const DetectionEvent& Event : NewEvents)
+    // A new spell began while unlocked (SetActive): what was drained and
+    // classified belongs to the old one, and AutoDetectSession has already
+    // started afresh - don't hand it the old spell's audio.
+    const bool bStaleSpell = SeenGeneration != SpellGeneration;
+    if (!bStaleSpell)
     {
-        PushEvent(Event);
+        for (int64_t At : BoundaryAt)
+        {
+            PushEvent({At, true, {}});
+        }
     }
     if (bFailed)
     {
@@ -523,7 +583,10 @@ void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
         Unload(Lock);
         return;
     }
-    PushEvent({Now, false, Folded});
+    if (!bStaleSpell)
+    {
+        PushEvent({Now, false, Folded});
+    }
 
     const int64_t Interval = Scheduler.NextIntervalMs(bSettled, bBattery);
     NextRunAtMs = Now + Interval;

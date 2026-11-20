@@ -118,23 +118,59 @@ public:
     void AddTrackBoundary(int64_t NowMs);
 
     // The user changed the EQ by hand (slider, picked or saved a preset)
-    // while an Auto-detect binding is in effect: leave the curve alone for
-    // the rest of this binding's spell.
-    void Hold();
+    // at NowMs while an Auto-detect binding is in effect: leave their curve
+    // alone until the content changes. The first gap of silence after
+    // NowMs (a track boundary) starts a re-check: detection runs on what
+    // plays next. If that maps to the same preset as what the user tuned
+    // for - the same film resumed after a pause, a quiet passage, another
+    // song of the same kind - the hold carries on until the next gap;
+    // otherwise it ends and the new content's preset applies. If nothing
+    // was classified yet when the user tuned, the class may be changing
+    // (a gap just passed, a rival confirming), they re-tuned while held or
+    // during a re-check (a gapless change goes unseen while held), or a
+    // gap from before their last tune turns up late, detection first
+    // learns what they tuned for. A new binding or spell
+    // also ends the hold.
+    void Hold(int64_t NowMs);
 
-    // An Auto-detect binding is in effect and not held - the inference
-    // worker should run.
+    // Who is in charge of the curve (see Hold):
+    // - None: detection.
+    // - Learning: the user; detection runs to find out what they tuned for.
+    // - Held: the user; detection is paused, only gaps are watched for.
+    // - Rechecking: the user; a gap since, detection runs to find out
+    //   whether the content changed.
+    enum class EHold
+    {
+        None,
+        Learning,
+        Held,
+        Rechecking,
+    };
+    EHold HoldPhase() const
+    {
+        return bActive ? HoldState : EHold::None;
+    }
+
+    // An Auto-detect binding is in effect and detection is needed: not
+    // held, or held but learning / re-checking. (Otherwise, while paused,
+    // the worker only tracks silence: see IsActive.)
     bool ShouldDetect() const
     {
-        return bActive && !bHeld;
+        return bActive && HoldState != EHold::Held;
     }
     bool IsActive() const
     {
         return bActive;
     }
+    // The user is in charge of the curve, whatever detection is doing.
     bool IsHeld() const
     {
-        return bActive && bHeld;
+        return bActive && HoldState != EHold::None;
+    }
+    // Held with detection paused, waiting for a gap.
+    bool IsPaused() const
+    {
+        return bActive && HoldState == EHold::Held;
     }
     DetectedClass Current() const
     {
@@ -154,9 +190,14 @@ public:
     }
 
 private:
+    void EndHold();
+    void StartRecheck();
+
     ResolvedBinding Binding;
     bool bActive = false;
-    bool bHeld = false;
+    EHold HoldState = EHold::None;
+    int64_t HeldAtMs = 0;                          // when the user last tuned; unless None
+    DetectedClass HeldClass = DetectedClass::None; // what they tuned for; when Held or Rechecking
     DetectionSmoother Smoother;
 };
 
@@ -179,7 +220,9 @@ struct EqState
 //   going back restores it.
 // - Picking or saving a preset by hand while a binding is in effect makes
 //   that the new baseline - unless it's the binding's own preset (reverting
-//   or updating it), which leaves the binding in charge.
+//   or updating it), which leaves the binding in charge. Under an
+//   Auto-detect binding, which can take back over once the content
+//   changes, the old baseline returns if it does.
 // - Explicitly unbinding the binding in effect keeps the current sound.
 // - The same binding going pending (an Auto-detect binding whose
 //   detection is held, or whose class maps to no switch) changes nothing:
@@ -194,7 +237,12 @@ public:
                   bool& bOutCurveChanged);
 
     // A preset was just picked or saved by hand; Live is the EQ after it.
-    void OnPresetChosenByHand(const EqState& Live);
+    // bBindingMayResume: the binding in effect may take back over (an
+    // Auto-detect binding, held only until the content changes). The pick
+    // becomes the baseline as usual, but if a binding does switch the
+    // curve again, the pre-binding baseline is restored as the one to
+    // return to.
+    void OnPresetChosenByHand(const EqState& Live, bool bBindingMayResume = false);
 
     // The user took over (e.g. deleted the active preset): manual source,
     // and if a binding is in effect, Live becomes its baseline.
@@ -226,9 +274,14 @@ public:
 
 private:
     void SetSourceFromTarget(const AutoSwitchTarget& Target);
+    // Manual source, and Live as the baseline if a binding is in effect.
+    void AdoptAsBaseline(const EqState& Live);
 
     AutoSwitchTarget Last;
     std::optional<EqState> Snapshot;
+    // The baseline a hand pick under an Auto-detect binding replaced: back
+    // in Snapshot once a binding switches the curve again.
+    std::optional<EqState> ResumeBaseline;
     EqPresetSource ActiveSource = EqPresetSource::Manual;
     std::string ActiveSourceApp;
 };

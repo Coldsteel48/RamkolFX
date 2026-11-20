@@ -134,7 +134,7 @@ EqState HandTuned()
 // Simulates the engine picking a preset by hand: apply it, then tell the
 // controller.
 void PickByHand(AutoSwitchController& Controller, const EqPresetCatalog& Catalog, EqState& Live,
-                const std::string& Name)
+                const std::string& Name, bool bBindingMayResume = false)
 {
     const EqPreset* Preset = Catalog.Find(Name);
     REQUIRE(Preset);
@@ -142,7 +142,7 @@ void PickByHand(AutoSwitchController& Controller, const EqPresetCatalog& Catalog
     Live.Bass = Preset->Bass;
     Live.PresetName = Name;
     Live.bModified = false;
-    Controller.OnPresetChosenByHand(Live);
+    Controller.OnPresetChosenByHand(Live, bBindingMayResume);
 }
 
 bool Evaluate(AutoSwitchController& Controller, const EqPresetCatalog& Catalog, const AutoSwitchTarget& Target,
@@ -312,14 +312,69 @@ TEST(PendingTargetKeepsCurveAndWhoIsInCharge)
 
     // The user picks Rock by hand, then detection is held (pending again):
     // nothing moves and the user stays in charge.
-    PickByHand(Controller, Catalog, Live, "Rock");
+    PickByHand(Controller, Catalog, Live, "Rock", true);
     CHECK(!Evaluate(Controller, Catalog, Pending, Live));
     CHECK(Live.PresetName == "Rock");
     CHECK(Controller.Source() == EqPresetSource::Manual);
 
-    // Binding stops applying: the pre-binding sound comes back... to the
-    // user's choice, which became the baseline.
+    // Binding stops applying without detection having taken back over:
+    // the user's choice stays - it became the baseline.
     CHECK(Evaluate(Controller, Catalog, Manual, Live));
+    CHECK(Live.PresetName == "Rock");
+}
+
+TEST(AutoDetectTakingBackOverKeepsTheBaseline)
+{
+    const EqPresetCatalog Catalog;
+    AutoSwitchController Controller;
+    EqState Live = HandTuned();
+    const AutoSwitchTarget Pending{EqPresetSource::App, "Firefox", ""};
+    Evaluate(Controller, Catalog, {EqPresetSource::App, "Firefox", "Jazz"}, Live);
+
+    // Held for hand picks (only the first one's baseline counts), then the
+    // next song is classified as speech.
+    PickByHand(Controller, Catalog, Live, "Rock", true);
+    PickByHand(Controller, Catalog, Live, "Pop", true);
+    Evaluate(Controller, Catalog, Pending, Live);
+    CHECK(Evaluate(Controller, Catalog, {EqPresetSource::App, "Firefox", "Spoken Word"}, Live));
+    CHECK(Live.PresetName == "Spoken Word");
+    CHECK(Controller.Source() == EqPresetSource::App);
+
+    // Firefox stops: the curve from before Firefox, not a hand pick.
+    CHECK(Evaluate(Controller, Catalog, Manual, Live));
+    CHECK(Live.Bands[3].GainDb == -4.0f && Live.PresetName.empty());
+}
+
+TEST(ResumeWaitsForAnActualSwitch)
+{
+    const EqPresetCatalog Catalog;
+    AutoSwitchController Controller;
+    EqState Live = HandTuned();
+    Evaluate(Controller, Catalog, {EqPresetSource::App, "Firefox", "Jazz"}, Live);
+    PickByHand(Controller, Catalog, Live, "Rock", true);
+
+    // Another Auto-detect app takes over, not classified yet: the curve
+    // stays the user's pick, and so does the baseline.
+    CHECK(!Evaluate(Controller, Catalog, {EqPresetSource::App, "mpv", ""}, Live));
+    CHECK(Live.PresetName == "Rock");
+    // A device binding to the preset already playing switches nothing
+    // either.
+    CHECK(!Evaluate(Controller, Catalog, {EqPresetSource::Device, "speakers", "Rock"}, Live));
+    CHECK(Evaluate(Controller, Catalog, Manual, Live));
+    CHECK(Live.PresetName == "Rock");
+}
+
+TEST(ExplicitTakeoverCancelsTheResume)
+{
+    const EqPresetCatalog Catalog;
+    AutoSwitchController Controller;
+    EqState Live = HandTuned();
+    Evaluate(Controller, Catalog, {EqPresetSource::App, "Firefox", "Jazz"}, Live);
+    PickByHand(Controller, Catalog, Live, "Rock", true);
+    Controller.TakeManualControl(Live); // e.g. the user deleted a preset
+
+    Evaluate(Controller, Catalog, {EqPresetSource::App, "Firefox", "Spoken Word"}, Live);
+    Evaluate(Controller, Catalog, Manual, Live);
     CHECK(Live.PresetName == "Rock");
 }
 
@@ -432,21 +487,214 @@ TEST(NewSpellOrBindingStartsDetectionAfresh)
     CHECK(Session.Current() == DetectedClass::None);
 }
 
-TEST(HoldFreezesTheSpellUntilTheBindingChanges)
+TEST(HoldLastsUntilDifferentContentFollowsAGap)
 {
     AutoDetectSession Session;
     const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
     Session.Update(Firefox, AutoCatalog);
     Feed(Session, JazzScores, 0, 4000);
-    Session.Hold();
-    CHECK(Session.IsHeld() && !Session.ShouldDetect());
+    Session.Hold(5000);
+    CHECK(Session.IsHeld() && !Session.ShouldDetect() && Session.IsActive());
     CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
 
     // Results arriving while held are ignored.
     Feed(Session, SpeechScores, 6000, 60000);
     CHECK(Session.Current() == DetectedClass::Jazz);
 
-    // Next spell: detection resumes.
+    // A gap after it: what plays next is classified, the curve staying
+    // the user's meanwhile.
+    Session.AddTrackBoundary(62000);
+    CHECK(!Session.IsPaused());
+    CHECK(Session.IsHeld() && Session.ShouldDetect());
+    CHECK(Session.Current() == DetectedClass::None);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+
+    // Something else: the hold ends and its preset applies.
+    Feed(Session, SpeechScores, 64000, 68000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName == "Spoken Word");
+    CHECK(!Session.IsHeld() && Session.ShouldDetect());
+}
+
+TEST(HoldSurvivesAGapBeforeTheSameContent)
+{
+    // A paused film, a quiet passage, another song of the same kind.
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Feed(Session, JazzScores, 0, 4000);
+    Session.Hold(5000);
+
+    Session.AddTrackBoundary(20000);
+    Feed(Session, JazzScores, 22000, 26000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsHeld() && !Session.ShouldDetect()); // back to only listening
+
+    // The next gap checks again.
+    Session.AddTrackBoundary(40000);
+    CHECK(Session.ShouldDetect());
+    Feed(Session, SpeechScores, 42000, 46000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName == "Spoken Word");
+}
+
+TEST(RetuningMidRecheckLearnsTheNewContent)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Feed(Session, JazzScores, 0, 4000);
+    Session.Hold(5000);
+    Session.AddTrackBoundary(10000);
+    CHECK(Session.ShouldDetect());
+
+    // The user adjusts the curve for the new song before it's classified:
+    // it's learned as what they tuned for, and their curve stays.
+    Session.Hold(11000);
+    CHECK(Session.ShouldDetect());
+    Feed(Session, SpeechScores, 12000, 16000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsHeld() && !Session.ShouldDetect());
+
+    // The next gap compares against that (Speech), not the Jazz before.
+    Session.AddTrackBoundary(30000);
+    Feed(Session, SpeechScores, 32000, 36000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsHeld());
+    Session.AddTrackBoundary(40000);
+    Feed(Session, JazzScores, 42000, 46000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName == "Jazz");
+}
+
+TEST(RetuningWhileHeldLearnsWhatPlaysNow)
+{
+    // The content changed with no gap while held (a crossfade, autoplay),
+    // unseen with detection paused; the user re-tunes for it.
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Feed(Session, JazzScores, 0, 4000);
+    Session.Hold(5000);
+    CHECK(Session.IsPaused());
+    Session.Hold(30000);
+    CHECK(Session.IsHeld() && Session.ShouldDetect());
+    CHECK(Session.Current() == DetectedClass::None);
+    Feed(Session, SpeechScores, 31000, 35000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsPaused());
+
+    // The next gap compares against Speech, not the Jazz before: more
+    // speech keeps the user's curve.
+    Session.AddTrackBoundary(50000);
+    Feed(Session, SpeechScores, 52000, 56000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsHeld());
+}
+
+TEST(HoldBeforeAnythingIsClassifiedLearnsFirst)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Session.Hold(500); // tuned right as playback started
+    CHECK(Session.IsHeld() && Session.ShouldDetect());
+    Feed(Session, JazzScores, 1000, 5000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsHeld() && !Session.ShouldDetect());
+
+    // Paused and resumed: still Jazz, so the user's curve stays.
+    Session.AddTrackBoundary(20000);
+    Feed(Session, JazzScores, 22000, 26000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsHeld());
+}
+
+TEST(GapCollectedAfterTheHoldButHeardBeforeItLearnsAfresh)
+{
+    // The user tuned for what followed the gap, not for what detection
+    // last confirmed.
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Feed(Session, JazzScores, 0, 4000);
+    Session.Hold(5000);
+    CHECK(Session.IsPaused());
+    Session.Hold(20300); // tuned again, just after a gap...
+    Session.AddTrackBoundary(20000); // ...that the worker reports late
+    CHECK(Session.IsHeld() && Session.ShouldDetect());
+    CHECK(Session.Current() == DetectedClass::None);
+
+    Feed(Session, SpeechScores, 21000, 25000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsPaused());
+
+    // What it's tuned for is Speech now: more speech after the next gap
+    // keeps the hold.
+    Session.AddTrackBoundary(40000);
+    Feed(Session, SpeechScores, 42000, 46000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsPaused());
+}
+
+TEST(HoldWhileTheContentIsChangingLearnsAfresh)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Feed(Session, JazzScores, 0, 4000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName == "Jazz");
+
+    // A gap, and speech not confirmed yet: still Jazz on paper.
+    Session.AddTrackBoundary(20000);
+    Feed(Session, SpeechScores, 21000, 23000);
+    CHECK(Session.Current() == DetectedClass::Jazz);
+    Session.Hold(23500);
+    CHECK(Session.IsHeld() && Session.ShouldDetect());
+
+    Feed(Session, SpeechScores, 24000, 28000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsPaused());
+
+    // Compared against Speech: another speech item keeps the hold.
+    Session.AddTrackBoundary(40000);
+    Feed(Session, SpeechScores, 42000, 46000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+    CHECK(Session.IsHeld());
+}
+
+TEST(GapWhileLearningComparesWithWhatWasTunedFor)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Feed(Session, JazzScores, 0, 2000); // not confirmed yet
+    Session.Hold(2500);
+    CHECK(Session.ShouldDetect());
+
+    // The song ends before Jazz is confirmed; a podcast follows. It isn't
+    // learned as what the user tuned for: it's compared with the Jazz the
+    // scores pointed at, and replaces the curve.
+    Session.AddTrackBoundary(3000);
+    CHECK(Session.IsHeld() && Session.ShouldDetect());
+    Feed(Session, SpeechScores, 4000, 8000);
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName == "Spoken Word");
+    CHECK(!Session.IsHeld());
+}
+
+TEST(GapWhileLearningWithNothingHeardEndsTheHold)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Session.Hold(500);
+    Session.AddTrackBoundary(1000); // nothing to compare the next content with
+    CHECK(!Session.IsHeld() && Session.ShouldDetect());
+}
+
+TEST(HoldEndsWithTheSpellToo)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Session.Hold(1000);
     Session.Update({EqPresetSource::App, "Firefox", "", true, 90000}, AutoCatalog);
     CHECK(!Session.IsHeld() && Session.ShouldDetect());
 }
@@ -455,7 +703,7 @@ TEST(HoldWithoutAnAutoBindingDoesNothing)
 {
     AutoDetectSession Session;
     Session.Update({EqPresetSource::App, "mpv", "Bass Boost", false, 0}, AutoCatalog);
-    Session.Hold();
+    Session.Hold(0);
     CHECK(!Session.IsHeld());
     Session.Update({EqPresetSource::App, "Firefox", "", true, 0}, AutoCatalog);
     CHECK(Session.ShouldDetect());

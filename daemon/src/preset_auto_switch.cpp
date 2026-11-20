@@ -71,17 +71,40 @@ AutoSwitchTarget AutoDetectSession::Update(const ResolvedBinding& NewBinding, co
     if (!NewBinding.bAutoDetect)
     {
         bActive = false;
+        EndHold();
         return NewBinding.AsTarget();
     }
     if (!bActive || !(NewBinding == Binding))
     {
         Binding = NewBinding;
         bActive = true;
-        bHeld = false;
+        EndHold();
         Smoother.Reset();
     }
+    if (Smoother.Current() != DetectedClass::None)
+    {
+        if (HoldState == EHold::Learning)
+        {
+            HeldClass = Smoother.Current();
+            HoldState = EHold::Held;
+        }
+        else if (HoldState == EHold::Rechecking)
+        {
+            // Compared by preset: the user tuned for what the class table
+            // gives the held content, and a class that maps to the same
+            // preset wouldn't have switched.
+            if (Catalog.DetectedClassPreset(Smoother.Current()) == Catalog.DetectedClassPreset(HeldClass))
+            {
+                HoldState = EHold::Held; // same kind of content: the user's curve still fits
+            }
+            else
+            {
+                EndHold();
+            }
+        }
+    }
     AutoSwitchTarget Target = Binding.AsTarget();
-    if (!bHeld)
+    if (HoldState == EHold::None)
     {
         Target.PresetName = Catalog.DetectedClassPreset(Smoother.Current());
     }
@@ -98,15 +121,108 @@ void AutoDetectSession::AddScores(const ClassScores& Scores, int64_t NowMs)
 
 void AutoDetectSession::AddTrackBoundary(int64_t NowMs)
 {
-    if (ShouldDetect())
+    if (!bActive)
     {
+        return;
+    }
+    // Under a hold, a gap is placed against when the user last tuned:
+    // before it, they tuned for what followed the gap (the event can be
+    // collected after the hold, up to a poll interval and a tick late);
+    // after it, the content may have changed since.
+    switch (HoldState)
+    {
+    case EHold::None:
+    case EHold::Rechecking:
         Smoother.AddTrackBoundary(NowMs);
+        break;
+    case EHold::Learning:
+        if (NowMs <= HeldAtMs)
+        {
+            Smoother.Reset(); // learn what started there, nothing from before
+        }
+        else
+        {
+            // Over before detection confirmed what it was: what the
+            // scores pointed at stands in for it.
+            const DetectedClass Tuned =
+                Smoother.Current() != DetectedClass::None ? Smoother.Current() : Smoother.Decide();
+            if (Tuned == DetectedClass::None)
+            {
+                EndHold(); // nothing to compare the next content with
+                Smoother.AddTrackBoundary(NowMs);
+            }
+            else
+            {
+                HeldClass = Tuned;
+                StartRecheck();
+            }
+        }
+        break;
+    case EHold::Held:
+        if (NowMs <= HeldAtMs)
+        {
+            HeldClass = DetectedClass::None;
+            HoldState = EHold::Learning;
+            Smoother.Reset();
+        }
+        else
+        {
+            StartRecheck();
+        }
+        break;
     }
 }
 
-void AutoDetectSession::Hold()
+void AutoDetectSession::Hold(int64_t NowMs)
 {
-    bHeld = bActive;
+    if (!bActive)
+    {
+        return;
+    }
+    switch (HoldState)
+    {
+    case EHold::None:
+        // What the user is hearing is what detection last confirmed -
+        // unless nothing is yet, or it may be on its way out (a gap just
+        // passed, a rival class confirming): then learn it afresh.
+        if (Smoother.MayBeChanging(NowMs))
+        {
+            Smoother.Reset();
+        }
+        HeldClass = Smoother.Current();
+        HoldState = HeldClass == DetectedClass::None ? EHold::Learning : EHold::Held;
+        break;
+    case EHold::Rechecking:
+        // Re-tuned for content not classified yet: learn it (the smoother
+        // has been on it since the gap).
+        HeldClass = DetectedClass::None;
+        HoldState = EHold::Learning;
+        break;
+    case EHold::Held:
+        // Detection was paused, so a gapless change (crossfade, autoplay
+        // with no silence) went unseen: re-tuning may be for content other
+        // than HeldClass. Learn what's playing now.
+        HeldClass = DetectedClass::None;
+        HoldState = EHold::Learning;
+        Smoother.Reset();
+        break;
+    case EHold::Learning:
+        break; // already learning what's playing
+    }
+    HeldAtMs = NowMs;
+}
+
+void AutoDetectSession::StartRecheck()
+{
+    HoldState = EHold::Rechecking;
+    Smoother.Reset(); // judge what plays next on its own
+}
+
+void AutoDetectSession::EndHold()
+{
+    HoldState = EHold::None;
+    HeldAtMs = 0;
+    HeldClass = DetectedClass::None;
 }
 
 void AutoSwitchController::SetSourceFromTarget(const AutoSwitchTarget& Target)
@@ -149,6 +265,7 @@ bool AutoSwitchController::Evaluate(const AutoSwitchTarget& Target, const EqPres
             Snapshot.reset();
             bOutCurveChanged = true;
         }
+        ResumeBaseline.reset();
     }
     else
     {
@@ -162,6 +279,15 @@ bool AutoSwitchController::Evaluate(const AutoSwitchTarget& Target, const EqPres
         const EqPreset* Preset = Catalog.Find(Target.PresetName);
         if (Preset && Live.PresetName != Preset->Name)
         {
+            if (ResumeBaseline)
+            {
+                // A binding takes back over from the user's temporary
+                // pick: the sound to return to is again the one from
+                // before any binding. (Only on a switch: a binding that
+                // leaves the pick playing keeps it as the baseline.)
+                Snapshot = std::move(*ResumeBaseline);
+                ResumeBaseline.reset();
+            }
             Live.Bands = Preset->Bands;
             Live.Bass = Preset->Bass;
             Live.PresetName = Preset->Name;
@@ -174,7 +300,7 @@ bool AutoSwitchController::Evaluate(const AutoSwitchTarget& Target, const EqPres
     return true;
 }
 
-void AutoSwitchController::OnPresetChosenByHand(const EqState& Live)
+void AutoSwitchController::OnPresetChosenByHand(const EqState& Live, bool bBindingMayResume)
 {
     // Re-picking (to revert tweaks) or saving over the preset the binding
     // in effect points to is maintenance of that binding's preset, not a
@@ -185,10 +311,27 @@ void AutoSwitchController::OnPresetChosenByHand(const EqState& Live)
         SetSourceFromTarget(Last);
         return;
     }
-    TakeManualControl(Live);
+    if (bBindingMayResume && Last.Source != EqPresetSource::Manual)
+    {
+        if (!ResumeBaseline)
+        {
+            ResumeBaseline = Snapshot; // kept from a run's first pick: later ones replace the pick
+        }
+    }
+    else
+    {
+        ResumeBaseline.reset();
+    }
+    AdoptAsBaseline(Live);
 }
 
 void AutoSwitchController::TakeManualControl(const EqState& Live)
+{
+    ResumeBaseline.reset(); // an explicit takeover: no binding is coming back
+    AdoptAsBaseline(Live);
+}
+
+void AutoSwitchController::AdoptAsBaseline(const EqState& Live)
 {
     // Re-captured rather than dropped: with a device binding still
     // underneath, there'd be no baseline left to return to once the device

@@ -311,6 +311,9 @@ private:
     // Detection state for the Auto-detect binding in effect (if any), fed
     // by Detector's events. Guarded by AutoSwitchMutex alone.
     AutoDetectSession AutoDetect;
+    // The hold phase last logged (LogHoldPhaseChange). Guarded by
+    // AutoSwitchMutex.
+    AutoDetectSession::EHold LoggedHoldPhase = AutoDetectSession::EHold::None;
 
     static constexpr long AutoSwitchTickMs = 250;
     spa_source* AutoSwitchTimer = nullptr;
@@ -368,6 +371,12 @@ private:
     // binding in effect, if any (see AutoDetectSession::Hold). Takes
     // AutoSwitchMutex, so call it without the preset/EQ mutexes held.
     void HoldAutoDetect();
+    // The same, with AutoSwitchMutex already held.
+    void HoldAutoDetectLocked();
+    // Logs where a hold on Auto-detect went since the last call: most
+    // phase changes leave the target (and so its log line) as it was.
+    // AutoSwitchMutex held.
+    void LogHoldPhaseChange();
 
     // BindDetectedClass. Returns whether presets.conf changed.
     bool HandleDetectedClassCommand(const Command& InCommand);

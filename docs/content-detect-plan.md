@@ -52,11 +52,39 @@ Everything runs locally; no audio or results leave the machine.
   the old track's scores and waives that 10 s, so a new song switches
   ~5 s in. Gapless/crossfaded changes take ~6-14 s. All values tuned in
   phase 0.
-- **Tweaks pause detection.** Moving a slider or picking/saving a preset
-  by hand while an Auto binding is in effect holds detection for the rest
-  of that binding's spell: the resolver returns the pending target
+- **Tweaks pause detection until the content changes.** Moving a slider
+  or picking/saving a preset by hand while an Auto binding is in effect
+  holds detection. The resolver returns the pending target
   `{Source, Key, ""}`, which leaves the curve as the user set it.
-  Detection resumes the next time the binding comes into effect.
+  - *While held:* the worker keeps tracking silence but runs no
+    inference, and unloads the classifier after `IdleUnloadMs`.
+  - *Learning:* if nothing was classified when the user tuned, or the
+    class may be on its way out (a boundary just passed, a rival class
+    confirming), inference runs until a class is confirmed: that is what
+    they tuned for. Re-tuning while held or during a re-check learns the
+    new content the same way (while held, detection is paused, so a
+    gapless change would otherwise go unseen).
+  - *Boundaries vs. the last tune:* each track boundary is stamped when
+    its audio reached the tap, not when the worker drained it, and is
+    placed against the last time the user tuned. One before it (collected
+    late) means they tuned for what followed: learn that. One after it
+    starts a re-check. If one ends the content while it is still being
+    learned, the class the scores pointed at stands in for what they
+    tuned for (nothing at all: the hold ends).
+  - *Re-check:* inference resumes on what plays after the boundary. Once
+    it is classified, the hold ends if its class maps to a different
+    preset than the class the user tuned for; otherwise it carries on
+    until the next boundary. So a paused video or a quiet passage keeps
+    the user's curve. The status reports detection as paused only while
+    held, not while learning or re-checking.
+  - A new binding or playing spell also ends the hold.
+  - *Baseline:* a hand pick under an Auto binding becomes the baseline as
+    with any binding, but the one it replaced is kept aside
+    (`OnPresetChosenByHand(..., bBindingMayResume)`). If a binding
+    actually switches the curve again (applies a different preset), that
+    pre-binding baseline is restored as the one to return to; a binding
+    that leaves the pick playing keeps the pick. An explicit takeover
+    (unbind, delete) drops it.
 - **When the Auto binding stops applying**, the sound returns to the
   snapshot, exactly like any other binding.
 - **Runtime or model missing.** Auto entries are disabled in the GUI with

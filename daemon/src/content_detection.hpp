@@ -133,6 +133,10 @@ public:
     // Current class confirmed and unchallenged for MinDwellMs, and no
     // track boundary just passed - inference can slow down.
     bool IsSettled(int64_t NowMs) const;
+    // A class is current, but a track boundary just passed or a rival
+    // class is on its way to confirming: what's playing may no longer be
+    // it.
+    bool MayBeChanging(int64_t NowMs) const;
     // The evidence Decide() works on: the short EMA for Speech, Music and
     // Movie, the track-long genre average for genres.
     const ClassScores& Smoothed() const

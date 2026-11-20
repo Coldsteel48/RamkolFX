@@ -34,7 +34,7 @@ struct ContentDetectorTuning
     int64_t PollIntervalMs = 500;
     int64_t ChunkMs = 100;
     // Unload the classifier after this long without an Auto binding in
-    // effect.
+    // effect, or with detection paused.
     int64_t IdleUnloadMs = 5 * 60 * 1000;
     // RT -> worker buffer, in seconds of mono audio.
     int64_t TapSeconds = 4;
@@ -47,7 +47,8 @@ struct ContentDetectorTuning
 };
 
 // Something the worker found, for AutoDetectSession: an inference result
-// or a track boundary. AtMs is steady-clock milliseconds.
+// or a track boundary. AtMs is steady-clock milliseconds: when the run
+// finished, or when the boundary's sound arrived at the tap.
 struct DetectionEvent
 {
     int64_t AtMs = 0;
@@ -91,7 +92,7 @@ public:
     // Real-time safe; a single atomic load when inactive.
     void Tap(const float* Interleaved, uint32 Frames) noexcept;
 
-    // An Auto binding is in effect (and not held). A different SpellId
+    // An Auto binding is in effect (held or not). A different SpellId
     // (another binding, or the same one's new playing spell) starts over:
     // stale audio dropped, scheduling fresh.
     void SetActive(bool bActive, uint64_t SpellId = 0);
@@ -100,6 +101,15 @@ public:
     void SetSettled(bool bSettled)
     {
         bSettledFlag.store(bSettled, std::memory_order_relaxed);
+    }
+
+    // Detection is paused (the user set the EQ by hand): keep tracking
+    // silence and reporting track boundaries, but run no inference - and
+    // unload the classifier after IdleUnloadMs of it. Set it before
+    // SetActive, which may wake the worker for a new spell.
+    void SetPaused(bool bPaused)
+    {
+        bPausedFlag.store(bPaused, std::memory_order_relaxed);
     }
 
     // Changes the device policy. The classifier is rebuilt on next use,
@@ -128,7 +138,9 @@ private:
     // it while working.
     void Step(std::unique_lock<std::mutex>& Lock);
     bool LoadClassifier(std::unique_lock<std::mutex>& Lock, InferenceDevice Device);
-    void Unload(std::unique_lock<std::mutex>& Lock);
+    // bKeepTap: the worker goes on draining the tap (paused, tracking
+    // silence), so it stays on through the teardown - no audio lost.
+    void Unload(std::unique_lock<std::mutex>& Lock, bool bKeepTap = false);
     void PushEvent(const DetectionEvent& Event); // Mutex held
 
     const ClassifierBackend Backend;
@@ -140,6 +152,7 @@ private:
     std::unique_ptr<RingBuffer<float>> TapRing;
     std::atomic<int64_t> TapDropped{0};
     std::atomic<bool> bSettledFlag{false};
+    std::atomic<bool> bPausedFlag{false};
 
     // Guarded by Mutex.
     mutable std::mutex Mutex;
@@ -173,6 +186,7 @@ private:
     size_t ChunkFill = 0;
     uint64_t SeenGeneration = 0;
     int64_t NextRunAtMs = 0;
+    int64_t PausedSinceMs = -1; // -1 = not paused
     std::atomic<bool> bOnBattery{false};
     int64_t BatteryCheckedAtMs = -1;
     bool bGovernorStretching = false;

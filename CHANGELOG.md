@@ -7,6 +7,22 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+### Changed
+
+- **Changing the EQ by hand now pauses Auto-detect only until the content
+  changes,** not for as long as the app keeps playing.
+  - *After a gap of silence:* detection checks what plays next. If it maps
+    to a different preset than what you tuned for, that preset applies. If
+    it's the same kind of content (a paused video resuming, a quiet
+    passage, another song of the same genre), your curve stays.
+  - *While paused:* detection only watches for silence. It runs no
+    classifier, and unloads it after 5 minutes. (If you tune before
+    anything was detected, or tune again while paused, it first runs
+    briefly to learn what you tuned for.)
+  - *When the app stops:* a preset you picked stays, as before - unless
+    Auto-detect has switched presets again since, in which case the EQ
+    returns to what it was before the app started, as with any binding.
+
 ## [0.2.1] - 2026-11-20
 
 ### Fixed

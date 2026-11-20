@@ -20,6 +20,7 @@
 #include <cstring>
 #include <csignal>
 #include <filesystem>
+#include <utility>
 
 #include <sys/inotify.h>
 #include <unistd.h>
@@ -1146,7 +1147,9 @@ Status AudioEngine::BuildStatus()
         OutStatus.bAutoDetectActive = AutoDetect.IsActive();
         OutStatus.Detected = AutoDetect.Current();
         OutStatus.DetectedConfidence = static_cast<uint8>(std::lround(AutoDetect.Confidence() * 100.0f));
-        OutStatus.bDetectionHeld = AutoDetect.IsHeld();
+        // Paused only: while it learns or re-checks, detection is running
+        // and may end the hold on its own.
+        OutStatus.bDetectionHeld = AutoDetect.IsPaused();
     }
     {
         std::lock_guard<std::mutex> Lock(PresetMutex);
@@ -1304,8 +1307,8 @@ bool AudioEngine::HandlePresetCommand(const Command& InCommand)
         ApplyEqCurve(Selected->Bands, Selected->Bass);
         ActivePresetName = Selected->Name;
         bPresetModified = false;
-        AutoDetect.Hold();
-        AutoSwitch.OnPresetChosenByHand(CaptureEqState());
+        HoldAutoDetectLocked();
+        AutoSwitch.OnPresetChosenByHand(CaptureEqState(), AutoDetect.IsHeld());
         fprintf(stderr, "[ramkolfxd] EQ preset '%s' applied\n", Selected->Name.c_str());
         return true;
     }
@@ -1347,8 +1350,8 @@ bool AudioEngine::HandlePresetCommand(const Command& InCommand)
     {
         ActivePresetName = StoredName;
         bPresetModified = false;
-        AutoDetect.Hold();
-        AutoSwitch.OnPresetChosenByHand(CaptureEqState());
+        HoldAutoDetectLocked();
+        AutoSwitch.OnPresetChosenByHand(CaptureEqState(), AutoDetect.IsHeld());
     }
     else if (ActivePresetName == InCommand.PresetName)
     {
@@ -1370,7 +1373,11 @@ AutoSwitchTarget AudioEngine::ResolveCurrentTarget(int64_t NowMs)
     const ResolvedBinding Binding =
         ResolveBinding(AppActivity, PresetCatalog, Output->GetTargetNodeName(), bDetectionAvailable);
     const AutoSwitchTarget Target = AutoDetect.Update(Binding, PresetCatalog);
-    Detector->SetActive(AutoDetect.ShouldDetect(), SpellIdOf(Binding));
+    // Paused before SetActive, which may wake the worker: it must not see
+    // a new spell with the old pause flag. While held, the worker stays
+    // active - tracking silence for the gap that starts a re-check.
+    Detector->SetPaused(!AutoDetect.ShouldDetect());
+    Detector->SetActive(AutoDetect.IsActive(), SpellIdOf(Binding));
     Detector->SetSettled(AutoDetect.IsSettled(NowMs));
     return Target;
 }
@@ -1378,7 +1385,15 @@ AutoSwitchTarget AudioEngine::ResolveCurrentTarget(int64_t NowMs)
 void AudioEngine::HoldAutoDetect()
 {
     std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
-    AutoDetect.Hold();
+    HoldAutoDetectLocked();
+}
+
+void AudioEngine::HoldAutoDetectLocked()
+{
+    AutoDetect.Hold(SteadyNowMs());
+    // Now rather than on the next tick: inference run in between would
+    // only be thrown away.
+    Detector->SetPaused(!AutoDetect.ShouldDetect());
 }
 
 void AudioEngine::HandleBindCommand(const Command& InCommand)
@@ -1526,6 +1541,7 @@ bool AudioEngine::EvaluateAutoSwitch()
 
     std::lock_guard<std::mutex> Lock(PresetMutex);
     const AutoSwitchTarget Target = ResolveCurrentTarget(NowMs);
+    LogHoldPhaseChange();
     if (Target == AutoSwitch.LastTarget())
     {
         return false; // the common case on every tick - skip capturing the curve
@@ -1549,7 +1565,7 @@ bool AudioEngine::EvaluateAutoSwitch()
         const char* Kind = Target.Source == EqPresetSource::App ? "app" : "device";
         if (AutoDetect.IsHeld())
         {
-            fprintf(stderr, "[ramkolfxd] EQ auto-switch: %s '%s' auto-detect paused (EQ changed by hand)\n", Kind,
+            fprintf(stderr, "[ramkolfxd] EQ auto-switch: %s '%s' EQ left as set by hand\n", Kind,
                     Target.Key.c_str());
         }
         else if (AutoDetect.Current() == DetectedClass::None)
@@ -1572,6 +1588,37 @@ bool AudioEngine::EvaluateAutoSwitch()
                 Target.PresetName.c_str());
     }
     return true;
+}
+
+void AudioEngine::LogHoldPhaseChange()
+{
+    using EHold = AutoDetectSession::EHold;
+    const EHold Phase = AutoDetect.HoldPhase();
+    if (Phase == LoggedHoldPhase)
+    {
+        return;
+    }
+    const EHold Was = std::exchange(LoggedHoldPhase, Phase);
+    const char* What = nullptr;
+    switch (Phase)
+    {
+    case EHold::None:
+        // Ended by a new binding or spell, or by the content changing -
+        // the target's own line says which preset follows.
+        What = "hand-set EQ no longer held";
+        break;
+    case EHold::Learning:
+        What = "EQ changed by hand - classifying what it was tuned for";
+        break;
+    case EHold::Held:
+        What = Was == EHold::Rechecking ? "same kind of content after the gap - keeping the hand-set EQ, paused"
+                                        : "paused (EQ changed by hand) until the next gap";
+        break;
+    case EHold::Rechecking:
+        What = "gap in playback - re-checking the content under the hand-set EQ";
+        break;
+    }
+    fprintf(stderr, "[ramkolfxd] auto-detect: %s\n", What);
 }
 
 void AudioEngine::OnAutoSwitchTimer(void* Data, uint64 Expirations)

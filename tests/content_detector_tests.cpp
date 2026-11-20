@@ -17,6 +17,7 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -32,8 +33,11 @@ struct FakeState
     std::atomic<int> Loads{0};
     std::atomic<int> CpuLoads{0};
     std::atomic<int> Runs{0};
+    std::atomic<bool> bClassifying{false};
     std::atomic<int64_t> SpinUs{0};       // CPU time each run burns
     std::atomic<bool> bAcceleratorFails{false};
+    std::atomic<int64_t> TeardownMs{0};   // how long destroying a classifier takes
+    std::atomic<bool> bTearingDown{false};
     AutoDetectAvailability LoadVerdict = AutoDetectAvailability::Ok;
 };
 
@@ -42,6 +46,12 @@ class FakeClassifier final : public ContentClassifier
 public:
     FakeClassifier(FakeState& InState, bool bInCpu) : State(InState), bCpu(bInCpu)
     {
+    }
+    ~FakeClassifier() override
+    {
+        State.bTearingDown = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(State.TeardownMs.load()));
+        State.bTearingDown = false;
     }
     uint32_t SampleRate() const override
     {
@@ -67,10 +77,12 @@ public:
             OutError = "device lost";
             return false;
         }
+        State.bClassifying = true;
         const int64_t Until = ThreadCpuTimeUs() + State.SpinUs;
         while (ThreadCpuTimeUs() < Until)
         {
         }
+        State.bClassifying = false;
         ++State.Runs;
         OutScores = {0.1f, 0.9f, 0.8f};
         return true;
@@ -237,6 +249,154 @@ TEST(SilenceIsSkippedAndAGapIsATrackBoundary)
     }));
     REQUIRE(!Events.empty());
     CHECK(Events.front().bTrackBoundary);
+}
+
+namespace
+{
+// Waits for a track boundary event; the others are dropped.
+std::optional<DetectionEvent> WaitForBoundary(ContentDetector& Detector)
+{
+    std::optional<DetectionEvent> Found;
+    WaitFor([&] {
+        for (const DetectionEvent& E : Detector.TakeEvents())
+        {
+            if (E.bTrackBoundary && !Found)
+            {
+                Found = E;
+            }
+        }
+        return Found.has_value();
+    });
+    return Found;
+}
+} // namespace
+
+TEST(PausedDetectorOnlyListensForTheNextSong)
+{
+    FakeState State;
+    ContentDetectorTuning Tuning = FastTuning();
+    Tuning.IdleUnloadMs = 1000;
+    ContentDetector Detector(FakeBackend(State), Tuning);
+    Detector.SetActive(true, 1);
+    REQUIRE(WaitFor([&] { return Loaded(Detector); }));
+    Detector.SetPaused(true);
+
+    // A gap, then a full window of sound - which unpaused gets classified
+    // (ActiveDetectorClassifiesSound). The boundary event shows the worker
+    // has been through it; a few more polls, and still no run.
+    TapAudio(Detector, 2000, true);
+    TapAudio(Detector, 1000);
+    REQUIRE(WaitForBoundary(Detector));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 10 polls
+    CHECK(Loaded(Detector));
+    CHECK(State.Runs == 0);
+
+    // Paused past IdleUnloadMs: the classifier goes, the gaps still count.
+    REQUIRE(WaitFor([&] { return !Loaded(Detector); }));
+    TapAudio(Detector, 2000, true);
+    TapAudio(Detector, 200);
+    CHECK(WaitForBoundary(Detector));
+
+    // Resumed: reloaded, and inference runs again.
+    Detector.SetPaused(false);
+    REQUIRE(WaitFor([&] { return Loaded(Detector); }));
+    TapAudio(Detector, 1000);
+    REQUIRE(WaitFor([&] { return State.Runs > 0; }));
+    CHECK(State.Loads == 2);
+}
+
+TEST(RunFinishingAfterANewSpellIsDropped)
+{
+    // Inference on the old spell's audio still running when another
+    // binding takes over: its scores must not reach the new session.
+    FakeState State;
+    State.SpinUs = 200000;
+    ContentDetector Detector(FakeBackend(State), FastTuning());
+    Detector.SetActive(true, 1);
+    REQUIRE(WaitFor([&] { return Loaded(Detector); }));
+    TapAudio(Detector, 1000);
+    REQUIRE(WaitFor([&] { return State.bClassifying.load(); }));
+    Detector.TakeEvents();
+    Detector.SetActive(true, 2);
+    REQUIRE(WaitFor([&] { return State.Runs > 0; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // a few polls: nothing new tapped, no new run
+    CHECK(State.Runs == 1);
+    CHECK(CountScores(Detector.TakeEvents()) == 0);
+}
+
+TEST(PausedUnloadMissesNoAudio)
+{
+    // A big session can take a while to tear down: a gap ending meanwhile
+    // still counts.
+    FakeState State;
+    State.TeardownMs = 400;
+    ContentDetectorTuning Tuning = FastTuning();
+    Tuning.IdleUnloadMs = 100;
+    ContentDetector Detector(FakeBackend(State), Tuning);
+    Detector.SetActive(true, 1);
+    REQUIRE(WaitFor([&] { return Loaded(Detector); }));
+    Detector.SetPaused(true);
+
+    REQUIRE(WaitFor([&] { return State.bTearingDown.load(); }));
+    TapAudio(Detector, 2000, true);
+    TapAudio(Detector, 200);
+    CHECK(State.bTearingDown); // all of it tapped mid-teardown
+    CHECK(WaitForBoundary(Detector));
+}
+
+TEST(PausedDetectorKeepsListeningAfterADeviceChange)
+{
+    FakeState State;
+    ContentDetector Detector(FakeBackend(State), FastTuning());
+    Detector.SetActive(true, 1);
+    REQUIRE(WaitFor([&] { return Loaded(Detector); }));
+    Detector.SetPaused(true);
+    Detector.SetDevice(InferenceDevice::Cpu); // unloads; paused, no reload
+    REQUIRE(WaitFor([&] { return !Loaded(Detector); }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // tap back on, if it is
+
+    TapAudio(Detector, 2000, true);
+    TapAudio(Detector, 200);
+    CHECK(WaitForBoundary(Detector));
+}
+
+TEST(TrackBoundaryIsStampedWhenItWasHeard)
+{
+    FakeState State;
+    ContentDetectorTuning Tuning = FastTuning();
+    Tuning.PollIntervalMs = 300; // drained up to 300 ms after it's heard
+    ContentDetector Detector(FakeBackend(State), Tuning);
+    Detector.SetActive(true, 1);
+    REQUIRE(WaitFor([&] { return Loaded(Detector); }));
+    Detector.SetPaused(true);
+
+    // The gap, then sound tapped in real time (paced to the clock, so a
+    // slow test thread catches up rather than drifting).
+    TapAudio(Detector, 2000, true);
+    const auto SoundStart = std::chrono::steady_clock::now();
+    const int64_t SoundStartMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(SoundStart.time_since_epoch()).count();
+    for (int Tapped = 0; Tapped < 800;)
+    {
+        // TapAudio works in 10 ms blocks.
+        const auto Elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - SoundStart)
+                                 .count();
+        const int Due = static_cast<int>(Elapsed / 10 + 1) * 10;
+        if (Due > Tapped)
+        {
+            TapAudio(Detector, Due - Tapped);
+            Tapped = Due;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    // Within a chunk (100 ms) and some scheduling slack of when the sound
+    // started - not whenever the worker happened to drain it.
+    const std::optional<DetectionEvent> Boundary = WaitForBoundary(Detector);
+    REQUIRE(Boundary);
+    CHECK(Boundary->AtMs >= SoundStartMs - 50);
+    CHECK(Boundary->AtMs <= SoundStartMs + 150);
 }
 
 TEST(LoadFailureMakesItUnavailableUntilTheDeviceChanges)

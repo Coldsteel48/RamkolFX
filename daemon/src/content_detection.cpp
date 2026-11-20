@@ -233,6 +233,11 @@ bool DetectionSmoother::IsSettled(int64_t NowMs) const
            NowMs - CurrentSinceMs >= Tuning.MinDwellMs && !InBoundaryWindow(NowMs);
 }
 
+bool DetectionSmoother::MayBeChanging(int64_t NowMs) const
+{
+    return CurrentClass != DetectedClass::None && (InBoundaryWindow(NowMs) || IsRival(Candidate, CurrentClass));
+}
+
 void DownmixSevenOneToMono(const float* Interleaved, size_t Frames, float* OutMono)
 {
     // Channel order FL FR FC LFE RL RR SL SR (seven_one_channel.hpp).
