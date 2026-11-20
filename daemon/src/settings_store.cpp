@@ -111,6 +111,10 @@ std::optional<PersistedSettings> SettingsStore::Load() const
             Result.DeviceSpatialModes[Device] = static_cast<SpatialMode>(ModeValue);
         }
     }
+    if (const auto Device = InferenceDeviceFromKey(File->GetString("auto_detect.device", "")))
+    {
+        Result.AutoDetectDevice = *Device;
+    }
     return Result;
 }
 
@@ -141,6 +145,10 @@ void SettingsStore::Save(const PersistedSettings& InSettings) const
         Out << DeviceModeKey(DeviceIndex, "device") << "=" << Device << "\n";
         Out << DeviceModeKey(DeviceIndex, "mode") << "=" << static_cast<int>(DeviceMode) << "\n";
         ++DeviceIndex;
+    }
+    if (const char* DeviceKey = InferenceDeviceKey(InSettings.AutoDetectDevice))
+    {
+        Out << "auto_detect.device=" << DeviceKey << "\n";
     }
     WriteFileAtomically(SettingsPath, Out.str(), {.LogPrefix = "[ramkolfxd]"});
 }

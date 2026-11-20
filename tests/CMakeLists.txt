@@ -20,6 +20,11 @@ ramkolfx_add_test(protocol_tests ramkolfx_common)
 ramkolfx_add_test(preset_store_tests ramkolfx_presets)
 ramkolfx_add_test(preset_auto_switch_tests ramkolfx_presets)
 ramkolfx_add_test(settings_store_tests ramkolfx_presets)
+ramkolfx_add_test(content_detection_tests ramkolfx_presets)
+ramkolfx_add_test(content_detector_tests ramkolfx_detect)
+# Needs ONNX Runtime at run time (dlopened); exits 77 = skipped without it.
+ramkolfx_add_test(onnx_classifier_tests ramkolfx_detect)
+set_tests_properties(onnx_classifier_tests PROPERTIES SKIP_RETURN_CODE 77)
 
 # The GUI's autostart Exec= quoting. Pure string code with no GUI
 # dependencies, compiled straight in so it's tested even when the GUI

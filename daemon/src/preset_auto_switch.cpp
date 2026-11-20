@@ -28,39 +28,85 @@ void AppActivityTracker::Update(const std::vector<std::string>& PlayingApps, int
                   [&](const auto& Entry) { return NowMs - Entry.second.LastPlayingAtMs > GraceMs; });
 }
 
-AutoSwitchTarget ResolveAutoSwitchTarget(const AppActivityTracker& Activity, const PresetBindingMap& AppBindings,
-                                         const std::string& OutputDevice, const PresetBindingMap& DeviceBindings)
+ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPresetCatalog& Catalog,
+                               const std::string& OutputDevice, bool bAutoDetectAvailable)
 {
+    const PresetBindingMap& AppBindings = Catalog.AppBindings();
     const std::string* WinnerApp = nullptr;
-    const std::string* WinnerPreset = nullptr;
-    int64_t WinnerStartedAt = 0;
+    const AppActivityTracker::Activity* WinnerState = nullptr;
     // Activity.Apps() iterates in name order, so on equal start times the
     // alphabetically first app wins - strict '>' keeps the earlier one.
     for (const auto& [App, State] : Activity.Apps())
     {
-        const auto Binding = AppBindings.find(App);
-        if (Binding == AppBindings.end())
-        {
-            continue;
-        }
-        if (!WinnerApp || State.StartedAtMs > WinnerStartedAt)
+        const bool bBound = AppBindings.contains(App) || (bAutoDetectAvailable && Catalog.IsAppAutoDetect(App));
+        if (bBound && (!WinnerApp || State.StartedAtMs > WinnerState->StartedAtMs))
         {
             WinnerApp = &App;
-            WinnerPreset = &Binding->second;
-            WinnerStartedAt = State.StartedAtMs;
+            WinnerState = &State;
         }
     }
     if (WinnerApp)
     {
-        return {EqPresetSource::App, *WinnerApp, *WinnerPreset};
+        const std::string Preset = Catalog.AppBinding(*WinnerApp);
+        return {EqPresetSource::App, *WinnerApp, Preset, Preset.empty(), WinnerState->StartedAtMs};
     }
 
-    if (const auto Binding = DeviceBindings.find(OutputDevice);
-        !OutputDevice.empty() && Binding != DeviceBindings.end())
+    if (OutputDevice.empty())
     {
-        return {EqPresetSource::Device, OutputDevice, Binding->second};
+        return {};
+    }
+    if (std::string Preset = Catalog.DeviceBinding(OutputDevice); !Preset.empty())
+    {
+        return {EqPresetSource::Device, OutputDevice, std::move(Preset), false, 0};
+    }
+    if (bAutoDetectAvailable && Catalog.IsDeviceAutoDetect(OutputDevice))
+    {
+        return {EqPresetSource::Device, OutputDevice, "", true, 0};
     }
     return {};
+}
+
+AutoSwitchTarget AutoDetectSession::Update(const ResolvedBinding& NewBinding, const EqPresetCatalog& Catalog)
+{
+    if (!NewBinding.bAutoDetect)
+    {
+        bActive = false;
+        return NewBinding.AsTarget();
+    }
+    if (!bActive || !(NewBinding == Binding))
+    {
+        Binding = NewBinding;
+        bActive = true;
+        bHeld = false;
+        Smoother.Reset();
+    }
+    AutoSwitchTarget Target = Binding.AsTarget();
+    if (!bHeld)
+    {
+        Target.PresetName = Catalog.DetectedClassPreset(Smoother.Current());
+    }
+    return Target;
+}
+
+void AutoDetectSession::AddScores(const ClassScores& Scores, int64_t NowMs)
+{
+    if (ShouldDetect())
+    {
+        Smoother.AddScores(Scores, NowMs);
+    }
+}
+
+void AutoDetectSession::AddTrackBoundary(int64_t NowMs)
+{
+    if (ShouldDetect())
+    {
+        Smoother.AddTrackBoundary(NowMs);
+    }
+}
+
+void AutoDetectSession::Hold()
+{
+    bHeld = bActive;
 }
 
 void AutoSwitchController::SetSourceFromTarget(const AutoSwitchTarget& Target)
@@ -76,6 +122,14 @@ bool AutoSwitchController::Evaluate(const AutoSwitchTarget& Target, const EqPres
     if (Target == Last)
     {
         return false;
+    }
+    if (Target.PresetName.empty() && Target.Source != EqPresetSource::Manual && Target.Source == Last.Source &&
+        Target.Key == Last.Key)
+    {
+        // The binding in effect went pending: keep the curve, and keep
+        // whoever is in charge of it (the user, if they took over).
+        Last = Target;
+        return true;
     }
 
     if (Target.Source == EqPresetSource::Manual)

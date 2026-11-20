@@ -205,6 +205,35 @@ private:
     void RefreshContentStreams();
     void DrawAppPresetCard();
 
+    // Auto-detect (docs/content-detect-plan.md): the class -> preset table
+    // and perf counters, fetched only while the Auto-detect card is
+    // expanded - every second (for the live scores), and right away when
+    // Status::DetectedTableRevision or PresetCatalogRevision moves.
+    DetectionReport AutoDetectReport;
+    bool bHaveAutoDetectReport = false;
+    bool bAutoDetectExpanded = false;
+    float AutoDetectReportTimerSeconds = 0.0f;
+    uint32 ReportTableRevision = 0;
+    uint32 ReportCatalogRevision = 0;
+    // The connected daemon refused GetDetectedClasses - it predates
+    // Auto-detect. Stops asking until the next reconnect (same pattern as
+    // bChannelLevelsUnsupported).
+    bool bDetectedClassesUnsupported = false;
+    // Refused by an older daemon: sets bDetectedClassesUnsupported; a
+    // dropped connection: marks it dropped, same as Apply.
+    void RefreshAutoDetectReport();
+    // Auto-detect bindings can work: the daemon knows Auto-detect and its
+    // runtime and model are there. Otherwise AutoDetectUnavailableReason()
+    // says why, for tooltips.
+    bool IsAutoDetectUsable() const;
+    const char* AutoDetectUnavailableReason() const;
+    // Height the Auto-detect card needs (collapsed or expanded).
+    float AutoDetectCardHeight(float CardPad) const;
+    void DrawAutoDetectCard();
+    // What Auto-detect is doing for the binding in effect: "Jazz 82%",
+    // "listening...", "paused (EQ changed by hand)".
+    std::string AutoDetectSummary() const;
+
     // Mirrors the XDG autostart entry (see autostart.hpp), which stays the
     // source of truth - re-read whenever the Settings popup opens.
     bool bAutostartEnabled = false;

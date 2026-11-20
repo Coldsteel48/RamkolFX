@@ -265,6 +265,32 @@ std::optional<std::vector<ContentStreamInfo>> ControlClient::RequestContentStrea
     return RequestDecoded(EncodeGetContentStreamsRequest(), Opcode::ContentStreamListResponse, DecodeContentStreamListResponse);
 }
 
+std::optional<Status> ControlClient::BindDeviceAutoDetect(const std::string& DeviceName)
+{
+    return SendStatusRequest(EncodeBindDeviceAutoDetectRequest(DeviceName));
+}
+
+std::optional<Status> ControlClient::BindAppAutoDetect(const std::string& AppName)
+{
+    return SendStatusRequest(EncodeBindAppAutoDetectRequest(AppName));
+}
+
+std::optional<Status> ControlClient::BindDetectedClass(DetectedClass Class, const std::string& PresetName)
+{
+    return SendStatusRequest(EncodeBindDetectedClassRequest(Class, PresetName));
+}
+
+std::optional<Status> ControlClient::SetAutoDetectDevice(InferenceDevice Device)
+{
+    return SendStatusRequest(EncodeSetAutoDetectDeviceRequest(Device));
+}
+
+std::optional<DetectionReport> ControlClient::RequestDetectedClasses()
+{
+    return RequestDecoded(EncodeGetDetectedClassesRequest(), Opcode::DetectedClassesResponse,
+                          DecodeDetectedClassesResponse);
+}
+
 std::optional<ChannelLevels> ControlClient::RequestChannelLevels()
 {
     return RequestDecoded(EncodeGetChannelLevelsRequest(), Opcode::ChannelLevelsResponse, DecodeChannelLevelsResponse);

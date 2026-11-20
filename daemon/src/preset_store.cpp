@@ -233,6 +233,26 @@ const EqPreset* FindBuiltInEqPreset(const std::string& Name)
     return nullptr;
 }
 
+const std::string& DefaultDetectedClassPreset(DetectedClass Class)
+{
+    // Indexed by DetectedClass. Every non-empty entry is a built-in, so
+    // the defaults can never dangle.
+    static const std::array<std::string, DetectedClassCount> Defaults = []
+    {
+        std::array<std::string, DetectedClassCount> Table;
+        Table[static_cast<size_t>(DetectedClass::Speech)] = "Spoken Word";
+        Table[static_cast<size_t>(DetectedClass::Movie)] = "Movie";
+        for (size_t i = static_cast<size_t>(DetectedClass::Rock); i < DetectedClassCount; ++i)
+        {
+            Table[i] = DetectedClassLabel(static_cast<DetectedClass>(i)); // genre labels are the built-ins' names
+        }
+        return Table;
+    }();
+    static const std::string None;
+    const size_t Index = static_cast<size_t>(Class);
+    return Index < Defaults.size() ? Defaults[Index] : None;
+}
+
 EqPresetCatalog::EqPresetCatalog(PresetFileContents Contents) : User(std::move(Contents.UserPresets))
 {
     for (EqPreset& Preset : User)
@@ -250,7 +270,37 @@ EqPresetCatalog::EqPresetCatalog(PresetFileContents Contents) : User(std::move(C
             {
                 Preset = It->second;
             }
-            Bind(Map == &Contents.DeviceBindings ? Devices : Apps, Target, Preset);
+            Bind(Map == &Contents.DeviceBindings ? Devices : Apps,
+                 Map == &Contents.DeviceBindings ? AutoDevices : AutoApps, Target, Preset);
+        }
+    }
+    // A target in both (a hand-edited file): the preset binding wins.
+    for (const std::string& Target : Contents.AutoDetectDevices)
+    {
+        if (!Devices.contains(Target))
+        {
+            BindAuto(Devices, AutoDevices, Target);
+        }
+    }
+    for (const std::string& Target : Contents.AutoDetectApps)
+    {
+        if (!Apps.contains(Target))
+        {
+            BindAuto(Apps, AutoApps, Target);
+        }
+    }
+
+    for (auto& [Class, Preset] : Contents.DetectedClassOverrides)
+    {
+        if (const auto It = Renamed.find(Preset); It != Renamed.end())
+        {
+            Preset = It->second;
+        }
+        // A preset that's gone means "no switch", same as removing it
+        // would have.
+        if (BindDetectedClass(Class, Preset) == Result::NotFound)
+        {
+            BindDetectedClass(Class, "");
         }
     }
 }
@@ -341,11 +391,19 @@ EqPresetCatalog::Result EqPresetCatalog::Remove(const std::string& Name)
     {
         std::erase_if(*Map, [&](const auto& Entry) { return Entry.second == Name; });
     }
+    for (size_t i = 1; i < DetectedClassCount; ++i)
+    {
+        const DetectedClass Class = static_cast<DetectedClass>(i);
+        if (DetectedClassPreset(Class) == Name)
+        {
+            BindDetectedClass(Class, "");
+        }
+    }
     return Result::Ok;
 }
 
-EqPresetCatalog::Result EqPresetCatalog::Bind(PresetBindingMap& Map, const std::string& Target,
-                                              const std::string& PresetName)
+EqPresetCatalog::Result EqPresetCatalog::Bind(PresetBindingMap& Map, AutoDetectTargets& Auto,
+                                              const std::string& Target, const std::string& PresetName)
 {
     if (!IsValidTargetName(Target))
     {
@@ -354,6 +412,7 @@ EqPresetCatalog::Result EqPresetCatalog::Bind(PresetBindingMap& Map, const std::
     if (PresetName.empty())
     {
         Map.erase(Target);
+        Auto.erase(Target);
         return Result::Ok;
     }
     if (!Find(PresetName))
@@ -361,17 +420,67 @@ EqPresetCatalog::Result EqPresetCatalog::Bind(PresetBindingMap& Map, const std::
         return Result::NotFound;
     }
     Map[Target] = PresetName;
+    Auto.erase(Target);
+    return Result::Ok;
+}
+
+EqPresetCatalog::Result EqPresetCatalog::BindAuto(PresetBindingMap& Map, AutoDetectTargets& Auto,
+                                                  const std::string& Target)
+{
+    if (!IsValidTargetName(Target))
+    {
+        return Result::InvalidName;
+    }
+    Map.erase(Target);
+    Auto.insert(Target);
     return Result::Ok;
 }
 
 EqPresetCatalog::Result EqPresetCatalog::BindDevice(const std::string& DeviceName, const std::string& PresetName)
 {
-    return Bind(Devices, DeviceName, PresetName);
+    return Bind(Devices, AutoDevices, DeviceName, PresetName);
 }
 
 EqPresetCatalog::Result EqPresetCatalog::BindApp(const std::string& AppName, const std::string& PresetName)
 {
-    return Bind(Apps, AppName, PresetName);
+    return Bind(Apps, AutoApps, AppName, PresetName);
+}
+
+EqPresetCatalog::Result EqPresetCatalog::BindDeviceAutoDetect(const std::string& DeviceName)
+{
+    return BindAuto(Devices, AutoDevices, DeviceName);
+}
+
+EqPresetCatalog::Result EqPresetCatalog::BindAppAutoDetect(const std::string& AppName)
+{
+    return BindAuto(Apps, AutoApps, AppName);
+}
+
+std::string EqPresetCatalog::DetectedClassPreset(DetectedClass Class) const
+{
+    const auto It = ClassOverrides.find(Class);
+    return It != ClassOverrides.end() ? It->second : DefaultDetectedClassPreset(Class);
+}
+
+EqPresetCatalog::Result EqPresetCatalog::BindDetectedClass(DetectedClass Class, const std::string& PresetName)
+{
+    if (Class == DetectedClass::None || static_cast<size_t>(Class) >= DetectedClassCount)
+    {
+        return Result::InvalidName;
+    }
+    if (!PresetName.empty() && !Find(PresetName))
+    {
+        return Result::NotFound;
+    }
+    if (PresetName == DefaultDetectedClassPreset(Class))
+    {
+        ClassOverrides.erase(Class); // back to the default: follows the default if a later build changes it
+    }
+    else
+    {
+        ClassOverrides[Class] = PresetName;
+    }
+    return Result::Ok;
 }
 
 std::string EqPresetCatalog::DeviceBinding(const std::string& DeviceName) const
@@ -403,7 +512,7 @@ std::vector<EqPresetInfo> EqPresetCatalog::Infos() const
 
 PresetFileContents EqPresetCatalog::ToFileContents() const
 {
-    return {User, Devices, Apps};
+    return {User, Devices, Apps, AutoDevices, AutoApps, ClassOverrides};
 }
 
 PresetStore::PresetStore() : Path(DefaultPresetsPath())
@@ -429,6 +538,61 @@ void WriteBindings(std::ostream& Out, const char* Kind, const PresetBindingMap& 
         Out << Prefix << "target=" << Target << "\n";
         Out << Prefix << "preset=" << Preset << "\n";
     }
+}
+
+// Auto-detect targets: `<Kind>_auto.count` plus `<Kind>_auto.<n>=<target>`.
+void WriteAutoTargets(std::ostream& Out, const char* Kind, const AutoDetectTargets& Targets)
+{
+    Out << Kind << "_auto.count=" << Targets.size() << "\n";
+    size_t i = 0;
+    for (const std::string& Target : Targets)
+    {
+        Out << Kind << "_auto." << i++ << "=" << Target << "\n";
+    }
+}
+
+AutoDetectTargets ReadAutoTargets(const KeyValueFile& File, const char* Kind)
+{
+    AutoDetectTargets Targets;
+    const size_t Count = File.GetCount(std::string(Kind) + "_auto.count");
+    for (size_t i = 0; i < Count; ++i)
+    {
+        std::string Target = File.GetString(std::string(Kind) + "_auto." + std::to_string(i), "");
+        if (!Target.empty())
+        {
+            Targets.insert(std::move(Target));
+        }
+    }
+    return Targets;
+}
+
+// Class-table overrides: `detected.<class key>=<preset>`, empty value =
+// no switch. Keyed by the class's stable id, so a class a newer build
+// added (unknown here) is skipped rather than misread.
+void WriteClassOverrides(std::ostream& Out, const DetectedClassTable& Overrides)
+{
+    for (const auto& [Class, Preset] : Overrides)
+    {
+        if (const char* Key = DetectedClassKey(Class))
+        {
+            Out << "detected." << Key << "=" << Preset << "\n";
+        }
+    }
+}
+
+DetectedClassTable ReadClassOverrides(const KeyValueFile& File)
+{
+    DetectedClassTable Overrides;
+    for (size_t i = 1; i < DetectedClassCount; ++i)
+    {
+        const DetectedClass Class = static_cast<DetectedClass>(i);
+        const std::string Key = std::string("detected.") + DetectedClassKey(Class);
+        if (File.Has(Key))
+        {
+            Overrides[Class] = File.GetString(Key, "");
+        }
+    }
+    return Overrides;
 }
 
 PresetBindingMap ReadBindings(const KeyValueFile& File, const char* Kind)
@@ -478,6 +642,9 @@ PresetFileContents PresetStore::Load() const
 
     Contents.DeviceBindings = ReadBindings(*File, "device");
     Contents.AppBindings = ReadBindings(*File, "app");
+    Contents.AutoDetectDevices = ReadAutoTargets(*File, "device");
+    Contents.AutoDetectApps = ReadAutoTargets(*File, "app");
+    Contents.DetectedClassOverrides = ReadClassOverrides(*File);
     return Contents;
 }
 
@@ -494,6 +661,9 @@ bool PresetStore::Save(const PresetFileContents& Contents) const
     }
     WriteBindings(Out, "device", Contents.DeviceBindings);
     WriteBindings(Out, "app", Contents.AppBindings);
+    WriteAutoTargets(Out, "device", Contents.AutoDetectDevices);
+    WriteAutoTargets(Out, "app", Contents.AutoDetectApps);
+    WriteClassOverrides(Out, Contents.DetectedClassOverrides);
     return WriteFileAtomically(Path, Out.str(), {.LogPrefix = "[ramkolfxd]"});
 }
 

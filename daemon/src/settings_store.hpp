@@ -69,6 +69,9 @@ struct PersistedSettings
     // devices restores from. A device missing here keeps whatever mode
     // is live when it's first selected.
     std::map<std::string, SpatialMode> DeviceSpatialModes;
+
+    // Where Auto-detect's classifier runs (SetAutoDetectDevice).
+    InferenceDevice AutoDetectDevice = InferenceDevice::Auto;
 };
 
 // The per-device spatial mode rule, on switching to Device: a remembered

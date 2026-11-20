@@ -62,8 +62,12 @@ enum class Opcode : uint8
     GetBassEnhancerState = 0x17,
     DeleteEqPreset = 0x18,
     BindDevicePreset = 0x19,
-    // 0x1A-0x1F are reserved for the content-detection requests
-    // (docs/content-detect-plan.md), developed in parallel.
+    // Auto-detect (docs/content-detect-plan.md).
+    BindAppAutoDetect = 0x1A,    // raw app name; binds it to Auto-detect (BindAppPreset "" unbinds)
+    BindDeviceAutoDetect = 0x1B, // raw device node.name; likewise
+    BindDetectedClass = 0x1C,    // [class:1][preset: raw remainder, empty = no switch]
+    GetDetectedClasses = 0x1D,
+    SetAutoDetectDevice = 0x1E, // [InferenceDevice:1]
     GetChannelLevels = 0x20,
     // Responses
     StatusResponse = 0x81,
@@ -74,7 +78,8 @@ enum class Opcode : uint8
     EqPresetCatalogResponse = 0x86,
     HwEqStateResponse = 0x87,
     BassEnhancerStateResponse = 0x88,
-    ChannelLevelsResponse = 0x90, // 0x89+ likewise reserved for content detection
+    DetectedClassesResponse = 0x89,
+    ChannelLevelsResponse = 0x90,
 };
 
 // The active spatialization DSP path. Off is a static-gain downmix
@@ -196,6 +201,82 @@ inline constexpr float DefaultSpeakerDistanceMeters = 1.5f;
 // correction" means.
 inline constexpr float ReferenceSpeakerDistanceMeters = 1.0f;
 
+// What the content classifier thinks is playing, for Auto-detect
+// bindings (docs/content-detect-plan.md). None = nothing confident yet.
+// Speech/Movie/Music are the coarse classes; the rest are genres within
+// Music. Sent as one byte, so new values go before Count.
+enum class DetectedClass : uint8
+{
+    None = 0,
+    Speech,
+    Movie,
+    Music,
+    Rock,
+    Metal,
+    Pop,
+    HipHop,
+    RnB,
+    Electronic,
+    Jazz,
+    Classical,
+    Blues,
+    Reggae,
+    Acoustic,
+    Count,
+};
+
+inline constexpr size_t DetectedClassCount = static_cast<size_t>(DetectedClass::Count);
+
+constexpr bool IsGenreClass(DetectedClass Class)
+{
+    return Class >= DetectedClass::Rock && Class < DetectedClass::Count;
+}
+
+// Display name ("Hip-Hop", "R&B"); "Unknown" for a value this build
+// doesn't know, "None" for None.
+const char* DetectedClassLabel(DetectedClass Class);
+
+// Stable lowercase id used in config files ("hiphop", "rnb"), or nullptr
+// for None and values this build doesn't know.
+const char* DetectedClassKey(DetectedClass Class);
+
+// Inverse of DetectedClassKey; nullopt for an unknown key.
+std::optional<DetectedClass> DetectedClassFromKey(const std::string& Key);
+
+// Where Auto-detect's classifier runs (settings: auto_detect.device).
+// Auto = an NPU if one is present and passes validation, else the CPU;
+// the GPU is only ever used when asked for. A device that isn't there
+// (or fails validation) falls back to the CPU.
+enum class InferenceDevice : uint8
+{
+    Auto = 0,
+    Cpu,
+    Gpu,
+    Npu,
+    Count,
+};
+
+// Stable lowercase id for config files ("auto", "cpu", ...), nullptr for
+// values this build doesn't know; and its inverse.
+const char* InferenceDeviceKey(InferenceDevice Device);
+std::optional<InferenceDevice> InferenceDeviceFromKey(const std::string& Key);
+
+// Whether Auto-detect bindings can work on this machine. Anything but Ok
+// makes them count as unbound. Sent as one byte, so new values go before
+// Count.
+enum class AutoDetectAvailability : uint8
+{
+    Ok = 0,    // runtime and model found (loaded lazily, on first use)
+    NoRuntime, // ONNX Runtime (libonnxruntime) not installed, or too old
+    NoModel,   // classifier model files missing
+    Failed,    // found, but the model wouldn't load or run
+    TooSlow,   // inference can't stay inside the CPU budget here
+    Count,
+};
+
+// Why Auto-detect is unavailable, for the GUI's tooltip ("" for Ok).
+const char* AutoDetectAvailabilityLabel(AutoDetectAvailability Availability);
+
 // Command decoded from a request message.
 struct Command
 {
@@ -205,7 +286,7 @@ struct Command
     float AzimuthDegrees = 0.0f;  // valid when CommandOpcode == SetSpeakerAzimuth
     bool bMuted = false;          // valid when CommandOpcode == SetSpeakerMute
     bool bTestNoiseEnabled = false; // valid when CommandOpcode == SetTestNoise
-    std::string OutputDeviceName; // valid when CommandOpcode == SetOutputDevice or BindDevicePreset
+    std::string OutputDeviceName; // valid when CommandOpcode == SetOutputDevice, BindDevicePreset or BindDeviceAutoDetect
     uint8 HrtfIndex = 0;         // valid when CommandOpcode == SetHrtfFile
     float DistanceMeters = 0.0f;  // valid when CommandOpcode == SetSpeakerDistance
     bool bNearFieldEnabled = false; // valid when CommandOpcode == SetNearFieldEnabled
@@ -213,13 +294,16 @@ struct Command
     EqBand Band;                  // valid when CommandOpcode == SetHwEqBand
     // Valid when CommandOpcode == SetHwEqPreset, SaveHwEqPreset,
     // DeleteEqPreset, BindDevicePreset, or BindAppPreset (where an empty
-    // name means "unbind"). Presets are addressed by
+    // name means "unbind" - from a preset or Auto-detect alike), or
+    // BindDetectedClass (where empty means "no switch"). Presets are addressed by
     // name rather than catalog index: deleting one would shift every later
     // index and silently retarget anything (e.g. a device binding) that
     // referred to them by position.
     std::string PresetName;
-    std::string ContentAppName;   // valid when CommandOpcode == BindAppPreset; the persistent key from ContentStreamInfo::AppName
+    std::string ContentAppName;   // valid when CommandOpcode == BindAppPreset or BindAppAutoDetect; the persistent key from ContentStreamInfo::AppName
     BassEnhancerSettings BassEnhancer; // valid when CommandOpcode == SetBassEnhancer
+    DetectedClass ClassValue = DetectedClass::None; // valid when CommandOpcode == BindDetectedClass (never None)
+    InferenceDevice DeviceValue = InferenceDevice::Auto; // valid when CommandOpcode == SetAutoDetectDevice
 };
 
 enum class EqPresetSource : uint8
@@ -270,6 +354,36 @@ struct Status
     // docs/eq-presets-plan.md for the resolution rule.
     EqPresetSource PresetSource = EqPresetSource::Manual;
     std::string PresetSourceApp;
+
+    // Auto-detect (docs/content-detect-plan.md). Decoded only if present,
+    // so an older daemon's Status still decodes (with these defaults).
+    // bHasAutoDetect isn't sent: the decoder sets it when the daemon sent
+    // these fields - false means a daemon that predates Auto-detect and
+    // would refuse its requests.
+    bool bHasAutoDetect = false;
+    // Whether Auto-detect bindings can work here (anything but Ok: they
+    // count as unbound; AutoDetectAvailabilityLabel says why).
+    AutoDetectAvailability AutoDetect = AutoDetectAvailability::Ok;
+    // The current output device is bound to Auto-detect.
+    bool bDeviceAutoDetect = false;
+    // An Auto-detect binding is in effect (PresetSource/PresetSourceApp
+    // say which), with the class it detected (None while still listening)
+    // and that class's smoothed score in percent.
+    bool bAutoDetectActive = false;
+    DetectedClass Detected = DetectedClass::None;
+    uint8 DetectedConfidence = 0;
+    // The user changed the EQ by hand while it was in effect: detection is
+    // paused until the binding next comes into effect.
+    bool bDetectionHeld = false;
+    // Where detection should run (SetAutoDetectDevice), and where it does
+    // ("NPU (OpenVINO)", "CPU"; empty while no classifier is loaded).
+    InferenceDevice AutoDetectDevice = InferenceDevice::Auto;
+    std::string InferenceDeviceLabel;
+    // Bumped when the class -> preset table changes (BindDetectedClass);
+    // a client caching GetDetectedClasses re-fetches it then, and when
+    // PresetCatalogRevision changes (a deleted preset leaves its classes
+    // with no switch).
+    uint32 DetectedTableRevision = 0;
 };
 
 // Per-channel activity of the 7.1 signal entering the spatializer, for the
@@ -372,6 +486,32 @@ struct ContentStreamInfo
     std::string MediaName;
     bool bPlaying = false;
     std::string BoundPresetName;
+    // AppName is bound to Auto-detect (BoundPresetName empty). On the wire
+    // it's a flag byte per entry *after* the whole list, so an older GUI
+    // ignores it and an older daemon's list still decodes (all false).
+    bool bAutoDetect = false;
+};
+
+// One row of the class -> preset table (GetDetectedClasses).
+struct DetectedClassEntry
+{
+    DetectedClass Class = DetectedClass::None;
+    std::string PresetName;        // "" = no switch
+    std::string DefaultPresetName; // what the class maps to unless changed ("" = no switch)
+    float Score = 0.0f;     // live smoothed score, 0..1 (0 while no Auto binding is in effect)
+};
+
+// DetectedClassesResponse: the class table plus how detection is doing
+// on this machine.
+struct DetectionReport
+{
+    std::vector<DetectedClassEntry> Classes; // every class but None
+    std::string DeviceLabel;                 // empty while no classifier is loaded
+    uint32 P50Us = 0;                        // inference CPU time per run
+    uint32 P95Us = 0;
+    float DutyCycle = 0.0f; // share of one core at the current cadence
+    uint32 Runs = 0;
+    uint32 RssAddedKb = 0;
 };
 
 // Attempts to read a header from the front of `Buffer`. Returns nullopt if
@@ -422,6 +562,10 @@ std::optional<BassEnhancerSettings> DecodeBassEnhancerStateResponse(const uint8*
 std::optional<std::vector<ContentStreamInfo>> DecodeContentStreamListResponse(const uint8* Payload,
                                                                                  uint16 PayloadLength);
 
+// Decodes a DetectedClassesResponse payload. Nullopt if truncated or
+// malformed.
+std::optional<DetectionReport> DecodeDetectedClassesResponse(const uint8* Payload, uint16 PayloadLength);
+
 // Decodes an EqPresetCatalogResponse payload into the ordered list of
 // presets (built-ins first). Same truncated/malformed contract as
 // DecodeHrtfCatalogResponse.
@@ -465,6 +609,9 @@ std::vector<uint8> EncodeChannelLevelsResponse(const ChannelLevels& Levels);
 // entries-past-MaxPayloadSize behavior as EncodeDeviceListResponse.
 std::vector<uint8> EncodeContentStreamListResponse(const std::vector<ContentStreamInfo>& Streams);
 
+// Encodes a full DetectedClassesResponse message.
+std::vector<uint8> EncodeDetectedClassesResponse(const DetectionReport& Report);
+
 // Encodes a full EQ preset catalog response message. Same behavior as
 // EncodeHrtfCatalogResponse.
 std::vector<uint8> EncodeEqPresetCatalogResponse(const std::vector<EqPresetInfo>& Presets);
@@ -495,6 +642,12 @@ std::vector<uint8> EncodeGetContentStreamsRequest();
 std::vector<uint8> EncodeBindAppPresetRequest(const std::string& AppName, const std::string& PresetName);
 std::vector<uint8> EncodeBindDevicePresetRequest(const std::string& DeviceName, const std::string& PresetName);
 std::vector<uint8> EncodeGetEqPresetCatalogRequest();
+std::vector<uint8> EncodeBindAppAutoDetectRequest(const std::string& AppName);
+std::vector<uint8> EncodeBindDeviceAutoDetectRequest(const std::string& DeviceName);
+// Empty PresetName = no switch for that class.
+std::vector<uint8> EncodeBindDetectedClassRequest(DetectedClass Class, const std::string& PresetName);
+std::vector<uint8> EncodeGetDetectedClassesRequest();
+std::vector<uint8> EncodeSetAutoDetectDeviceRequest(InferenceDevice Device);
 std::vector<uint8> EncodeGetChannelLevelsRequest();
 
 // Resolves the default control socket path: $XDG_RUNTIME_DIR/ramkolfx/control.sock,

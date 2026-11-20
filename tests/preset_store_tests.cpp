@@ -155,6 +155,93 @@ TEST(PresetStoreRoundTrip)
     CHECK(Loaded.AppBinding("mpv") == "Vocal");
 }
 
+TEST(AutoDetectAndPresetBindingsExcludeEachOther)
+{
+    EqPresetCatalog Catalog;
+    CHECK(Catalog.BindApp("Firefox", "Vocal") == Result::Ok);
+    CHECK(Catalog.BindAppAutoDetect("Firefox") == Result::Ok);
+    CHECK(Catalog.IsAppAutoDetect("Firefox") && Catalog.AppBinding("Firefox").empty());
+    CHECK(Catalog.BindApp("Firefox", "Vocal") == Result::Ok);
+    CHECK(!Catalog.IsAppAutoDetect("Firefox") && Catalog.AppBinding("Firefox") == "Vocal");
+
+    CHECK(Catalog.BindDeviceAutoDetect("speakers") == Result::Ok);
+    CHECK(Catalog.BindDevice("speakers", "") == Result::Ok); // unbind clears Auto too
+    CHECK(Catalog.AutoDetectDevices().empty());
+    CHECK(Catalog.BindDeviceAutoDetect("bad\nname") == Result::InvalidName);
+
+    // A hand-edited file with both: the preset binding wins.
+    PresetFileContents Contents;
+    Contents.AppBindings = {{"mpv", "Flat"}};
+    Contents.AutoDetectApps = {"mpv", "vlc"};
+    const EqPresetCatalog Both(std::move(Contents));
+    CHECK(Both.AppBinding("mpv") == "Flat" && !Both.IsAppAutoDetect("mpv"));
+    CHECK(Both.IsAppAutoDetect("vlc"));
+}
+
+TEST(DetectedClassTableDefaultsAndOverrides)
+{
+    EqPresetCatalog Catalog;
+    CHECK(Catalog.DetectedClassPreset(DetectedClass::Speech) == "Spoken Word");
+    CHECK(Catalog.DetectedClassPreset(DetectedClass::Movie) == "Movie");
+    CHECK(Catalog.DetectedClassPreset(DetectedClass::Music).empty());
+    CHECK(Catalog.DetectedClassPreset(DetectedClass::None).empty());
+    // Every genre has a same-named built-in.
+    for (size_t i = static_cast<size_t>(DetectedClass::Rock); i < DetectedClassCount; ++i)
+    {
+        const std::string Preset = Catalog.DetectedClassPreset(static_cast<DetectedClass>(i));
+        CHECK(FindBuiltInEqPreset(Preset) != nullptr);
+    }
+
+    CHECK(Catalog.BindDetectedClass(DetectedClass::None, "Flat") == Result::InvalidName);
+    CHECK(Catalog.BindDetectedClass(DetectedClass::Jazz, "Ghost") == Result::NotFound);
+    CHECK(Catalog.BindDetectedClass(DetectedClass::Speech, "") == Result::Ok); // no switch
+    CHECK(Catalog.DetectedClassPreset(DetectedClass::Speech).empty());
+    CHECK(Catalog.BindDetectedClass(DetectedClass::Speech, "Spoken Word") == Result::Ok); // back to default
+    CHECK(Catalog.ToFileContents().DetectedClassOverrides.empty());
+
+    // Deleting a preset a class points at turns that class into no switch.
+    REQUIRE(Catalog.Save("Mine", DefaultHwEqBands(), {}) == Result::Ok);
+    CHECK(Catalog.BindDetectedClass(DetectedClass::Rock, "Mine") == Result::Ok);
+    CHECK(Catalog.Remove("Mine") == Result::Ok);
+    CHECK(Catalog.DetectedClassPreset(DetectedClass::Rock).empty());
+}
+
+TEST(AutoDetectAndClassTableRoundTrip)
+{
+    test::TempPath Path;
+    EqPresetCatalog Catalog;
+    REQUIRE(Catalog.Save("Mine", DefaultHwEqBands(), {}) == Result::Ok);
+    CHECK(Catalog.BindAppAutoDetect("Firefox = browser") == Result::Ok);
+    CHECK(Catalog.BindDeviceAutoDetect("alsa_out") == Result::Ok);
+    CHECK(Catalog.BindDetectedClass(DetectedClass::HipHop, "Mine") == Result::Ok);
+    CHECK(Catalog.BindDetectedClass(DetectedClass::Speech, "") == Result::Ok);
+
+    PresetStore Store(Path.Get());
+    CHECK(Store.Save(Catalog.ToFileContents()));
+    const EqPresetCatalog Loaded(Store.Load());
+    CHECK(Loaded.IsAppAutoDetect("Firefox = browser"));
+    CHECK(Loaded.IsDeviceAutoDetect("alsa_out"));
+    CHECK(Loaded.DetectedClassPreset(DetectedClass::HipHop) == "Mine");
+    CHECK(Loaded.DetectedClassPreset(DetectedClass::Speech).empty());
+    CHECK(Loaded.DetectedClassPreset(DetectedClass::Jazz) == "Jazz");
+}
+
+TEST(ClassTableFollowsRenamesAndDropsDanglingEntries)
+{
+    test::TempPath Path;
+    {
+        std::ofstream File(Path.Get());
+        File << "preset.count=1\n"
+             << "preset.0.name=Rock\n" // a user preset a built-in now shadows
+             << "detected.metal=Rock\n"
+             << "detected.jazz=Ghost\n"
+             << "detected.someday=Flat\n"; // a class from a newer build
+    }
+    const EqPresetCatalog Catalog(PresetStore(Path.Get()).Load());
+    CHECK(Catalog.DetectedClassPreset(DetectedClass::Metal) == "Rock (custom)");
+    CHECK(Catalog.DetectedClassPreset(DetectedClass::Jazz).empty());
+}
+
 TEST(BuiltInPresetsAreWellFormed)
 {
     const auto& BuiltIns = BuiltInEqPresets();

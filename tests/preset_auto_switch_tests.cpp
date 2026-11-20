@@ -17,12 +17,17 @@ using namespace ramkolfx;
 
 namespace
 {
-const PresetBindingMap AppBindings{{"Firefox", "Vocal"}, {"mpv", "Bass Boost"}};
-const PresetBindingMap DeviceBindings{{"headphones", "Flat"}};
+const EqPresetCatalog BoundCatalog = []
+{
+    PresetFileContents Contents;
+    Contents.DeviceBindings = {{"headphones", "Flat"}};
+    Contents.AppBindings = {{"Firefox", "Vocal"}, {"mpv", "Bass Boost"}};
+    return EqPresetCatalog(std::move(Contents));
+}();
 
 AutoSwitchTarget Resolve(const AppActivityTracker& Tracker, const std::string& Device)
 {
-    return ResolveAutoSwitchTarget(Tracker, AppBindings, Device, DeviceBindings);
+    return ResolveBinding(Tracker, BoundCatalog, Device, true).AsTarget();
 }
 } // namespace
 
@@ -287,6 +292,218 @@ TEST(SwitchingToTheAlreadyActivePresetKeepsTweaks)
     CHECK(!Evaluate(Controller, Catalog, FirefoxVocal, Live));
     CHECK(Live.Bands[0].GainDb == 7.0f);
     CHECK(Live.bModified);
+}
+
+TEST(PendingTargetKeepsCurveAndWhoIsInCharge)
+{
+    const EqPresetCatalog Catalog;
+    AutoSwitchController Controller;
+    EqState Live = HandTuned();
+    const AutoSwitchTarget Pending{EqPresetSource::App, "Firefox", ""};
+    const AutoSwitchTarget Jazz{EqPresetSource::App, "Firefox", "Jazz"};
+
+    // Auto binding comes into effect, nothing detected yet: snapshot only.
+    CHECK(!Evaluate(Controller, Catalog, Pending, Live));
+    CHECK(Controller.HasSnapshot() && Controller.Source() == EqPresetSource::App);
+    CHECK(Live.Bands[3].GainDb == -4.0f);
+
+    CHECK(Evaluate(Controller, Catalog, Jazz, Live));
+    CHECK(Live.PresetName == "Jazz");
+
+    // The user picks Rock by hand, then detection is held (pending again):
+    // nothing moves and the user stays in charge.
+    PickByHand(Controller, Catalog, Live, "Rock");
+    CHECK(!Evaluate(Controller, Catalog, Pending, Live));
+    CHECK(Live.PresetName == "Rock");
+    CHECK(Controller.Source() == EqPresetSource::Manual);
+
+    // Binding stops applying: the pre-binding sound comes back... to the
+    // user's choice, which became the baseline.
+    CHECK(Evaluate(Controller, Catalog, Manual, Live));
+    CHECK(Live.PresetName == "Rock");
+}
+
+// --- Auto-detect bindings ---------------------------------------------------
+
+namespace
+{
+const EqPresetCatalog AutoCatalog = []
+{
+    PresetFileContents Contents;
+    Contents.DeviceBindings = {{"headphones", "Flat"}};
+    Contents.AppBindings = {{"mpv", "Bass Boost"}};
+    Contents.AutoDetectDevices = {"speakers"};
+    Contents.AutoDetectApps = {"Firefox"};
+    return EqPresetCatalog(std::move(Contents));
+}();
+
+ClassScores Scores(std::initializer_list<std::pair<DetectedClass, float>> Values)
+{
+    ClassScores Out{};
+    for (const auto& [Class, Score] : Values)
+    {
+        ScoreOf(Out, Class) = Score;
+    }
+    return Out;
+}
+
+const ClassScores JazzScores =
+    Scores({{DetectedClass::Music, 0.9f}, {DetectedClass::Jazz, 0.8f}});
+const ClassScores SpeechScores = Scores({{DetectedClass::Speech, 0.9f}});
+
+// Feeds Scores every 2s from FromMs until (inclusive) ToMs.
+void Feed(AutoDetectSession& Session, const ClassScores& S, int64_t FromMs, int64_t ToMs)
+{
+    for (int64_t T = FromMs; T <= ToMs; T += 2000)
+    {
+        Session.AddScores(S, T);
+    }
+}
+} // namespace
+
+TEST(AutoBindingsResolveLikeAnyOther)
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"Firefox"}, 100);
+    CHECK((ResolveBinding(Tracker, AutoCatalog, "headphones", true) ==
+           ResolvedBinding{EqPresetSource::App, "Firefox", "", true, 100}));
+
+    // mpv started later: its preset binding wins.
+    Tracker.Update({"Firefox", "mpv"}, 200);
+    CHECK(ResolveBinding(Tracker, AutoCatalog, "", true).Key == "mpv");
+
+    // Device Auto, nothing playing.
+    AppActivityTracker Idle;
+    CHECK((ResolveBinding(Idle, AutoCatalog, "speakers", true) ==
+           ResolvedBinding{EqPresetSource::Device, "speakers", "", true, 0}));
+}
+
+TEST(AutoBindingsCountAsUnboundWhenUnavailable)
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"Firefox"}, 0);
+    CHECK((ResolveBinding(Tracker, AutoCatalog, "headphones", false).AsTarget() ==
+           AutoSwitchTarget{EqPresetSource::Device, "headphones", "Flat"}));
+    CHECK(ResolveBinding(Tracker, AutoCatalog, "speakers", false) == ResolvedBinding{});
+}
+
+TEST(SessionGoesFromPendingToDetectedPreset)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    CHECK((Session.Update(Firefox, AutoCatalog) == AutoSwitchTarget{EqPresetSource::App, "Firefox", ""}));
+    CHECK(Session.ShouldDetect());
+
+    Feed(Session, JazzScores, 0, 4000);
+    CHECK(Session.Current() == DetectedClass::Jazz);
+    CHECK((Session.Update(Firefox, AutoCatalog) == AutoSwitchTarget{EqPresetSource::App, "Firefox", "Jazz"}));
+}
+
+TEST(SessionPassesPresetBindingsThroughAndStopsDetecting)
+{
+    AutoDetectSession Session;
+    Session.Update({EqPresetSource::App, "Firefox", "", true, 0}, AutoCatalog);
+    const ResolvedBinding Mpv{EqPresetSource::App, "mpv", "Bass Boost", false, 0};
+    CHECK((Session.Update(Mpv, AutoCatalog) == AutoSwitchTarget{EqPresetSource::App, "mpv", "Bass Boost"}));
+    CHECK(!Session.ShouldDetect() && !Session.IsActive());
+    CHECK(Session.Update(ResolvedBinding{}, AutoCatalog) == AutoSwitchTarget{});
+}
+
+TEST(NewSpellOrBindingStartsDetectionAfresh)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Spell1{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Spell1, AutoCatalog);
+    Feed(Session, JazzScores, 0, 4000);
+    CHECK(Session.Current() == DetectedClass::Jazz);
+
+    // Same binding, same spell: kept.
+    Session.Update(Spell1, AutoCatalog);
+    CHECK(Session.Current() == DetectedClass::Jazz);
+
+    // Firefox restarted after the grace period: fresh.
+    const ResolvedBinding Spell2{EqPresetSource::App, "Firefox", "", true, 60000};
+    CHECK(Session.Update(Spell2, AutoCatalog).PresetName.empty());
+    CHECK(Session.Current() == DetectedClass::None);
+
+    // A device Auto binding taking over: fresh too.
+    Feed(Session, JazzScores, 60000, 64000);
+    Session.Update({EqPresetSource::Device, "speakers", "", true, 0}, AutoCatalog);
+    CHECK(Session.Current() == DetectedClass::None);
+}
+
+TEST(HoldFreezesTheSpellUntilTheBindingChanges)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, AutoCatalog);
+    Feed(Session, JazzScores, 0, 4000);
+    Session.Hold();
+    CHECK(Session.IsHeld() && !Session.ShouldDetect());
+    CHECK(Session.Update(Firefox, AutoCatalog).PresetName.empty());
+
+    // Results arriving while held are ignored.
+    Feed(Session, SpeechScores, 6000, 60000);
+    CHECK(Session.Current() == DetectedClass::Jazz);
+
+    // Next spell: detection resumes.
+    Session.Update({EqPresetSource::App, "Firefox", "", true, 90000}, AutoCatalog);
+    CHECK(!Session.IsHeld() && Session.ShouldDetect());
+}
+
+TEST(HoldWithoutAnAutoBindingDoesNothing)
+{
+    AutoDetectSession Session;
+    Session.Update({EqPresetSource::App, "mpv", "Bass Boost", false, 0}, AutoCatalog);
+    Session.Hold();
+    CHECK(!Session.IsHeld());
+    Session.Update({EqPresetSource::App, "Firefox", "", true, 0}, AutoCatalog);
+    CHECK(Session.ShouldDetect());
+}
+
+TEST(ClassTableDecidesThePreset)
+{
+    EqPresetCatalog Catalog;
+    REQUIRE(Catalog.BindAppAutoDetect("Firefox") == EqPresetCatalog::Result::Ok);
+    REQUIRE(Catalog.Save("My Jazz", DefaultHwEqBands(), {}) == EqPresetCatalog::Result::Ok);
+    REQUIRE(Catalog.BindDetectedClass(DetectedClass::Jazz, "My Jazz") == EqPresetCatalog::Result::Ok);
+    AutoDetectSession Session;
+    const ResolvedBinding Firefox{EqPresetSource::App, "Firefox", "", true, 0};
+    Session.Update(Firefox, Catalog);
+    Feed(Session, JazzScores, 0, 4000);
+    CHECK(Session.Update(Firefox, Catalog).PresetName == "My Jazz");
+
+    // Plain Music (genre unsure) switches nothing by default.
+    AutoDetectSession Unsure;
+    Unsure.Update(Firefox, Catalog);
+    Feed(Unsure, Scores({{DetectedClass::Music, 0.9f}}), 0, 4000);
+    CHECK(Unsure.Current() == DetectedClass::Music);
+    CHECK(Unsure.Update(Firefox, Catalog).PresetName.empty());
+}
+
+TEST(EndToEndAutoBindingSwitchesAndRestores)
+{
+    AutoSwitchController Controller;
+    AutoDetectSession Session;
+    EqState Live = HandTuned();
+    AppActivityTracker Tracker;
+
+    const auto Tick = [&](int64_t NowMs, std::vector<std::string> Playing)
+    {
+        Tracker.Update(Playing, NowMs);
+        const AutoSwitchTarget Target =
+            Session.Update(ResolveBinding(Tracker, AutoCatalog, "", true), AutoCatalog);
+        return Evaluate(Controller, AutoCatalog, Target, Live);
+    };
+
+    CHECK(!Tick(0, {"Firefox"})); // pending: curve untouched
+    CHECK(Live.Bands[3].GainDb == -4.0f);
+    Feed(Session, SpeechScores, 0, 4000);
+    CHECK(Tick(4000, {"Firefox"}));
+    CHECK(Live.PresetName == "Spoken Word");
+
+    CHECK(Tick(10000, {})); // grace over: back to the hand-tuned curve
+    CHECK(Live.Bands[3].GainDb == -4.0f && Live.PresetName.empty());
 }
 
 RAMKOLFX_TEST_MAIN()

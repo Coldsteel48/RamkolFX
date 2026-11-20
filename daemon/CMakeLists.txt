@@ -81,18 +81,35 @@ configure_file(
     @ONLY
 )
 
-# EQ preset storage + auto-switching logic, plus the EQ defaults they
+# EQ preset storage + auto-switching logic (including the pure side of
+# Auto-detect: label folding, smoothing, inference pacing), plus the EQ defaults they
 # depend on: no PipeWire, no DSP pipeline, so the tests (tests/) can link
 # exactly the same objects the daemon runs.
 add_library(ramkolfx_presets STATIC
     src/preset_store.cpp
     src/preset_auto_switch.cpp
+    src/content_detection.cpp
     src/settings_store.cpp
     src/dsp/biquad.cpp
     src/dsp/graphic_eq_filter.cpp
 )
 target_include_directories(ramkolfx_presets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(ramkolfx_presets PUBLIC ramkolfx_common)
+
+# Auto-detect's inference side (docs/content-detect-plan.md): the worker
+# thread and the ONNX Runtime classifier. ORT is dlopened at runtime, not
+# linked - only its (vendored, MIT) C API header is needed to build - so
+# builds and CI need no ORT and the daemon runs without it.
+set(RAMKOLFX_MODEL_DATA_DIR "${CMAKE_SOURCE_DIR}/data/models" CACHE PATH
+    "Runtime directory holding the Auto-detect classifier model")
+add_library(ramkolfx_detect STATIC
+    src/detect/content_detector.cpp
+    src/detect/onnx_classifier.cpp
+    src/detect/wav_file.cpp # bench + tests only; never linked into ramkolfxd
+)
+target_include_directories(ramkolfx_detect SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime)
+target_compile_definitions(ramkolfx_detect PRIVATE RAMKOLFX_MODEL_DIR="${RAMKOLFX_MODEL_DATA_DIR}")
+target_link_libraries(ramkolfx_detect PUBLIC ramkolfx_presets Threads::Threads ${CMAKE_DL_LIBS})
 
 add_executable(ramkolfxd
     src/main.cpp
@@ -127,6 +144,7 @@ target_include_directories(ramkolfxd PRIVATE
 target_link_libraries(ramkolfxd PRIVATE
     ramkolfx_common
     ramkolfx_presets
+    ramkolfx_detect
     PkgConfig::PIPEWIRE
     Threads::Threads
     mysofa-static
@@ -134,3 +152,8 @@ target_link_libraries(ramkolfxd PRIVATE
 )
 
 install(TARGETS ramkolfxd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ramkolfx)
+
+# Measures Auto-detect against its performance budget on this machine
+# (docs/content-detect-plan.md). Built so it can't rot, never installed.
+add_executable(ramkolfx-detect-bench bench/detect_bench.cpp)
+target_link_libraries(ramkolfx-detect-bench PRIVATE ramkolfx_detect)

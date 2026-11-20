@@ -7,6 +7,7 @@
 // terms of the Contributor License Agreement (see CLA.md).
 
 #include "audio_engine.hpp"
+#include "detect/onnx_classifier.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -61,6 +62,28 @@ constexpr uint32 MaxScratchFrames = MaxProcessFrames;
 // Test noise amplitude: loud enough to clearly identify a speaker, quiet
 // enough not to be unpleasant or risk clipping once decoded/summed.
 constexpr float TestNoiseGain = 0.25f;
+
+int64_t SteadyNowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// Identifies one Auto-detect binding's spell for ContentDetector::SetActive:
+// changes when another binding wins or the same app starts a new playing
+// spell, so the worker starts over with fresh audio.
+uint64_t SpellIdOf(const ResolvedBinding& Binding)
+{
+    const uint64_t KeyHash = std::hash<std::string>{}(Binding.Key);
+    return KeyHash ^ (static_cast<uint64_t>(Binding.Source) << 56) ^
+           (static_cast<uint64_t>(Binding.SpellStartedAtMs) * 0x9E3779B97F4A7C15ull);
+}
+
+// How often an unavailable runtime/model is re-probed, in AutoSwitchTimer
+// ticks (~30 s), so installing ONNX Runtime enables Auto-detect without a
+// daemon restart.
+constexpr int AvailabilityProbeTicks = 120;
 
 } // namespace
 
@@ -325,6 +348,7 @@ int AudioEngine::Run()
 
     DspScratch.resize(MaxScratchFrames * HardwareOutput::Channels);
     InputScratch.resize(MaxScratchFrames * VirtualSink::Channels);
+    Detector = std::make_unique<ContentDetector>(MakeOnnxClassifierBackend(DefaultClassifierModelPaths()));
     OffStage = std::make_unique<PassthroughStage>();
     BasicStage = std::make_unique<AmbisonicsStage>(SharedLayout);
 
@@ -336,6 +360,8 @@ int AudioEngine::Run()
     const std::optional<PersistedSettings> LoadedSettings = Settings.Load();
     if (LoadedSettings)
     {
+        AutoDetectDevicePolicy.store(LoadedSettings->AutoDetectDevice, std::memory_order_relaxed);
+        Detector->SetDevice(LoadedSettings->AutoDetectDevice);
         Mode.store(LoadedSettings->Mode, std::memory_order_relaxed);
         bNearFieldEnabled.store(LoadedSettings->bNearFieldEnabled, std::memory_order_relaxed);
         for (uint8 i = 0; i < SpeakerCount; ++i)
@@ -692,6 +718,8 @@ void AudioEngine::HandleVirtualSinkAudio(const float* Interleaved, uint32 Frames
     {
         std::memcpy(InputScratch.data(), Interleaved, sizeof(float) * Frames * VirtualSink::Channels);
     }
+    static_assert(VirtualSink::Channels == 8, "ContentDetector::Tap takes 7.1 input");
+    Detector->Tap(InputScratch.data(), Frames);
     ApplySpeakerGains(InputScratch.data(), Frames);
     MeterChannelPeaks(InputScratch.data(), Frames);
 
@@ -873,8 +901,14 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
         for (ContentStreamInfo& Stream : Streams)
         {
             Stream.BoundPresetName = PresetCatalog.AppBinding(Stream.AppName);
+            Stream.bAutoDetect = PresetCatalog.IsAppAutoDetect(Stream.AppName);
         }
         return EncodeContentStreamListResponse(Streams);
+    }
+
+    if (InCommand.CommandOpcode == Opcode::GetDetectedClasses)
+    {
+        return BuildDetectedClassesResponse();
     }
 
     // Set whenever this command changes state PersistedSettings tracks, so
@@ -1019,6 +1053,7 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
         // an edit interleaved with it could publish a torn curve to the
         // DSP, or flag a freshly applied preset as modified by an edit it
         // overwrote. Serialized, the later of the two simply wins.
+        HoldAutoDetect();
         std::lock_guard<std::mutex> PresetLock(PresetMutex);
         std::array<EqBand, MaxEqBands> Bands;
         {
@@ -1032,6 +1067,7 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
     }
     else if (InCommand.CommandOpcode == Opcode::SetBassEnhancer)
     {
+        HoldAutoDetect();
         std::lock_guard<std::mutex> PresetLock(PresetMutex); // see SetHwEqBand
         {
             std::lock_guard<std::mutex> Lock(BassEnhancerMutex);
@@ -1049,10 +1085,28 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
         bReevaluateAutoSwitch = InCommand.CommandOpcode == Opcode::DeleteEqPreset;
     }
     else if (InCommand.CommandOpcode == Opcode::BindDevicePreset ||
-             InCommand.CommandOpcode == Opcode::BindAppPreset)
+             InCommand.CommandOpcode == Opcode::BindAppPreset ||
+             InCommand.CommandOpcode == Opcode::BindDeviceAutoDetect ||
+             InCommand.CommandOpcode == Opcode::BindAppAutoDetect)
     {
         HandleBindCommand(InCommand);
         bReevaluateAutoSwitch = true;
+    }
+    else if (InCommand.CommandOpcode == Opcode::BindDetectedClass)
+    {
+        // A changed class -> preset mapping may change what the Auto-detect
+        // binding in effect should apply.
+        bReevaluateAutoSwitch = HandleDetectedClassCommand(InCommand);
+    }
+    else if (InCommand.CommandOpcode == Opcode::SetAutoDetectDevice)
+    {
+        if (AutoDetectDevicePolicy.exchange(InCommand.DeviceValue) != InCommand.DeviceValue)
+        {
+            bPersistedStateChanged = true;
+        }
+        // Also when unchanged: re-selecting a device retries one that failed.
+        Detector->SetDevice(InCommand.DeviceValue);
+        fprintf(stderr, "[ramkolfxd] auto-detect: device set to %s\n", InferenceDeviceKey(InCommand.DeviceValue));
     }
 
     if (bReevaluateAutoSwitch)
@@ -1086,14 +1140,27 @@ Status AudioEngine::BuildStatus()
     OutStatus.bNearFieldEnabled = bNearFieldEnabled.load(std::memory_order_relaxed);
     OutStatus.EqRevision = EqRevision.load(std::memory_order_relaxed);
     OutStatus.PresetCatalogRevision = PresetCatalogRevision.load(std::memory_order_relaxed);
+    OutStatus.DetectedTableRevision = DetectedTableRevision.load(std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex); // not nested in PresetMutex: lock order
+        OutStatus.bAutoDetectActive = AutoDetect.IsActive();
+        OutStatus.Detected = AutoDetect.Current();
+        OutStatus.DetectedConfidence = static_cast<uint8>(std::lround(AutoDetect.Confidence() * 100.0f));
+        OutStatus.bDetectionHeld = AutoDetect.IsHeld();
+    }
     {
         std::lock_guard<std::mutex> Lock(PresetMutex);
         OutStatus.ActivePresetName = ActivePresetName;
         OutStatus.bPresetModified = bPresetModified;
         OutStatus.DevicePresetName = PresetCatalog.DeviceBinding(OutStatus.OutputDeviceName);
+        OutStatus.bDeviceAutoDetect = PresetCatalog.IsDeviceAutoDetect(OutStatus.OutputDeviceName);
         OutStatus.PresetSource = AutoSwitch.Source();
         OutStatus.PresetSourceApp = AutoSwitch.SourceApp();
     }
+    const DetectorStats Detection = Detector->Stats();
+    OutStatus.AutoDetect = Detection.Availability;
+    OutStatus.InferenceDeviceLabel = Detection.DeviceLabel;
+    OutStatus.AutoDetectDevice = AutoDetectDevicePolicy.load(std::memory_order_relaxed);
     for (uint8 i = 0; i < SpeakerCount; ++i)
     {
         OutStatus.SpeakerAzimuthDegrees[i] =
@@ -1125,6 +1192,7 @@ void AudioEngine::PersistCurrentSettings()
     ToSave.ActivePresetName = CurrentStatus.ActivePresetName;
     ToSave.bPresetModified = CurrentStatus.bPresetModified;
     ToSave.bActivePresetBuiltIn = FindBuiltInEqPreset(CurrentStatus.ActivePresetName) != nullptr;
+    ToSave.AutoDetectDevice = CurrentStatus.AutoDetectDevice;
     {
         std::lock_guard<std::mutex> Lock(DeviceModeMutex);
         ToSave.DeviceSpatialModes = DeviceSpatialModes;
@@ -1236,6 +1304,7 @@ bool AudioEngine::HandlePresetCommand(const Command& InCommand)
         ApplyEqCurve(Selected->Bands, Selected->Bass);
         ActivePresetName = Selected->Name;
         bPresetModified = false;
+        AutoDetect.Hold();
         AutoSwitch.OnPresetChosenByHand(CaptureEqState());
         fprintf(stderr, "[ramkolfxd] EQ preset '%s' applied\n", Selected->Name.c_str());
         return true;
@@ -1278,6 +1347,7 @@ bool AudioEngine::HandlePresetCommand(const Command& InCommand)
     {
         ActivePresetName = StoredName;
         bPresetModified = false;
+        AutoDetect.Hold();
         AutoSwitch.OnPresetChosenByHand(CaptureEqState());
     }
     else if (ActivePresetName == InCommand.PresetName)
@@ -1292,26 +1362,51 @@ bool AudioEngine::HandlePresetCommand(const Command& InCommand)
     return true;
 }
 
-AutoSwitchTarget AudioEngine::ResolveCurrentTarget()
+AutoSwitchTarget AudioEngine::ResolveCurrentTarget(int64_t NowMs)
 {
-    return ResolveAutoSwitchTarget(AppActivity, PresetCatalog.AppBindings(), Output->GetTargetNodeName(),
-                                   PresetCatalog.DeviceBindings());
+    // Auto-detect bindings take part only while detection can work; when
+    // it can't, they count as unbound and the rule falls through.
+    const bool bDetectionAvailable = Detector->Availability() == AutoDetectAvailability::Ok;
+    const ResolvedBinding Binding =
+        ResolveBinding(AppActivity, PresetCatalog, Output->GetTargetNodeName(), bDetectionAvailable);
+    const AutoSwitchTarget Target = AutoDetect.Update(Binding, PresetCatalog);
+    Detector->SetActive(AutoDetect.ShouldDetect(), SpellIdOf(Binding));
+    Detector->SetSettled(AutoDetect.IsSettled(NowMs));
+    return Target;
+}
+
+void AudioEngine::HoldAutoDetect()
+{
+    std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
+    AutoDetect.Hold();
 }
 
 void AudioEngine::HandleBindCommand(const Command& InCommand)
 {
-    const bool bDevice = InCommand.CommandOpcode == Opcode::BindDevicePreset;
+    const bool bAuto = InCommand.CommandOpcode == Opcode::BindDeviceAutoDetect ||
+                       InCommand.CommandOpcode == Opcode::BindAppAutoDetect;
+    const bool bDevice = InCommand.CommandOpcode == Opcode::BindDevicePreset ||
+                         InCommand.CommandOpcode == Opcode::BindDeviceAutoDetect;
     const std::string& Target = bDevice ? InCommand.OutputDeviceName : InCommand.ContentAppName;
+    const std::string Bound = bAuto ? std::string("Auto-detect") : InCommand.PresetName;
 
     std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
     std::lock_guard<std::mutex> Lock(PresetMutex);
     const EqPresetCatalog Backup = PresetCatalog; // see HandlePresetCommand
-    const EqPresetCatalog::Result Result = bDevice ? PresetCatalog.BindDevice(Target, InCommand.PresetName)
-                                                   : PresetCatalog.BindApp(Target, InCommand.PresetName);
+    EqPresetCatalog::Result Result;
+    if (bAuto)
+    {
+        Result = bDevice ? PresetCatalog.BindDeviceAutoDetect(Target) : PresetCatalog.BindAppAutoDetect(Target);
+    }
+    else
+    {
+        Result = bDevice ? PresetCatalog.BindDevice(Target, InCommand.PresetName)
+                         : PresetCatalog.BindApp(Target, InCommand.PresetName);
+    }
     if (Result != EqPresetCatalog::Result::Ok)
     {
         fprintf(stderr, "[ramkolfxd] bind %s '%s' -> '%s' refused: %s\n", bDevice ? "device" : "app",
-                Target.c_str(), InCommand.PresetName.c_str(), PresetResultText(Result));
+                Target.c_str(), Bound.c_str(), PresetResultText(Result));
         return;
     }
     if (!PresetFile.Save(PresetCatalog.ToFileContents()))
@@ -1322,14 +1417,72 @@ void AudioEngine::HandleBindCommand(const Command& InCommand)
         return;
     }
 
-    if (InCommand.PresetName.empty())
+    if (!bAuto && InCommand.PresetName.empty())
     {
         AutoSwitch.OnBindingRemoved(bDevice ? EqPresetSource::Device : EqPresetSource::App, Target,
-                                    ResolveCurrentTarget(), CaptureEqState());
+                                    ResolveCurrentTarget(SteadyNowMs()), CaptureEqState());
     }
 
     fprintf(stderr, "[ramkolfxd] %s '%s' %s%s\n", bDevice ? "device" : "app", Target.c_str(),
-            InCommand.PresetName.empty() ? "unbound" : "bound to preset ", InCommand.PresetName.c_str());
+            Bound.empty() ? "unbound" : "bound to ", Bound.c_str());
+}
+
+bool AudioEngine::HandleDetectedClassCommand(const Command& InCommand)
+{
+    std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
+    std::lock_guard<std::mutex> Lock(PresetMutex);
+    const EqPresetCatalog Backup = PresetCatalog; // see HandlePresetCommand
+    const char* ClassName = DetectedClassLabel(InCommand.ClassValue);
+    const EqPresetCatalog::Result Result = PresetCatalog.BindDetectedClass(InCommand.ClassValue, InCommand.PresetName);
+    if (Result != EqPresetCatalog::Result::Ok)
+    {
+        fprintf(stderr, "[ramkolfxd] auto-detect: %s -> '%s' refused: %s\n", ClassName,
+                InCommand.PresetName.c_str(), PresetResultText(Result));
+        return false;
+    }
+    if (!PresetFile.Save(PresetCatalog.ToFileContents()))
+    {
+        PresetCatalog = Backup;
+        fprintf(stderr, "[ramkolfxd] auto-detect: %s -> '%s' failed: could not write presets.conf\n", ClassName,
+                InCommand.PresetName.c_str());
+        return false;
+    }
+    DetectedTableRevision.fetch_add(1, std::memory_order_relaxed);
+    fprintf(stderr, "[ramkolfxd] auto-detect: %s -> %s\n", ClassName,
+            InCommand.PresetName.empty() ? "no switch" : ("'" + InCommand.PresetName + "'").c_str());
+    return true;
+}
+
+std::vector<uint8> AudioEngine::BuildDetectedClassesResponse()
+{
+    Detector->RefreshAvailability(); // the GUI asks when showing the table: a fresh answer then
+    const DetectorStats Stats = Detector->Stats();
+    DetectionReport Report;
+    Report.DeviceLabel = Stats.DeviceLabel;
+    Report.P50Us = static_cast<uint32>(Stats.P50Us);
+    Report.P95Us = static_cast<uint32>(Stats.P95Us);
+    Report.DutyCycle = Stats.DutyCycle;
+    Report.Runs = static_cast<uint32>(Stats.Runs);
+    Report.RssAddedKb = static_cast<uint32>(Stats.RssAddedKb);
+
+    ClassScores Live{};
+    std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
+    if (AutoDetect.IsActive())
+    {
+        Live = AutoDetect.GetSmoother().Smoothed();
+    }
+    std::lock_guard<std::mutex> Lock(PresetMutex);
+    for (size_t i = 1; i < DetectedClassCount; ++i)
+    {
+        const auto Class = static_cast<DetectedClass>(i);
+        DetectedClassEntry Entry;
+        Entry.Class = Class;
+        Entry.PresetName = PresetCatalog.DetectedClassPreset(Class);
+        Entry.DefaultPresetName = DefaultDetectedClassPreset(Class);
+        Entry.Score = std::clamp(Live[i], 0.0f, 1.0f);
+        Report.Classes.push_back(std::move(Entry));
+    }
+    return EncodeDetectedClassesResponse(Report);
 }
 
 bool AudioEngine::EvaluateAutoSwitch()
@@ -1353,13 +1506,26 @@ bool AudioEngine::EvaluateAutoSwitch()
             PlayingApps.push_back(Stream.AppName);
         }
     }
-    const int64_t NowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              std::chrono::steady_clock::now().time_since_epoch())
-                              .count();
+    const int64_t NowMs = SteadyNowMs();
     AppActivity.Update(PlayingApps, NowMs);
 
+    // What the classifier heard since the last tick. Fed before resolving:
+    // if the binding changed, Update() below starts detection afresh
+    // anyway, and if not, the target already reflects these results.
+    for (const DetectionEvent& Event : Detector->TakeEvents())
+    {
+        if (Event.bTrackBoundary)
+        {
+            AutoDetect.AddTrackBoundary(Event.AtMs);
+        }
+        else
+        {
+            AutoDetect.AddScores(Event.Scores, Event.AtMs);
+        }
+    }
+
     std::lock_guard<std::mutex> Lock(PresetMutex);
-    const AutoSwitchTarget Target = ResolveCurrentTarget();
+    const AutoSwitchTarget Target = ResolveCurrentTarget(NowMs);
     if (Target == AutoSwitch.LastTarget())
     {
         return false; // the common case on every tick - skip capturing the curve
@@ -1378,6 +1544,27 @@ bool AudioEngine::EvaluateAutoSwitch()
     {
         fprintf(stderr, "[ramkolfxd] EQ auto-switch: no binding applies, back to manual\n");
     }
+    else if (AutoDetect.IsActive())
+    {
+        const char* Kind = Target.Source == EqPresetSource::App ? "app" : "device";
+        if (AutoDetect.IsHeld())
+        {
+            fprintf(stderr, "[ramkolfxd] EQ auto-switch: %s '%s' auto-detect paused (EQ changed by hand)\n", Kind,
+                    Target.Key.c_str());
+        }
+        else if (AutoDetect.Current() == DetectedClass::None)
+        {
+            fprintf(stderr, "[ramkolfxd] EQ auto-switch: %s '%s' auto-detect listening\n", Kind,
+                    Target.Key.c_str());
+        }
+        else
+        {
+            fprintf(stderr, "[ramkolfxd] EQ auto-switch: %s '%s' detected %s (%d%%) -> %s\n", Kind,
+                    Target.Key.c_str(), DetectedClassLabel(AutoDetect.Current()),
+                    static_cast<int>(std::lround(AutoDetect.Confidence() * 100.0f)),
+                    Target.PresetName.empty() ? "no switch" : ("preset '" + Target.PresetName + "'").c_str());
+        }
+    }
     else
     {
         fprintf(stderr, "[ramkolfxd] EQ auto-switch: %s '%s' -> preset '%s'\n",
@@ -1391,6 +1578,11 @@ void AudioEngine::OnAutoSwitchTimer(void* Data, uint64 Expirations)
 {
     (void)Expirations;
     AudioEngine* Self = static_cast<AudioEngine*>(Data);
+    if (++Self->TicksSinceAvailabilityProbe >= AvailabilityProbeTicks)
+    {
+        Self->TicksSinceAvailabilityProbe = 0;
+        Self->Detector->RefreshAvailability(); // a no-op once loaded, and for load-time verdicts
+    }
     if (Self->EvaluateAutoSwitch())
     {
         Self->bSettingsDirty.store(true);

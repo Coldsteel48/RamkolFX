@@ -14,3 +14,10 @@ Copyright: see data/hrtf/README.md and the per-database LICENSE.txt files
  (MIT KEMAR: public domain, SADIE II: Apache-2.0, HUTUBS: CC-BY-4.0,
  SONICOM: MIT)
 License: various
+
+Files: daemon/third_party/onnxruntime/*
+Copyright: Microsoft Corporation
+License: MIT
+ ONNX Runtime's C API header (1.21), vendored so builds need no ONNX
+ Runtime; the runtime itself is loaded at run time if installed. Full
+ text in daemon/third_party/onnxruntime/LICENSE.

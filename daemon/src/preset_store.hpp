@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <ostream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -59,20 +60,39 @@ const EqPreset* FindBuiltInEqPreset(const std::string& Name);
 // Target (output device node.name, or app name) -> bound preset name.
 using PresetBindingMap = std::map<std::string, std::string>;
 
+// Targets bound to Auto-detect instead of a preset
+// (docs/content-detect-plan.md).
+using AutoDetectTargets = std::set<std::string>;
+
+// Detected class -> preset it switches to; empty = no switch. Holds only
+// the entries the user changed from DefaultDetectedClassPreset.
+using DetectedClassTable = std::map<DetectedClass, std::string>;
+
+// The preset a detected class switches to unless the user changed it:
+// the same-named built-in, Spoken Word for Speech, nothing for Music
+// (genre unsure) and None.
+const std::string& DefaultDetectedClassPreset(DetectedClass Class);
+
 // Everything persisted in presets.conf.
 struct PresetFileContents
 {
     std::vector<EqPreset> UserPresets;
     PresetBindingMap DeviceBindings;
     PresetBindingMap AppBindings;
+    AutoDetectTargets AutoDetectDevices;
+    AutoDetectTargets AutoDetectApps;
+    DetectedClassTable DetectedClassOverrides;
 };
 
 // In-memory preset list: built-ins first (fixed order), then user presets
 // (sorted by name), plus the device/app bindings that point at them. Pure
 // logic, no IO or locking - AudioEngine guards it with its own mutex and
-// persists ToFileContents() through PresetStore. Invariant: every binding
+// persists ToFileContents() through PresetStore. Invariants: every binding
 // names a preset that exists (Remove drops bindings to the removed
-// preset; the constructor drops dangling ones).
+// preset; the constructor drops dangling ones); a target is bound to a
+// preset or to Auto-detect, never both; every class-table entry is empty
+// or names a preset that exists (removing a preset turns the classes
+// pointing at it into "no switch").
 //
 // The constructor also owns migrating to a build that ships new
 // built-ins: a user preset whose name a built-in now has (saved before
@@ -123,9 +143,38 @@ public:
     Result Remove(const std::string& Name);
 
     // Binds Target to PresetName, or unbinds it if PresetName is empty.
-    // NotFound if PresetName is non-empty and no such preset exists.
+    // Either way an Auto-detect binding of Target goes. NotFound if
+    // PresetName is non-empty and no such preset exists.
     Result BindDevice(const std::string& DeviceName, const std::string& PresetName);
     Result BindApp(const std::string& AppName, const std::string& PresetName);
+
+    // Binds Target to Auto-detect, replacing any preset binding. Undone
+    // by BindDevice/BindApp (with a preset, or empty to unbind).
+    Result BindDeviceAutoDetect(const std::string& DeviceName);
+    Result BindAppAutoDetect(const std::string& AppName);
+
+    const AutoDetectTargets& AutoDetectDevices() const
+    {
+        return AutoDevices;
+    }
+    const AutoDetectTargets& AutoDetectApps() const
+    {
+        return AutoApps;
+    }
+    bool IsDeviceAutoDetect(const std::string& DeviceName) const
+    {
+        return AutoDevices.contains(DeviceName);
+    }
+    bool IsAppAutoDetect(const std::string& AppName) const
+    {
+        return AutoApps.contains(AppName);
+    }
+
+    // The preset Class switches to (empty = no switch).
+    std::string DetectedClassPreset(DetectedClass Class) const;
+    // Points Class at PresetName, or at nothing if it's empty. InvalidName
+    // for None or an unknown class; NotFound if no such preset exists.
+    Result BindDetectedClass(DetectedClass Class, const std::string& PresetName);
 
     const PresetBindingMap& DeviceBindings() const
     {
@@ -144,11 +193,16 @@ public:
     PresetFileContents ToFileContents() const;
 
 private:
-    Result Bind(PresetBindingMap& Map, const std::string& Target, const std::string& PresetName);
+    Result Bind(PresetBindingMap& Map, AutoDetectTargets& Auto, const std::string& Target,
+                const std::string& PresetName);
+    static Result BindAuto(PresetBindingMap& Map, AutoDetectTargets& Auto, const std::string& Target);
 
     std::vector<EqPreset> User; // kept sorted by Name
     PresetBindingMap Devices;
     PresetBindingMap Apps;
+    AutoDetectTargets AutoDevices;
+    AutoDetectTargets AutoApps;
+    DetectedClassTable ClassOverrides;
     std::map<std::string, std::string> Renamed; // by the constructor: old name -> new name
 };
 

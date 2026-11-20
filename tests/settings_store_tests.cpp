@@ -33,6 +33,7 @@ TEST(RoundTripKeepsDeviceModes)
     In.DeviceSpatialModes = {{"alsa_output.speakers", SpatialMode::Off},
                              {"bluez_output.headphones", SpatialMode::Advanced},
                              {"weird=name", SpatialMode::Basic}};
+    In.AutoDetectDevice = InferenceDevice::Npu;
 
     const SettingsStore Store(Path.Get());
     Store.Save(In);
@@ -43,6 +44,7 @@ TEST(RoundTripKeepsDeviceModes)
     CHECK(Out->ActivePresetName == "Vocal");
     CHECK(Out->bActivePresetBuiltIn == std::optional<bool>(true));
     CHECK(Out->DeviceSpatialModes == In.DeviceSpatialModes);
+    CHECK(Out->AutoDetectDevice == InferenceDevice::Npu);
 }
 
 TEST(OldFileWithoutDeviceModesLoads)
@@ -57,6 +59,18 @@ TEST(OldFileWithoutDeviceModesLoads)
     CHECK(Out->Mode == SpatialMode::Advanced);
     CHECK(Out->DeviceSpatialModes.empty());
     CHECK(!Out->bActivePresetBuiltIn); // unknown, not "user preset"
+}
+
+TEST(UnknownAutoDetectDeviceFallsBackToAuto)
+{
+    TempPath Path;
+    {
+        std::ofstream File(Path.Get());
+        File << "mode=0\nauto_detect.device=tpu\n";
+    }
+    const auto Out = SettingsStore(Path.Get()).Load();
+    REQUIRE(Out);
+    CHECK(Out->AutoDetectDevice == InferenceDevice::Auto);
 }
 
 TEST(InvalidDeviceModesAreDropped)

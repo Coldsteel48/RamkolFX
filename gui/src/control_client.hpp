@@ -66,6 +66,14 @@ public:
     std::optional<Status> BindDevicePreset(const std::string& DeviceName, const std::string& PresetName);
     std::optional<Status> BindAppPreset(const std::string& AppName, const std::string& PresetName);
     std::optional<std::vector<ContentStreamInfo>> RequestContentStreams();
+    // Auto-detect (docs/content-detect-plan.md). BindDevicePreset /
+    // BindAppPreset with an empty preset unbind Auto-detect too.
+    std::optional<Status> BindDeviceAutoDetect(const std::string& DeviceName);
+    std::optional<Status> BindAppAutoDetect(const std::string& AppName);
+    // Empty PresetName = no switch for that class.
+    std::optional<Status> BindDetectedClass(DetectedClass Class, const std::string& PresetName);
+    std::optional<Status> SetAutoDetectDevice(InferenceDevice Device);
+    std::optional<DetectionReport> RequestDetectedClasses();
     // Peak levels since the previous call (see protocol.hpp's
     // ChannelLevels). An older daemon that doesn't know this request
     // answers with an ErrorResponse: nullopt with the connection still up.

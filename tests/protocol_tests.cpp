@@ -76,8 +76,65 @@ TEST(StatusRoundTrip)
     CHECK(Out->DevicePresetName == "Vocal");
     CHECK(Out->PresetSource == EqPresetSource::App);
     CHECK(Out->PresetSourceApp == "Firefox");
+    CHECK(Out->bHasAutoDetect && Out->AutoDetect == AutoDetectAvailability::Ok && !Out->bAutoDetectActive);
 
     CHECK(!DecodeStatusResponse(Payload(Message), PayloadLength(Message) - 1));
+}
+
+TEST(StatusAutoDetectFields)
+{
+    Status In;
+    In.PresetSource = EqPresetSource::Device;
+    In.AutoDetect = AutoDetectAvailability::TooSlow;
+    In.bDeviceAutoDetect = true;
+    In.bAutoDetectActive = true;
+    In.Detected = DetectedClass::Jazz;
+    In.DetectedConfidence = 82;
+    In.bDetectionHeld = true;
+    In.AutoDetectDevice = InferenceDevice::Npu;
+    In.InferenceDeviceLabel = "NPU (OpenVINO)";
+    In.DetectedTableRevision = 7;
+    const auto Message = EncodeStatusResponse(In);
+    const auto Out = DecodeStatusResponse(Payload(Message), PayloadLength(Message));
+    REQUIRE(Out);
+    CHECK(Out->AutoDetect == AutoDetectAvailability::TooSlow);
+    CHECK(Out->bDeviceAutoDetect && Out->bAutoDetectActive && Out->bDetectionHeld);
+    CHECK(Out->Detected == DetectedClass::Jazz && Out->DetectedConfidence == 82);
+    CHECK(Out->AutoDetectDevice == InferenceDevice::Npu && Out->InferenceDeviceLabel == "NPU (OpenVINO)");
+    CHECK(Out->DetectedTableRevision == 7);
+
+    // An older daemon's Status stops right after PresetSourceApp: still
+    // decodes, with the defaults.
+    const size_t AutoDetectBytes = 7 + 2 + In.InferenceDeviceLabel.size() + 4;
+    const auto Old = DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectBytes));
+    REQUIRE(Old);
+    CHECK(Old->PresetSource == EqPresetSource::Device && !Old->bAutoDetectActive && !Old->bHasAutoDetect);
+    CHECK(Old->AutoDetect == AutoDetectAvailability::Ok);
+    // But a partial block is malformed.
+    CHECK(!DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectBytes + 3)));
+}
+
+TEST(DetectedClassesRoundTrip)
+{
+    DetectionReport In;
+    In.DeviceLabel = "CPU";
+    In.P50Us = 4200;
+    In.P95Us = 5100;
+    In.DutyCycle = 0.0021f;
+    In.Runs = 99;
+    In.RssAddedKb = 38000;
+    In.Classes = {{DetectedClass::Speech, "Spoken Word", "Spoken Word", 0.25f}, {DetectedClass::Jazz, "", "Jazz", 0.75f}};
+    const auto Message = EncodeDetectedClassesResponse(In);
+    const auto Out = DecodeDetectedClassesResponse(Payload(Message), PayloadLength(Message));
+    REQUIRE(Out);
+    CHECK(Out->DeviceLabel == "CPU" && Out->P50Us == 4200 && Out->P95Us == 5100);
+    CHECK(Out->DutyCycle == 0.0021f && Out->Runs == 99 && Out->RssAddedKb == 38000);
+    REQUIRE(Out->Classes.size() == 2);
+    CHECK(Out->Classes[0].Class == DetectedClass::Speech && Out->Classes[0].PresetName == "Spoken Word");
+    CHECK(Out->Classes[0].DefaultPresetName == "Spoken Word" && Out->Classes[0].Score == 0.25f);
+    CHECK(Out->Classes[1].Class == DetectedClass::Jazz && Out->Classes[1].PresetName.empty());
+    CHECK(Out->Classes[1].DefaultPresetName == "Jazz" && Out->Classes[1].Score == 0.75f);
+    CHECK(!DecodeDetectedClassesResponse(Payload(Message), PayloadLength(Message) - 1));
 }
 
 TEST(DeviceListRoundTrip)
@@ -146,7 +203,7 @@ TEST(EqPresetCatalogRoundTrip)
 
 TEST(ContentStreamListRoundTrip)
 {
-    const std::vector<ContentStreamInfo> In{{"Firefox", "Tab", true, "Vocal"}, {"mpv", "", false, ""}};
+    const std::vector<ContentStreamInfo> In{{"Firefox", "Tab", true, "Vocal", false}, {"mpv", "", false, "", true}};
     const auto Message = EncodeContentStreamListResponse(In);
     const auto Out = DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message));
     REQUIRE(Out);
@@ -154,7 +211,30 @@ TEST(ContentStreamListRoundTrip)
     CHECK((*Out)[0].AppName == "Firefox" && (*Out)[0].MediaName == "Tab");
     CHECK((*Out)[0].bPlaying && (*Out)[0].BoundPresetName == "Vocal");
     CHECK(!(*Out)[1].bPlaying && (*Out)[1].BoundPresetName.empty());
-    CHECK(!DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message) - 1));
+    CHECK(!(*Out)[0].bAutoDetect && (*Out)[1].bAutoDetect);
+
+    // An older daemon's list has no trailer: still decodes, nothing Auto.
+    const auto Old = DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message) - 2);
+    REQUIRE(Old && Old->size() == 2);
+    CHECK((*Old)[1].AppName == "mpv" && !(*Old)[1].bAutoDetect);
+    CHECK(!DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message) - 3));
+}
+
+TEST(ContentStreamListOverflowKeepsTheTrailer)
+{
+    std::vector<ContentStreamInfo> In;
+    for (int i = 0; i < 200; ++i)
+    {
+        In.push_back({"app" + std::to_string(i), std::string(30, 'm'), true, "Preset", i % 2 == 1});
+    }
+    const auto Message = EncodeContentStreamListResponse(In);
+    CHECK(PayloadLength(Message) <= MaxPayloadSize);
+    const auto Out = DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message));
+    REQUIRE(Out && !Out->empty() && Out->size() < In.size());
+    for (size_t i = 0; i < Out->size(); ++i)
+    {
+        CHECK((*Out)[i].bAutoDetect == (i % 2 == 1));
+    }
 }
 
 TEST(HwEqStateAndBassRoundTrip)
@@ -205,6 +285,39 @@ TEST(BindRequests)
     CHECK(!DecodeCommand(Opcode::BindAppPreset, Payload(Message), PayloadLength(Message)));
 }
 
+TEST(AutoDetectRequests)
+{
+    auto Message = EncodeBindAppAutoDetectRequest("Firefox");
+    auto Command = DecodeCommand(Opcode::BindAppAutoDetect, Payload(Message), PayloadLength(Message));
+    CHECK(Command && Command->ContentAppName == "Firefox");
+    Message = EncodeBindDeviceAutoDetectRequest("alsa_out");
+    Command = DecodeCommand(Opcode::BindDeviceAutoDetect, Payload(Message), PayloadLength(Message));
+    CHECK(Command && Command->OutputDeviceName == "alsa_out");
+    Message = EncodeBindAppAutoDetectRequest("");
+    CHECK(!DecodeCommand(Opcode::BindAppAutoDetect, Payload(Message), PayloadLength(Message)));
+
+    Message = EncodeBindDetectedClassRequest(DetectedClass::RnB, "My Soul");
+    Command = DecodeCommand(Opcode::BindDetectedClass, Payload(Message), PayloadLength(Message));
+    CHECK(Command && Command->ClassValue == DetectedClass::RnB && Command->PresetName == "My Soul");
+    Message = EncodeBindDetectedClassRequest(DetectedClass::Speech, ""); // no switch
+    Command = DecodeCommand(Opcode::BindDetectedClass, Payload(Message), PayloadLength(Message));
+    CHECK(Command && Command->ClassValue == DetectedClass::Speech && Command->PresetName.empty());
+    for (const DetectedClass Bad : {DetectedClass::None, DetectedClass::Count})
+    {
+        Message = EncodeBindDetectedClassRequest(Bad, "x");
+        CHECK(!DecodeCommand(Opcode::BindDetectedClass, Payload(Message), PayloadLength(Message)));
+    }
+
+    Message = EncodeSetAutoDetectDeviceRequest(InferenceDevice::Gpu);
+    Command = DecodeCommand(Opcode::SetAutoDetectDevice, Payload(Message), PayloadLength(Message));
+    CHECK(Command && Command->DeviceValue == InferenceDevice::Gpu);
+    Message = EncodeSetAutoDetectDeviceRequest(InferenceDevice::Count);
+    CHECK(!DecodeCommand(Opcode::SetAutoDetectDevice, Payload(Message), PayloadLength(Message)));
+
+    Message = EncodeGetDetectedClassesRequest();
+    CHECK(DecodeCommand(Opcode::GetDetectedClasses, Payload(Message), PayloadLength(Message)));
+}
+
 TEST(ChannelLevelsRoundTrip)
 {
     const auto Request = EncodeGetChannelLevelsRequest();
@@ -230,6 +343,27 @@ TEST(RetiredOpcodesRejected)
     const uint8 Dummy[4] = {0, 1, 'x', 0};
     CHECK(!DecodeCommand(static_cast<Opcode>(0x11), Dummy, sizeof(Dummy)));
     CHECK(!DecodeCommand(static_cast<Opcode>(0x13), Dummy, sizeof(Dummy)));
+}
+
+TEST(AutoDetectKeysRoundTrip)
+{
+    for (size_t i = 1; i < DetectedClassCount; ++i)
+    {
+        const auto Class = static_cast<DetectedClass>(i);
+        REQUIRE(DetectedClassKey(Class) != nullptr);
+        CHECK(DetectedClassFromKey(DetectedClassKey(Class)) == Class);
+    }
+    CHECK(DetectedClassKey(DetectedClass::None) == nullptr);
+    CHECK(!DetectedClassFromKey("polka"));
+
+    for (size_t i = 0; i < static_cast<size_t>(InferenceDevice::Count); ++i)
+    {
+        const auto Device = static_cast<InferenceDevice>(i);
+        CHECK(InferenceDeviceFromKey(InferenceDeviceKey(Device)) == Device);
+    }
+    CHECK(!InferenceDeviceFromKey("tpu"));
+    CHECK(std::string(AutoDetectAvailabilityLabel(AutoDetectAvailability::Ok)).empty());
+    CHECK(!std::string(AutoDetectAvailabilityLabel(AutoDetectAvailability::Count)).empty());
 }
 
 RAMKOLFX_TEST_MAIN()

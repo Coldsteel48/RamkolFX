@@ -22,6 +22,7 @@
 #include "ramkolfx/types.hpp"
 #include "dsp/speaker_layout.hpp"
 #include "hrtf_catalog.hpp"
+#include "detect/content_detector.hpp"
 #include "preset_auto_switch.hpp"
 #include "preset_store.hpp"
 #include "settings_store.hpp"
@@ -278,6 +279,9 @@ private:
     // save/delete.
     std::atomic<uint32> PresetCatalogRevision{0};
 
+    // See Status::DetectedTableRevision. Bumped on BindDetectedClass.
+    std::atomic<uint32> DetectedTableRevision{0};
+
     // Replaces the live HW EQ curve and bass enhancer settings (state +
     // DSP stages) in one go and bumps EqRevision. Caller must not hold
     // HwEqMutex or BassEnhancerMutex.
@@ -304,9 +308,24 @@ private:
     std::mutex AutoSwitchMutex;
     AppActivityTracker AppActivity;
     AutoSwitchController AutoSwitch;
+    // Detection state for the Auto-detect binding in effect (if any), fed
+    // by Detector's events. Guarded by AutoSwitchMutex alone.
+    AutoDetectSession AutoDetect;
 
     static constexpr long AutoSwitchTickMs = 250;
     spa_source* AutoSwitchTimer = nullptr;
+
+    // Auto-detect's inference worker (docs/content-detect-plan.md), fed by
+    // a tap on the raw 7.1 input in HandleVirtualSinkAudio - before the
+    // EQ, so changing the EQ can't change what it hears. Created in Run()
+    // before the streams start, never replaced. Inactive (and threadless)
+    // until an Auto-detect binding is in effect.
+    std::unique_ptr<ContentDetector> Detector;
+    // The device policy last set (persisted as auto_detect.device).
+    std::atomic<InferenceDevice> AutoDetectDevicePolicy{InferenceDevice::Auto};
+    // Main loop only: counts AutoSwitchTimer ticks between re-probes of an
+    // unavailable runtime/model (see ContentDetector::RefreshAvailability).
+    int TicksSinceAvailabilityProbe = 0;
 
     // Serializes PersistCurrentSettings(), called via FlushSettingsIfDirty
     // from the main loop (timer, Teardown) and - only if the timer couldn't
@@ -339,11 +358,23 @@ private:
     bool EvaluateAutoSwitch();
     static void OnAutoSwitchTimer(void* Data, uint64 Expirations);
 
-    // What the rule currently resolves to. Caller holds AutoSwitchMutex
-    // and PresetMutex.
-    AutoSwitchTarget ResolveCurrentTarget();
+    // What the rule currently resolves to - for an Auto-detect binding,
+    // the preset its detected class maps to (or the pending target) - and
+    // switches the detection worker on or off to match. Caller holds
+    // AutoSwitchMutex and PresetMutex.
+    AutoSwitchTarget ResolveCurrentTarget(int64_t NowMs);
 
-    // Handles BindDevicePreset/BindAppPreset (empty preset = unbind).
+    // The user changed the EQ by hand: pause detection for the Auto-detect
+    // binding in effect, if any (see AutoDetectSession::Hold). Takes
+    // AutoSwitchMutex, so call it without the preset/EQ mutexes held.
+    void HoldAutoDetect();
+
+    // BindDetectedClass. Returns whether presets.conf changed.
+    bool HandleDetectedClassCommand(const Command& InCommand);
+    std::vector<uint8> BuildDetectedClassesResponse();
+
+    // Handles BindDevicePreset/BindAppPreset (empty preset = unbind) and
+    // BindDeviceAutoDetect/BindAppAutoDetect.
     // Refusals are logged, like HandlePresetCommand's.
     void HandleBindCommand(const Command& InCommand);
 

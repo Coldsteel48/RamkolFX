@@ -152,7 +152,7 @@ bool ReadString(const uint8* Payload, uint16 PayloadLength, size_t& Offset, std:
 // per-entry decoding differing.
 template <typename T, typename EntryDecoder>
 std::optional<std::vector<T>> DecodeListResponse(const uint8* Payload, uint16 PayloadLength,
-                                                  EntryDecoder&& DecodeEntry)
+                                                  EntryDecoder&& DecodeEntry, size_t* OutEnd = nullptr)
 {
     size_t Offset = 0;
     if (Offset + 2 > PayloadLength)
@@ -173,6 +173,10 @@ std::optional<std::vector<T>> DecodeListResponse(const uint8* Payload, uint16 Pa
         }
         Items.push_back(std::move(Item));
     }
+    if (OutEnd)
+    {
+        *OutEnd = Offset;
+    }
     return Items;
 }
 
@@ -182,7 +186,9 @@ std::optional<std::vector<T>> DecodeListResponse(const uint8* Payload, uint16 Pa
 // entry would push the payload past MaxPayloadSize. Mirrors
 // DecodeListResponse above; pulled out for the same reason.
 template <typename T, typename EntryEncoder>
-std::vector<uint8> EncodeListResponse(Opcode InOpcode, const std::vector<T>& Items, EntryEncoder&& EncodeEntry)
+std::vector<uint8> EncodeListResponse(Opcode InOpcode, const std::vector<T>& Items, EntryEncoder&& EncodeEntry,
+                                      size_t TrailerBytesPerEntry = 0,
+                                      void (*AppendTrailer)(std::vector<uint8>&, const T&) = nullptr)
 {
     std::vector<uint8> Payload;
     Payload.push_back(0); // count placeholder, patched below once the final count is known
@@ -193,7 +199,7 @@ std::vector<uint8> EncodeListResponse(Opcode InOpcode, const std::vector<T>& Ite
     {
         std::vector<uint8> Entry;
         EncodeEntry(Entry, Item);
-        if (Payload.size() + Entry.size() > MaxPayloadSize)
+        if (Payload.size() + Entry.size() + TrailerBytesPerEntry * (Count + 1u) > MaxPayloadSize)
         {
             break; // stop before exceeding the payload cap, never mid-entry
         }
@@ -202,6 +208,12 @@ std::vector<uint8> EncodeListResponse(Opcode InOpcode, const std::vector<T>& Ite
     }
     Payload[0] = static_cast<uint8>((Count >> 8) & 0xFF);
     Payload[1] = static_cast<uint8>(Count & 0xFF);
+    // A per-entry trailer after the whole list: fields added later, which
+    // older decoders (that stop after the entries) never see.
+    for (uint16 i = 0; AppendTrailer && i < Count; ++i)
+    {
+        AppendTrailer(Payload, Items[i]);
+    }
 
     std::vector<uint8> Out;
     Out.reserve(HeaderSize + Payload.size());
@@ -350,6 +362,35 @@ std::optional<Command> DecodeCommand(Opcode InOpcode, const uint8* Payload, uint
     }
     case Opcode::GetEqPresetCatalog:
         return OutCommand;
+    case Opcode::BindAppAutoDetect:
+    case Opcode::BindDeviceAutoDetect:
+        // Raw whole-payload target name, same convention as SetOutputDevice.
+        if (PayloadLength == 0)
+        {
+            return std::nullopt;
+        }
+        (InOpcode == Opcode::BindAppAutoDetect ? OutCommand.ContentAppName : OutCommand.OutputDeviceName) =
+            std::string(reinterpret_cast<const char*>(Payload), PayloadLength);
+        return OutCommand;
+    case Opcode::BindDetectedClass:
+        // [class:1][preset name: raw remainder, empty = no switch]
+        if (PayloadLength < 1 || Payload[0] == static_cast<uint8>(DetectedClass::None) ||
+            Payload[0] >= static_cast<uint8>(DetectedClass::Count))
+        {
+            return std::nullopt;
+        }
+        OutCommand.ClassValue = static_cast<DetectedClass>(Payload[0]);
+        OutCommand.PresetName = std::string(reinterpret_cast<const char*>(Payload + 1), PayloadLength - 1u);
+        return OutCommand;
+    case Opcode::GetDetectedClasses:
+        return OutCommand;
+    case Opcode::SetAutoDetectDevice:
+        if (PayloadLength < 1 || Payload[0] >= static_cast<uint8>(InferenceDevice::Count))
+        {
+            return std::nullopt;
+        }
+        OutCommand.DeviceValue = static_cast<InferenceDevice>(Payload[0]);
+        return OutCommand;
     case Opcode::GetChannelLevels:
         return OutCommand;
     default:
@@ -417,6 +458,34 @@ std::optional<Status> DecodeStatusResponse(const uint8* Payload, uint16 PayloadL
     {
         return std::nullopt;
     }
+
+    // Auto-detect: [availability:1][deviceAuto:1][active:1][class:1][confidence:1][held:1]
+    //              [inferenceDevice:1][inferenceDeviceLabel: length-prefixed string][tableRevision: u32]
+    // Absent from an older daemon's Status: the defaults stand.
+    if (Offset == PayloadLength)
+    {
+        return OutStatus;
+    }
+    if (Offset + 7 > PayloadLength)
+    {
+        return std::nullopt;
+    }
+    // Unknown enum values from a newer daemon are kept as-is, like
+    // EqPresetCategory: they only feed labels, which handle them.
+    OutStatus.bHasAutoDetect = true;
+    OutStatus.AutoDetect = static_cast<AutoDetectAvailability>(Payload[Offset]);
+    OutStatus.bDeviceAutoDetect = Payload[Offset + 1] != 0;
+    OutStatus.bAutoDetectActive = Payload[Offset + 2] != 0;
+    OutStatus.Detected = static_cast<DetectedClass>(Payload[Offset + 3]);
+    OutStatus.DetectedConfidence = Payload[Offset + 4];
+    OutStatus.bDetectionHeld = Payload[Offset + 5] != 0;
+    OutStatus.AutoDetectDevice = static_cast<InferenceDevice>(Payload[Offset + 6]);
+    Offset += 7;
+    if (!ReadString(Payload, PayloadLength, Offset, OutStatus.InferenceDeviceLabel) || Offset + 4 > PayloadLength)
+    {
+        return std::nullopt;
+    }
+    OutStatus.DetectedTableRevision = ReadU32BE(Payload + Offset);
     return OutStatus;
 }
 
@@ -485,7 +554,8 @@ std::optional<ChannelLevels> DecodeChannelLevelsResponse(const uint8* Payload, u
 std::optional<std::vector<ContentStreamInfo>> DecodeContentStreamListResponse(const uint8* Payload,
                                                                                  uint16 PayloadLength)
 {
-    return DecodeListResponse<ContentStreamInfo>(
+    size_t End = 0;
+    std::optional<std::vector<ContentStreamInfo>> Streams = DecodeListResponse<ContentStreamInfo>(
         Payload, PayloadLength,
         [](const uint8* P, uint16 Len, size_t& Offset, ContentStreamInfo& Info)
         {
@@ -496,7 +566,60 @@ std::optional<std::vector<ContentStreamInfo>> DecodeContentStreamListResponse(co
             }
             Info.bPlaying = P[Offset++] != 0;
             return ReadString(P, Len, Offset, Info.BoundPresetName);
+        },
+        &End);
+    // Trailer: one bAutoDetect byte per entry - absent from an older daemon.
+    if (Streams && End + Streams->size() <= PayloadLength)
+    {
+        for (size_t i = 0; i < Streams->size(); ++i)
+        {
+            (*Streams)[i].bAutoDetect = Payload[End + i] != 0;
+        }
+    }
+    return Streams;
+}
+
+std::optional<DetectionReport> DecodeDetectedClassesResponse(const uint8* Payload, uint16 PayloadLength)
+{
+    // [deviceLabel: length-prefixed string][p50Us: u32][p95Us: u32][dutyCycle: float][runs: u32]
+    // [rssAddedKb: u32][count: u16][entries: class:1, preset: length-prefixed string,
+    //                                  default preset: length-prefixed string, score: float]
+    DetectionReport Report;
+    size_t Offset = 0;
+    if (!ReadString(Payload, PayloadLength, Offset, Report.DeviceLabel) || Offset + 4 * 5 > PayloadLength)
+    {
+        return std::nullopt;
+    }
+    Report.P50Us = ReadU32BE(Payload + Offset);
+    Report.P95Us = ReadU32BE(Payload + Offset + 4);
+    Report.DutyCycle = ReadFloatBE(Payload + Offset + 8);
+    Report.Runs = ReadU32BE(Payload + Offset + 12);
+    Report.RssAddedKb = ReadU32BE(Payload + Offset + 16);
+    Offset += 20;
+    std::optional<std::vector<DetectedClassEntry>> Classes = DecodeListResponse<DetectedClassEntry>(
+        Payload + Offset, static_cast<uint16>(PayloadLength - Offset),
+        [](const uint8* P, uint16 Len, size_t& At, DetectedClassEntry& Entry)
+        {
+            if (At + 1 > Len)
+            {
+                return false;
+            }
+            Entry.Class = static_cast<DetectedClass>(P[At++]);
+            if (!ReadString(P, Len, At, Entry.PresetName) || !ReadString(P, Len, At, Entry.DefaultPresetName) ||
+                At + 4 > Len)
+            {
+                return false;
+            }
+            Entry.Score = ReadFloatBE(P + At);
+            At += 4;
+            return true;
         });
+    if (!Classes)
+    {
+        return std::nullopt;
+    }
+    Report.Classes = std::move(*Classes);
+    return Report;
 }
 
 std::optional<std::vector<EqPresetInfo>> DecodeEqPresetCatalogResponse(const uint8* Payload,
@@ -545,6 +668,15 @@ std::vector<uint8> EncodeStatusResponse(const Status& InStatus)
     AppendString(Payload, InStatus.DevicePresetName);
     Payload.push_back(static_cast<uint8>(InStatus.PresetSource));
     AppendString(Payload, InStatus.PresetSourceApp);
+    Payload.push_back(static_cast<uint8>(InStatus.AutoDetect));
+    Payload.push_back(InStatus.bDeviceAutoDetect ? 1 : 0);
+    Payload.push_back(InStatus.bAutoDetectActive ? 1 : 0);
+    Payload.push_back(static_cast<uint8>(InStatus.Detected));
+    Payload.push_back(InStatus.DetectedConfidence);
+    Payload.push_back(InStatus.bDetectionHeld ? 1 : 0);
+    Payload.push_back(static_cast<uint8>(InStatus.AutoDetectDevice));
+    AppendString(Payload, InStatus.InferenceDeviceLabel);
+    AppendU32BE(Payload, InStatus.DetectedTableRevision);
 
     std::vector<uint8> Out;
     Out.reserve(HeaderSize + Payload.size());
@@ -626,7 +758,38 @@ std::vector<uint8> EncodeContentStreamListResponse(const std::vector<ContentStre
                                    AppendString(Entry, Stream.MediaName);
                                    Entry.push_back(Stream.bPlaying ? 1 : 0);
                                    AppendString(Entry, Stream.BoundPresetName);
-                               });
+                               },
+                               1, +[](std::vector<uint8>& Out, const ContentStreamInfo& Stream)
+                               { Out.push_back(Stream.bAutoDetect ? 1 : 0); });
+}
+
+std::vector<uint8> EncodeDetectedClassesResponse(const DetectionReport& Report)
+{
+    std::vector<uint8> Payload;
+    AppendString(Payload, Report.DeviceLabel);
+    AppendU32BE(Payload, Report.P50Us);
+    AppendU32BE(Payload, Report.P95Us);
+    AppendFloatBE(Payload, Report.DutyCycle);
+    AppendU32BE(Payload, Report.Runs);
+    AppendU32BE(Payload, Report.RssAddedKb);
+    // Same shape as EncodeListResponse's body. At most ~15 short entries,
+    // far below MaxPayloadSize, so there's no truncation to handle.
+    const auto Count = static_cast<uint16>(Report.Classes.size());
+    Payload.push_back(static_cast<uint8>((Count >> 8) & 0xFF));
+    Payload.push_back(static_cast<uint8>(Count & 0xFF));
+    for (const DetectedClassEntry& Entry : Report.Classes)
+    {
+        Payload.push_back(static_cast<uint8>(Entry.Class));
+        AppendString(Payload, Entry.PresetName);
+        AppendString(Payload, Entry.DefaultPresetName);
+        AppendFloatBE(Payload, Entry.Score);
+    }
+
+    std::vector<uint8> Out;
+    Out.reserve(HeaderSize + Payload.size());
+    AppendHeader(Out, Opcode::DetectedClassesResponse, static_cast<uint16>(Payload.size()));
+    Out.insert(Out.end(), Payload.begin(), Payload.end());
+    return Out;
 }
 
 std::vector<uint8> EncodeEqPresetCatalogResponse(const std::vector<EqPresetInfo>& Presets)
@@ -830,6 +993,38 @@ std::vector<uint8> EncodeGetEqPresetCatalogRequest()
     return Out;
 }
 
+std::vector<uint8> EncodeBindAppAutoDetectRequest(const std::string& AppName)
+{
+    return EncodeRawStringMessage(Opcode::BindAppAutoDetect, AppName);
+}
+
+std::vector<uint8> EncodeBindDeviceAutoDetectRequest(const std::string& DeviceName)
+{
+    return EncodeRawStringMessage(Opcode::BindDeviceAutoDetect, DeviceName);
+}
+
+std::vector<uint8> EncodeBindDetectedClassRequest(DetectedClass Class, const std::string& PresetName)
+{
+    std::string Payload(1, static_cast<char>(Class));
+    Payload += PresetName;
+    return EncodeRawStringMessage(Opcode::BindDetectedClass, Payload);
+}
+
+std::vector<uint8> EncodeGetDetectedClassesRequest()
+{
+    std::vector<uint8> Out;
+    AppendHeader(Out, Opcode::GetDetectedClasses, 0);
+    return Out;
+}
+
+std::vector<uint8> EncodeSetAutoDetectDeviceRequest(InferenceDevice Device)
+{
+    std::vector<uint8> Out;
+    AppendHeader(Out, Opcode::SetAutoDetectDevice, 1);
+    Out.push_back(static_cast<uint8>(Device));
+    return Out;
+}
+
 std::vector<uint8> EncodeGetChannelLevelsRequest()
 {
     std::vector<uint8> Out;
@@ -877,6 +1072,95 @@ const char* EqPresetCategoryLabel(EqPresetCategory Category)
         break;
     }
     return "More";
+}
+
+namespace
+{
+struct DetectedClassName
+{
+    const char* Label;
+    const char* Key;
+};
+
+// Indexed by DetectedClass.
+constexpr std::array<DetectedClassName, DetectedClassCount> DetectedClassNames{{
+    {"None", nullptr},
+    {"Speech", "speech"},
+    {"Movie", "movie"},
+    {"Music", "music"},
+    {"Rock", "rock"},
+    {"Metal", "metal"},
+    {"Pop", "pop"},
+    {"Hip-Hop", "hiphop"},
+    {"R&B", "rnb"},
+    {"Electronic", "electronic"},
+    {"Jazz", "jazz"},
+    {"Classical", "classical"},
+    {"Blues", "blues"},
+    {"Reggae", "reggae"},
+    {"Acoustic", "acoustic"},
+}};
+} // namespace
+
+const char* DetectedClassLabel(DetectedClass Class)
+{
+    const size_t Index = static_cast<size_t>(Class);
+    return Index < DetectedClassNames.size() ? DetectedClassNames[Index].Label : "Unknown";
+}
+
+const char* DetectedClassKey(DetectedClass Class)
+{
+    const size_t Index = static_cast<size_t>(Class);
+    return Index < DetectedClassNames.size() ? DetectedClassNames[Index].Key : nullptr;
+}
+
+std::optional<DetectedClass> DetectedClassFromKey(const std::string& Key)
+{
+    for (size_t i = 0; i < DetectedClassNames.size(); ++i)
+    {
+        if (DetectedClassNames[i].Key && Key == DetectedClassNames[i].Key)
+        {
+            return static_cast<DetectedClass>(i);
+        }
+    }
+    return std::nullopt;
+}
+
+namespace
+{
+// Indexed by InferenceDevice.
+constexpr std::array<const char*, static_cast<size_t>(InferenceDevice::Count)> InferenceDeviceKeys{
+    "auto", "cpu", "gpu", "npu"};
+
+// Indexed by AutoDetectAvailability.
+constexpr std::array<const char*, static_cast<size_t>(AutoDetectAvailability::Count)> AutoDetectAvailabilityLabels{
+    "", "ONNX Runtime is not installed (or older than 1.17)", "The classifier model is not installed",
+    "The classifier failed to load", "Detection is too slow on this machine"};
+} // namespace
+
+const char* InferenceDeviceKey(InferenceDevice Device)
+{
+    const size_t Index = static_cast<size_t>(Device);
+    return Index < InferenceDeviceKeys.size() ? InferenceDeviceKeys[Index] : nullptr;
+}
+
+std::optional<InferenceDevice> InferenceDeviceFromKey(const std::string& Key)
+{
+    for (size_t i = 0; i < InferenceDeviceKeys.size(); ++i)
+    {
+        if (Key == InferenceDeviceKeys[i])
+        {
+            return static_cast<InferenceDevice>(i);
+        }
+    }
+    return std::nullopt;
+}
+
+const char* AutoDetectAvailabilityLabel(AutoDetectAvailability Availability)
+{
+    const size_t Index = static_cast<size_t>(Availability);
+    return Index < AutoDetectAvailabilityLabels.size() ? AutoDetectAvailabilityLabels[Index]
+                                                       : "Auto-detect is unavailable";
 }
 
 std::optional<std::string> NormalizePresetName(const std::string& Name)

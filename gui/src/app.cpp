@@ -104,6 +104,7 @@ void App::Tick(float DeltaTimeSeconds)
                     }
                     DevicePollTimerSeconds = DevicePollIntervalSeconds;
                     bChannelLevelsUnsupported = false; // may be a newer daemon now
+                    bDetectedClassesUnsupported = false;
                     bLevelPollPrimed = false;
                     bConnected = true;
                 }
@@ -1073,7 +1074,42 @@ void App::DrawEqTab()
                     DeviceLabel = Device.Description;
                 }
             }
+            const ImVec2 RowStart = ImGui::GetCursorScreenPos();
+            const float RowWidth = ImGui::GetContentRegionAvail().x;
             ImGui::TextColored(palette::TextMutedV4, "Device: %s", DeviceLabel.c_str());
+
+            // Auto-detect for this device: on binds the device to it
+            // (replacing a preset binding), off unbinds.
+            const float Gap = 6.0f * DpiScale;
+            const char* AutoLabel = "Auto-detect";
+            ImGui::SameLine();
+            RightAlignCursor(RowStart.x, RowWidth,
+                             ImGui::CalcTextSize(AutoLabel).x + Gap + ToggleTrackWidth * DpiScale);
+            const bool bUnavailable = !IsAutoDetectUsable();
+            ImGui::TextColored(LastStatus.bDeviceAutoDetect && bUnavailable ? palette::WarningV4
+                                                                            : palette::TextMutedV4,
+                               "%s", AutoLabel);
+            ImGui::SameLine(0.0f, Gap);
+            bool bDeviceAuto = LastStatus.bDeviceAutoDetect;
+            ImGui::BeginDisabled(LastStatus.OutputDeviceName.empty() || (bUnavailable && !bDeviceAuto));
+            if (DrawToggleSwitch("device_auto_detect", &bDeviceAuto, DpiScale))
+            {
+                Apply(bDeviceAuto ? Client.BindDeviceAutoDetect(LastStatus.OutputDeviceName)
+                                  : Client.BindDevicePreset(LastStatus.OutputDeviceName, std::string()));
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            {
+                if (bUnavailable)
+                {
+                    ImGui::SetTooltip("%s", AutoDetectUnavailableReason());
+                }
+                else
+                {
+                    ImGui::SetTooltip("Pick a preset for whatever plays on this device (speech, music genre, "
+                                      "film) - see Auto-detect below");
+                }
+            }
         }
         DrawPresetControls();
         EndNestedChild();
@@ -1091,14 +1127,10 @@ void App::DrawEqTab()
         // the same reason as CardWidth above - fill-available reads the
         // window's live (possibly stale) content region instead of the
         // fixed per-tab width every other row in this tab is flush to.
-        // Height is one text line plus the card padding, so the row's text
-        // isn't clipped.
-        BeginNestedChild("genre_row", ImVec2(TabContentWidth, ImGui::GetTextLineHeight() + 2.0f * CardPad));
-        ImGui::BeginDisabled(true);
-        ImGui::TextUnformatted("Genre auto-detect (music / jazz / rock / movie / game)");
-        ImGui::SameLine();
-        ImGui::TextColored(palette::TextMutedV4, "Coming soon");
-        ImGui::EndDisabled();
+        // Height comes from AutoDetectCardHeight: one row collapsed, the
+        // device row and class table expanded.
+        BeginNestedChild("auto_detect_card", ImVec2(TabContentWidth, AutoDetectCardHeight(CardPad)));
+        DrawAutoDetectCard();
         EndNestedChild();
     }
 
@@ -1223,6 +1255,7 @@ void App::DrawAppPresetCard()
         std::string MediaName;
         std::string BoundPreset;
         bool bPlaying = false;
+        bool bAutoDetect = false;
     };
     std::vector<AppEntry> Apps;
     for (const ContentStreamInfo& Stream : ContentStreams)
@@ -1230,7 +1263,8 @@ void App::DrawAppPresetCard()
         auto It = std::find_if(Apps.begin(), Apps.end(), [&](const AppEntry& E) { return E.Name == Stream.AppName; });
         if (It == Apps.end())
         {
-            Apps.push_back({Stream.AppName, Stream.MediaName, Stream.BoundPresetName, Stream.bPlaying});
+            Apps.push_back(
+                {Stream.AppName, Stream.MediaName, Stream.BoundPresetName, Stream.bPlaying, Stream.bAutoDetect});
         }
         else if (Stream.bPlaying && !It->bPlaying)
         {
@@ -1301,22 +1335,41 @@ void App::DrawAppPresetCard()
     // leaving the app to whatever the device / manual choice is.
     ImGui::BeginDisabled(!Selected);
     ImGui::SetNextItemWidth(-1);
-    const char* Preview = Selected && !Selected->BoundPreset.empty() ? Selected->BoundPreset.c_str() : "(none)";
+    const bool bSelectedAuto = Selected && Selected->bAutoDetect;
+    const bool bAutoUnavailable = !IsAutoDetectUsable();
+    const char* Preview = bSelectedAuto                                 ? "Auto-detect (AI)"
+                          : Selected && !Selected->BoundPreset.empty() ? Selected->BoundPreset.c_str()
+                                                                         : "(none)";
     if (ImGui::BeginCombo("##app_preset_select", Preview, ImGuiComboFlags_HeightLarge))
     {
         std::optional<std::string> Choice;
-        if (ImGui::Selectable("(none)", Selected && Selected->BoundPreset.empty()))
+        bool bChoseAuto = false;
+        if (ImGui::Selectable("(none)", Selected && !bSelectedAuto && Selected->BoundPreset.empty()))
         {
             Choice = std::string();
         }
-        if (auto Picked = DrawPresetSelectables(Selected ? Selected->BoundPreset : std::string()))
+        // Above the presets: picks a preset by what's playing.
+        ImGui::BeginDisabled(bAutoUnavailable && !bSelectedAuto);
+        if (ImGui::Selectable("Auto-detect (AI)", bSelectedAuto))
+        {
+            bChoseAuto = true;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip("%s", bAutoUnavailable ? AutoDetectUnavailableReason()
+                                                     : "Listens to what this app plays and picks a preset for it "
+                                                       "(speech, music genre, film)");
+        }
+        if (auto Picked = DrawPresetSelectables(Selected && !bSelectedAuto ? Selected->BoundPreset : std::string()))
         {
             Choice = std::move(Picked);
         }
         ImGui::EndCombo();
-        if (Choice && Selected && Apply(Client.BindAppPreset(Selected->Name, *Choice)))
+        if (Selected && (Choice || bChoseAuto) &&
+            Apply(bChoseAuto ? Client.BindAppAutoDetect(Selected->Name) : Client.BindAppPreset(Selected->Name, *Choice)))
         {
-            RefreshContentStreams(); // pick up the new BoundPresetName right away
+            RefreshContentStreams(); // pick up the new binding right away
         }
     }
     ImGui::EndDisabled();
@@ -1327,9 +1380,28 @@ void App::DrawAppPresetCard()
     {
         ImGui::TextColored(palette::TextMutedV4, "Play something to bind it");
     }
+    else if (Selected->bAutoDetect && !IsAutoDetectUsable())
+    {
+        ImGui::TextColored(palette::WarningV4, "Auto-detect unavailable");
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("%s", AutoDetectUnavailableReason());
+        }
+    }
     else if (LastStatus.PresetSource == EqPresetSource::App && LastStatus.PresetSourceApp == Selected->Name)
     {
-        ImGui::TextColored(palette::SuccessV4, "Active now");
+        if (Selected->bAutoDetect && LastStatus.bAutoDetectActive)
+        {
+            ImGui::TextColored(palette::SuccessV4, "Active now - %s", AutoDetectSummary().c_str());
+        }
+        else
+        {
+            ImGui::TextColored(palette::SuccessV4, "Active now");
+        }
+    }
+    else if (Selected->bAutoDetect)
+    {
+        ImGui::TextColored(palette::TextMutedV4, "Detects what it plays");
     }
     else if (!Selected->BoundPreset.empty())
     {
@@ -1338,6 +1410,246 @@ void App::DrawAppPresetCard()
     else
     {
         ImGui::TextColored(palette::TextMutedV4, "Follows device / manual");
+    }
+}
+
+std::string App::AutoDetectSummary() const
+{
+    if (LastStatus.bDetectionHeld)
+    {
+        return "paused (EQ changed by hand)";
+    }
+    if (LastStatus.Detected == DetectedClass::None)
+    {
+        return "listening...";
+    }
+    char Text[64];
+    std::snprintf(Text, sizeof(Text), "%s %u%%", DetectedClassLabel(LastStatus.Detected),
+                  static_cast<unsigned>(LastStatus.DetectedConfidence));
+    return Text;
+}
+
+bool App::IsAutoDetectUsable() const
+{
+    return LastStatus.bHasAutoDetect && !bDetectedClassesUnsupported &&
+           LastStatus.AutoDetect == AutoDetectAvailability::Ok;
+}
+
+const char* App::AutoDetectUnavailableReason() const
+{
+    // A daemon from before Auto-detect sends no Auto-detect status and
+    // refuses its requests.
+    return !LastStatus.bHasAutoDetect || bDetectedClassesUnsupported
+               ? "Restart the RamkolFX daemon to enable Auto-detect"
+               : AutoDetectAvailabilityLabel(LastStatus.AutoDetect);
+}
+
+void App::RefreshAutoDetectReport()
+{
+    if (auto Result = Client.RequestDetectedClasses())
+    {
+        AutoDetectReport = std::move(*Result);
+        bHaveAutoDetectReport = true;
+        ReportTableRevision = LastStatus.DetectedTableRevision;
+        ReportCatalogRevision = LastStatus.PresetCatalogRevision;
+        AutoDetectReportTimerSeconds = 1.0f; // live scores
+    }
+    else if (Client.IsConnected())
+    {
+        // Refused: a daemon that predates the request. Stop asking until
+        // the next reconnect rather than dropping the connection.
+        bDetectedClassesUnsupported = true;
+    }
+    else
+    {
+        MarkDisconnected();
+    }
+}
+
+namespace
+{
+// The class table is drawn three classes per row: the window has a fixed
+// height (see main.cpp), and the Equalizer tab is already tall.
+constexpr size_t AutoDetectTableColumns = 3;
+constexpr size_t AutoDetectTableRows = (DetectedClassCount - 1 + AutoDetectTableColumns - 1) / AutoDetectTableColumns;
+} // namespace
+
+float App::AutoDetectCardHeight(float CardPad) const
+{
+    const float Row = ImGui::GetFrameHeight();
+    const float Spacing = ImGui::GetStyle().ItemSpacing.y;
+    float Height = 2.0f * CardPad + Row; // header
+    if (bAutoDetectExpanded)
+    {
+        // "Run detection on" row, then the table.
+        Height += (1 + AutoDetectTableRows) * (Spacing + Row) + Spacing;
+    }
+    return Height;
+}
+
+void App::DrawAutoDetectCard()
+{
+    const ImVec2 RowStart = ImGui::GetCursorScreenPos();
+    const float RowWidth = ImGui::GetContentRegionAvail().x;
+    const bool bUnavailable = !IsAutoDetectUsable();
+
+    // Header: expand arrow, title, and what detection is doing right now.
+    if (ImGui::ArrowButton("##auto_detect_expand", bAutoDetectExpanded ? ImGuiDir_Down : ImGuiDir_Right))
+    {
+        bAutoDetectExpanded = !bAutoDetectExpanded;
+        bHaveAutoDetectReport = false; // fetch fresh on expand
+    }
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Auto-detect (AI)");
+    {
+        std::string State;
+        ImVec4 Color = palette::TextMutedV4;
+        if (bUnavailable)
+        {
+            State = "Unavailable";
+            Color = palette::WarningV4;
+        }
+        else if (LastStatus.bAutoDetectActive)
+        {
+            State = (LastStatus.PresetSource == EqPresetSource::App ? LastStatus.PresetSourceApp : std::string("device")) +
+                    ": " + AutoDetectSummary();
+            Color = LastStatus.bDetectionHeld ? palette::TextMutedV4 : palette::AccentSolidV4;
+        }
+        else
+        {
+            State = "Bind an app or device to Auto-detect to use it";
+        }
+        ImGui::SameLine();
+        RightAlignCursor(RowStart.x, RowWidth, ImGui::CalcTextSize(State.c_str()).x);
+        ImGui::TextColored(Color, "%s", State.c_str());
+        if (bUnavailable && ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("%s", AutoDetectUnavailableReason());
+        }
+    }
+    if (!bAutoDetectExpanded)
+    {
+        return;
+    }
+
+    AutoDetectReportTimerSeconds -= ImGui::GetIO().DeltaTime;
+    if (bConnected && LastStatus.bHasAutoDetect && !bDetectedClassesUnsupported &&
+        (!bHaveAutoDetectReport || AutoDetectReportTimerSeconds <= 0.0f ||
+                       ReportTableRevision != LastStatus.DetectedTableRevision ||
+                       ReportCatalogRevision != LastStatus.PresetCatalogRevision))
+    {
+        RefreshAutoDetectReport();
+    }
+
+    // Where it runs. GPU only when asked for: for a model this small, the
+    // transfer and wake-up overhead costs more than it saves.
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Run detection on");
+    ImGui::SameLine();
+    static const char* DeviceLabels[] = {"Auto (NPU, else CPU)", "CPU", "GPU", "NPU"};
+    const auto DeviceIndex = static_cast<size_t>(LastStatus.AutoDetectDevice);
+    const bool bDaemonKnowsAutoDetect = LastStatus.bHasAutoDetect && !bDetectedClassesUnsupported;
+    ImGui::BeginDisabled(!bDaemonKnowsAutoDetect);
+    ImGui::SetNextItemWidth(170.0f * DpiScale);
+    if (ImGui::BeginCombo("##auto_detect_device",
+                          DeviceIndex < std::size(DeviceLabels) ? DeviceLabels[DeviceIndex] : "?"))
+    {
+        for (size_t i = 0; i < std::size(DeviceLabels); ++i)
+        {
+            if (ImGui::Selectable(DeviceLabels[i], i == DeviceIndex))
+            {
+                Apply(Client.SetAutoDetectDevice(static_cast<InferenceDevice>(i)));
+            }
+            if (i == static_cast<size_t>(InferenceDevice::Gpu) && ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Rarely worth it: the model is tiny, and keeping a GPU awake for it costs "
+                                  "more power than running it on the CPU");
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (bUnavailable)
+    {
+        ImGui::TextColored(palette::WarningV4, "%s", AutoDetectUnavailableReason());
+    }
+    else if (!LastStatus.InferenceDeviceLabel.empty() && AutoDetectReport.Runs > 0)
+    {
+        ImGui::TextColored(palette::TextMutedV4, "%s - %.2f%% of a core - %.1f ms per run",
+                           LastStatus.InferenceDeviceLabel.c_str(),
+                           static_cast<double>(AutoDetectReport.DutyCycle) * 100.0,
+                           static_cast<double>(AutoDetectReport.P50Us) / 1000.0);
+    }
+    else
+    {
+        ImGui::TextColored(palette::TextMutedV4, "%s",
+                           LastStatus.InferenceDeviceLabel.empty() ? "Loads when first needed"
+                                                                   : LastStatus.InferenceDeviceLabel.c_str());
+    }
+
+    // Class -> preset table, AutoDetectTableColumns per row: name, preset, live score.
+    const float Row = ImGui::GetFrameHeight();
+    const ImGuiStyle& Style = ImGui::GetStyle();
+    const ImVec2 TableStart(RowStart.x, ImGui::GetCursorScreenPos().y + Style.ItemSpacing.y);
+    const float ColumnGap = 2.0f * Style.ItemSpacing.x;
+    const float ColumnWidth = (RowWidth - ColumnGap * (AutoDetectTableColumns - 1)) / AutoDetectTableColumns;
+    const float LabelWidth = ImGui::CalcTextSize("Electronic").x + Style.ItemSpacing.x;
+    const float BarWidth = 44.0f * DpiScale;
+    const float ComboWidth = ColumnWidth - LabelWidth - BarWidth - Style.ItemSpacing.x;
+    bool bTableChanged = false;
+    for (size_t i = 0; i < AutoDetectReport.Classes.size(); ++i)
+    {
+        const DetectedClassEntry Entry = AutoDetectReport.Classes[i]; // copy: a pick re-fetches the report
+        const float X = TableStart.x + static_cast<float>(i % AutoDetectTableColumns) * (ColumnWidth + ColumnGap);
+        const float Y = TableStart.y + static_cast<float>(i / AutoDetectTableColumns) * (Row + Style.ItemSpacing.y);
+        ImGui::PushID(static_cast<int>(Entry.Class));
+
+        ImGui::SetCursorScreenPos(ImVec2(X, Y + Style.FramePadding.y));
+        const bool bDetectedNow = LastStatus.bAutoDetectActive && LastStatus.Detected == Entry.Class;
+        ImGui::TextColored(bDetectedNow ? palette::AccentSolidV4 : palette::TextSecondaryV4, "%s",
+                           DetectedClassLabel(Entry.Class));
+
+        ImGui::SetCursorScreenPos(ImVec2(X + LabelWidth, Y));
+        ImGui::SetNextItemWidth(ComboWidth);
+        if (ImGui::BeginCombo("##class_preset", Entry.PresetName.empty() ? "No switch" : Entry.PresetName.c_str(),
+                              ImGuiComboFlags_HeightLarge))
+        {
+            std::optional<std::string> Choice;
+            if (ImGui::Selectable("No switch", Entry.PresetName.empty()))
+            {
+                Choice = std::string();
+            }
+            if (auto Picked = DrawPresetSelectables(Entry.PresetName))
+            {
+                Choice = std::move(Picked);
+            }
+            ImGui::EndCombo();
+            if (Choice && *Choice != Entry.PresetName && Apply(Client.BindDetectedClass(Entry.Class, *Choice)))
+            {
+                bTableChanged = true;
+            }
+        }
+        if (ImGui::IsItemHovered())
+        {
+            const std::string Default = Entry.DefaultPresetName.empty() ? "No switch" : Entry.DefaultPresetName;
+            ImGui::SetTooltip(Entry.PresetName == Entry.DefaultPresetName ? "%s (the default)" : "Default: %s",
+                              Default.c_str());
+        }
+
+        // Live smoothed score while an Auto-detect binding is in effect.
+        ImGui::SetCursorScreenPos(ImVec2(X + ColumnWidth - BarWidth, Y + Row * 0.3f));
+        ImGui::ProgressBar(Entry.Score, ImVec2(BarWidth, Row * 0.4f), "");
+
+        ImGui::PopID();
+    }
+    ImGui::SetCursorScreenPos(
+        ImVec2(TableStart.x, TableStart.y + static_cast<float>(AutoDetectTableRows) * (Row + Style.ItemSpacing.y)));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    if (bTableChanged)
+    {
+        RefreshAutoDetectReport();
     }
 }
 
@@ -1455,6 +1767,11 @@ void App::DrawPresetControls()
     {
         ImGui::SameLine();
         ImGui::TextColored(palette::TextMutedV4, "- auto (%s)", LastStatus.PresetSourceApp.c_str());
+    }
+    if (LastStatus.bAutoDetectActive)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(palette::AccentSolidV4, "AI: %s", AutoDetectSummary().c_str());
     }
 
     if (ImGui::BeginPopupModal("Save EQ preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
