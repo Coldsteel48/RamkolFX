@@ -7,6 +7,27 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-20
+
+### Fixed
+
+- Auto-detect never worked from the 0.2.0 packages: they didn't pull in
+  ONNX Runtime, and on Debian the daemon didn't find it even when it was
+  installed (Debian ships only `libonnxruntime.so.1.21`).
+  - **Dependencies now:**
+    - Arch: `onnxruntime` (any of `onnxruntime-cpu` / `-cuda` / `-rocm`).
+    - Debian: `libonnxruntime1.21`.
+    - Fedora: `onnxruntime`.
+    - Alpine: `onnxruntime`.
+    - Nix: the flake links its own copy.
+  - **Lookup:** the daemon finds versioned library names as well.
+  - **Gentoo:** ::gentoo has no ONNX Runtime, so it stays a manual install.
+
+### Changed
+
+- The Alpine package is built on Alpine 3.23, the first release that
+  ships `onnxruntime`.
+
 ## [0.2.0] - 2026-11-20
 
 ### Added
@@ -113,7 +134,8 @@ First release. Feature set at this point:
   a Unix control socket.
 - Packages: Debian, RPM, Arch, Alpine, Gentoo ebuild, Nix flake.
 
-[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Coldsteel48/RamkolFX/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Coldsteel48/RamkolFX/compare/v0.1.1...v0.1.2
