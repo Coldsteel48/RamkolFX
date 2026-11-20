@@ -83,6 +83,13 @@ sync() {
             > packaging/rpm/ramkolfx.spec.new
         mv packaging/rpm/ramkolfx.spec.new packaging/rpm/ramkolfx.spec
     fi
+    # AppStream: newest release first; alpha/beta/rc marked as development.
+    local metainfo=packaging/common/io.github.coldsteel48.RamkolFX.metainfo.xml
+    if ! grep -qF "<release version=\"$V\"" "$metainfo"; then
+        local type=""
+        [[ -n $STAGE ]] && type=' type="development"'
+        sed -i "s|^\(  *\)<releases>\$|&\n\1  <release version=\"$V\" date=\"$(date +%F)\"$type/>|" "$metainfo"
+    fi
 }
 
 # semver_key 0.1.0-rc.2 -> "0 1 0 3 2": stage alpha=1 beta=2 rc=3, final=4.

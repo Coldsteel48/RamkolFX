@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RamkolFX AppStream metadata: how software centres (GNOME Software, KDE
+     Discover) and distro tooling list the app. Releases are added by
+     packaging/version.sh sync; check with `appstreamcli validate`. -->
+<component type="desktop-application">
+  <id>io.github.coldsteel48.RamkolFX</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>RamkolFX</name>
+  <summary>3D spatial audio, EQ and bass enhancer for PipeWire</summary>
+  <developer id="io.github.coldsteel48">
+    <name>Roman Levin</name>
+  </developer>
+  <description>
+    <p>
+      RamkolFX adds a virtual output device to PipeWire. Whatever you play
+      into it is processed and sent on to your real headphones or speakers.
+    </p>
+    <ul>
+      <li>HRTF binaural rendering of 7.1 sound for headphones, with a choice
+        of measured heads from public HRTF databases, or your own SOFA files</li>
+      <li>Ambisonics speaker virtualisation, with movable virtual speakers</li>
+      <li>A 10-band graphic EQ with presets, bound per output device or app</li>
+      <li>Auto-detect, which picks an EQ preset from what is playing</li>
+      <li>A psychoacoustic bass enhancer</li>
+    </ul>
+    <p>
+      The processing runs in a small user daemon, ramkolfxd; this app
+      controls it and can live in the system tray.
+    </p>
+  </description>
+  <launchable type="desktop-id">ramkolfx.desktop</launchable>
+  <provides>
+    <binary>ramkolfx-gui</binary>
+    <binary>ramkolfxd</binary>
+  </provides>
+  <url type="homepage">https://github.com/Coldsteel48/RamkolFX</url>
+  <url type="bugtracker">https://github.com/Coldsteel48/RamkolFX/issues</url>
+  <url type="vcs-browser">https://github.com/Coldsteel48/RamkolFX</url>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+  </categories>
+  <keywords>
+    <keyword>equalizer</keyword>
+    <keyword>spatial audio</keyword>
+    <keyword>HRTF</keyword>
+    <keyword>surround</keyword>
+    <keyword>PipeWire</keyword>
+  </keywords>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Spatial audio and virtual speaker placement</caption>
+      <image>https://raw.githubusercontent.com/Coldsteel48/RamkolFX/master/docs/screenshots/spatial-audio-speakers.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Graphic EQ and bass enhancer</caption>
+      <image>https://raw.githubusercontent.com/Coldsteel48/RamkolFX/master/docs/screenshots/equalizer-bass.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="0.2.2" date="2026-11-20"/>
+    <release version="0.2.1" date="2026-11-20"/>
+    <release version="0.2.0" date="2026-11-20"/>
+    <release version="0.1.3" date="2026-11-20"/>
+    <release version="0.1.2" date="2026-11-20"/>
+    <release version="0.1.1" date="2026-11-19"/>
+    <release version="0.1.0" date="2026-11-18"/>
+  </releases>
+</component>

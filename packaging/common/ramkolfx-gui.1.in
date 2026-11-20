@@ -1,0 +1,47 @@
+.\" RamkolFX - GPL-3.0-only (or a separate commercial license); see LICENSE.
+.TH RAMKOLFX\-GUI 1 "" "RamkolFX @RAMKOLFX_VERSION_FULL@" "User Commands"
+.SH NAME
+ramkolfx\-gui \- control app for the RamkolFX spatial audio daemon
+.SH SYNOPSIS
+.B ramkolfx\-gui
+.RB [ \-\-minimized ]
+.br
+.B ramkolfx\-gui
+.RB \-V | \-\-version
+.SH DESCRIPTION
+.B ramkolfx\-gui
+controls a running
+.BR ramkolfxd (1):
+spatial mode and HRTF, speaker positions, the graphic EQ and its presets,
+Auto\-detect and the bass enhancer.
+It talks to the daemon only over its control socket and needs no PipeWire
+access of its own.
+.PP
+Only one instance runs per user; starting it again brings the running
+window forward.
+It can sit in the system tray (StatusNotifierItem) and start on login.
+.SH OPTIONS
+.TP
+.B \-\-minimized
+Start in the background: hidden in the tray if a tray option is enabled
+and a tray is available, otherwise minimized.
+The login autostart entry uses this.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH ENVIRONMENT
+.TP
+.B RAMKOLFX_GUI_SCALE
+UI scale factor, from 0.5 to 4.0, overriding the display DPI guess.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/ramkolfx/gui_prefs.conf
+GUI preferences.
+.I $XDG_CONFIG_HOME
+defaults to
+.IR ~/.config .
+.SH SEE ALSO
+.BR ramkolfxd (1)
+.PP
+.UR https://github.com/Coldsteel48/RamkolFX
+.UE

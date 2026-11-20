@@ -1,0 +1,92 @@
+.\" RamkolFX - GPL-3.0-only (or a separate commercial license); see LICENSE.
+.TH RAMKOLFXD 1 "" "RamkolFX @RAMKOLFX_VERSION_FULL@" "User Commands"
+.SH NAME
+ramkolfxd \- 3D spatial audio, EQ and bass enhancer daemon for PipeWire
+.SH SYNOPSIS
+.B ramkolfxd
+.RB [ \-V | \-\-version ]
+.SH DESCRIPTION
+.B ramkolfxd
+creates a virtual PipeWire sink named
+.BR ramkolfx_virtual_sink ,
+processes whatever is played into it and plays the result out through a
+real output device.
+Processing consists of HRTF binaural rendering or ambisonics speaker
+virtualisation, a 10\-band graphic EQ and a psychoacoustic bass enhancer.
+.PP
+The daemon runs in the user's session, normally as a systemd user service:
+.PP
+.RS
+.B systemctl \-\-user enable \-\-now ramkolfxd
+.RE
+.PP
+It is controlled over a Unix socket, usually with
+.BR ramkolfx\-gui (1).
+Only one instance runs per user.
+.PP
+Auto\-detect, which picks an EQ preset from what is playing, needs ONNX
+Runtime 1.17 or newer.
+Without it, Auto\-detect is reported as unavailable and everything else works.
+.SH OPTIONS
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH ENVIRONMENT
+.TP
+.B RAMKOLFX_HRTF_DIR
+An extra directory to search for
+.I .sofa
+HRTF files, in addition to
+.IR $XDG_CONFIG_HOME/ramkolfx/hrtf .
+.TP
+.B RAMKOLFX_HRTF_SOFA
+Load this
+.I .sofa
+file as the HRTF, ignoring the saved choice.
+.TP
+.B RAMKOLFX_MODEL_DIR
+Directory holding the Auto\-detect model
+.RI ( audio_classifier.onnx ),
+instead of
+.IR @RAMKOLFX_MODEL_DATA_DIR@ .
+.TP
+.B RAMKOLFX_ORT_LIB
+Full path of the ONNX Runtime library to load, instead of searching
+.B LD_LIBRARY_PATH
+and the usual library directories.
+.TP
+.B RAMKOLFX_DETECT_DUMP
+For debugging Auto\-detect: write the audio it classifies, as WAV files,
+to this directory.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/ramkolfx/settings.conf
+Saved settings.
+.TP
+.I $XDG_CONFIG_HOME/ramkolfx/presets.conf
+EQ presets and which output devices and apps they are bound to.
+.TP
+.I $XDG_CONFIG_HOME/ramkolfx/hrtf/
+Your own
+.I .sofa
+HRTF files; they appear in the HRTF list next to the bundled ones.
+.TP
+.I @RAMKOLFX_HRTF_DATA_DIR@/
+The bundled HRTFs.
+.TP
+.I @RAMKOLFX_MODEL_DATA_DIR@/
+The bundled Auto\-detect model.
+.TP
+.I $XDG_RUNTIME_DIR/ramkolfx/control.sock
+The control socket.
+.PP
+.I $XDG_CONFIG_HOME
+defaults to
+.IR ~/.config .
+.SH SEE ALSO
+.BR ramkolfx\-gui (1),
+.BR pipewire (1),
+.BR systemctl (1)
+.PP
+.UR https://github.com/Coldsteel48/RamkolFX
+.UE
