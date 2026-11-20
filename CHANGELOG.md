@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-20
+
 ### Changed
 
 - **Auto-detect recognises films.** Gunfire, engines, impacts and
@@ -241,7 +243,8 @@ First release. Feature set at this point:
   a Unix control socket.
 - Packages: Debian, RPM, Arch, Alpine, Gentoo ebuild, Nix flake.
 
-[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Coldsteel48/RamkolFX/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/Coldsteel48/RamkolFX/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Coldsteel48/RamkolFX/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Coldsteel48/RamkolFX/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Coldsteel48/RamkolFX/compare/v0.2.1...v0.2.2

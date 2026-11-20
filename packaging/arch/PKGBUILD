@@ -1,8 +1,8 @@
 # Maintainer: Roman Levin (Coldsteel48)
 pkgname=ramkolfx
 # _semver / pkgver are maintained by packaging/version.sh from ../../VERSION.
-_semver=0.4.0
-pkgver=0.4.0
+_semver=0.4.1
+pkgver=0.4.1
 pkgrel=1
 pkgdesc='3D spatial audio (HRTF binaural / ambisonics), EQ and bass enhancer for PipeWire'
 arch=('x86_64' 'aarch64')

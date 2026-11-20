@@ -26,7 +26,7 @@
           ortLib = "${pkgs.lib.getLib pkgs.onnxruntime}/lib/libonnxruntime.so";
           ramkolfx = pkgs.stdenv.mkDerivation {
             pname = "ramkolfx";
-            version = "0.4.0";
+            version = "0.4.1";
             src = pkgs.lib.cleanSourceWith {
               src = ./.;
               filter = path: type:
