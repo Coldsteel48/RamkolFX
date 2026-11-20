@@ -4,7 +4,7 @@ Name:           ramkolfx
 # upstream_version / Version / Release are maintained by packaging/version.sh
 %global upstream_version 0.2.2
 Version:        0.2.2
-Release:        1
+Release:        1%{?dist}
 Summary:        3D spatial audio, EQ and bass enhancer for PipeWire
 License:        GPL-3.0-only
 URL:            https://github.com/Coldsteel48/RamkolFX
@@ -25,6 +25,7 @@ BuildRequires:  pkgconfig(gl)
 BuildRequires:  zlib-devel
 # Auto-detect's classifier; dlopened, so not found by the automatic deps.
 Requires:       onnxruntime
+Requires:       hicolor-icon-theme
 Recommends:     pipewire
 Recommends:     wireplumber
 

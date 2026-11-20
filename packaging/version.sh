@@ -55,7 +55,7 @@ sync() {
     sed -i -E "s/^_semver=.*/_semver=$V/; s/^pkgver=.*/pkgver=$UNDERSCORE/; s/^SKIP  RamkolFX-.*\.tar\.gz/SKIP  RamkolFX-$V.tar.gz/" \
         packaging/alpine/APKBUILD
     # RPM
-    sed -i -E "s/^%global upstream_version .*/%global upstream_version $V/; s/^Version:( +).*/Version:\1$BASE/; s/^Release:( +).*/Release:\1$RPM_REL/" \
+    sed -i -E "s/^%global upstream_version .*/%global upstream_version $V/; s/^Version:( +).*/Version:\1$BASE/; s/^Release:( +).*/Release:\1$RPM_REL%{?dist}/" \
         packaging/rpm/ramkolfx.spec
     # Nix
     sed -i -E "s/^( +version = \")[^\"]*(\";)/\1$V\2/" flake.nix

@@ -10,7 +10,7 @@ url='https://github.com/Coldsteel48/RamkolFX'
 license=('GPL-3.0-only')
 # onnxruntime (onnxruntime-cpu, -cuda or -rocm) runs Auto-detect; it is
 # dlopened, so namcap may call it unused.
-depends=('pipewire' 'sdl2' 'fontconfig' 'zlib' 'libgl' 'dbus' 'onnxruntime')
+depends=('pipewire' 'sdl2' 'fontconfig' 'zlib' 'libgl' 'dbus' 'hicolor-icon-theme' 'onnxruntime')
 makedepends=('cmake' 'ninja' 'libx11')
 options=('!debug')
 source=("RamkolFX-$_semver.tar.gz::$url/archive/v$_semver.tar.gz"

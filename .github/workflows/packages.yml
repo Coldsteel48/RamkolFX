@@ -93,3 +93,50 @@ jobs:
           gh release create "$GITHUB_REF_NAME" artifacts/* $pre \
             --title "RamkolFX $GITHUB_REF_NAME" --generate-notes \
             || gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
+
+  # Stable releases only (no "-" in the tag), so AUR and COPR users are never
+  # offered an alpha/beta/rc. Each job skips itself, with a notice, until its
+  # secret is added; see packaging/PUBLISHING.md.
+  aur:
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push PKGBUILD to the AUR
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::notice::AUR_SSH_PRIVATE_KEY is not set; skipping the AUR update"
+            exit 0
+          fi
+          docker run --rm -e AUR_SSH_PRIVATE_KEY -v "$PWD":/src -w /src archlinux:latest \
+            sh packaging/ci/push-aur.sh
+
+  copr:
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+      COPR_PROJECT: ${{ vars.COPR_PROJECT || 'ramkolfx' }}
+    steps:
+      - name: Build the tag in COPR
+        run: |
+          if [ -z "$COPR_CONFIG" ]; then
+            echo "::notice::COPR_CONFIG is not set; skipping the COPR build"
+            exit 0
+          fi
+          pipx install copr-cli
+          mkdir -p ~/.config
+          printf '%s\n' "$COPR_CONFIG" > ~/.config/copr
+          # COPR clones the tag and runs .copr/Makefile to make the SRPM, then
+          # builds it for every chroot enabled in the project. Waits so a
+          # failed build shows up here.
+          copr-cli buildscm "$COPR_PROJECT" \
+            --clone-url "https://github.com/$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_REF_NAME" \
+            --method make_srpm \
+            --spec packaging/rpm/ramkolfx.spec
