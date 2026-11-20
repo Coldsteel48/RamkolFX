@@ -211,7 +211,6 @@ private:
     // Status::DetectedTableRevision or PresetCatalogRevision moves.
     DetectionReport AutoDetectReport;
     bool bHaveAutoDetectReport = false;
-    bool bAutoDetectExpanded = false;
     float AutoDetectReportTimerSeconds = 0.0f;
     uint32 ReportTableRevision = 0;
     uint32 ReportCatalogRevision = 0;
@@ -230,6 +229,12 @@ private:
     // Height the Auto-detect card needs (collapsed or expanded).
     float AutoDetectCardHeight(float CardPad) const;
     void DrawAutoDetectCard();
+    // The timing sliders row (check every, switch after, ...).
+    void DrawAutoDetectTimingRow(float RowStartX, float RowWidth);
+    // While a timing slider is dragged: the values shown, sent to the
+    // daemon on release (a send per frame would log and save each step).
+    AutoDetectTiming EditedTiming;
+    bool bEditingTiming = false;
     // What Auto-detect is doing for the binding in effect: "Jazz 82%",
     // "listening...", "paused (EQ changed by hand)".
     std::string AutoDetectSummary() const;

@@ -405,6 +405,13 @@ void Resampler::Process(std::span<const float> In, std::span<float> Out) const
     }
 }
 
+void InferenceScheduler::SetTuning(const SchedulerTuning& InTuning)
+{
+    Tuning = InTuning;
+    OverBudgetRuns = 0;
+    bGaveUp = false;
+}
+
 void InferenceScheduler::Reset()
 {
     *this = InferenceScheduler(Tuning);
@@ -449,6 +456,30 @@ int64_t InferenceScheduler::PercentileUs(float Fraction) const
     std::nth_element(Sorted.begin(), Sorted.begin() + static_cast<ptrdiff_t>(Index),
                      Sorted.begin() + static_cast<ptrdiff_t>(Count));
     return Sorted[Index];
+}
+
+DetectionTuning DetectionTuningFor(const AutoDetectTiming& InTiming)
+{
+    const AutoDetectTiming Timing = ClampAutoDetectTiming(InTiming);
+    DetectionTuning Out;
+    Out.ConfirmMs = Timing.SwitchAfterMs;
+    Out.EmaTauMs = std::max<int64_t>(250, Timing.SwitchAfterMs * 3 / 4);
+    Out.MinDwellMs = Timing.KeepAtLeastMs;
+    // 15 s at the default 4 s: the first windows after a gap, plus the
+    // confirm time.
+    Out.BoundaryWindowMs = static_cast<int64_t>(Timing.SwitchAfterMs) + 11000;
+    return Out;
+}
+
+SchedulerTuning SchedulerTuningFor(const AutoDetectTiming& InTiming)
+{
+    const AutoDetectTiming Timing = ClampAutoDetectTiming(InTiming);
+    SchedulerTuning Out;
+    Out.FastIntervalMs = Timing.CheckEveryMs;
+    Out.SlowIntervalMs = 3 * static_cast<int64_t>(Timing.CheckEveryMs);
+    Out.MaxIntervalMs = std::max<int64_t>(15000, Out.SlowIntervalMs);
+    Out.MaxDutyCycle = Timing.CpuLimitPercent / 100.0f;
+    return Out;
 }
 
 } // namespace ramkolfx

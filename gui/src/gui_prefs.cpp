@@ -44,6 +44,7 @@ GuiPreferences LoadGuiPreferences()
     Result.bShowChannelActivity = File->GetBool("show_channel_activity", Result.bShowChannelActivity);
     Result.bAdvancedEqMode = File->GetBool("advanced_eq_mode", Result.bAdvancedEqMode);
     Result.bAdvancedBassMode = File->GetBool("advanced_bass_mode", Result.bAdvancedBassMode);
+    Result.bAutoDetectExpanded = File->GetBool("auto_detect_expanded", Result.bAutoDetectExpanded);
     Result.ActiveTabIndex = File->GetLong("active_tab_index", Result.ActiveTabIndex) == 1 ? 1 : 0;
     Result.bMinimizeToTrayOnClose = File->GetBool("minimize_to_tray_on_close", Result.bMinimizeToTrayOnClose);
     Result.bMinimizeToTrayOnMinimize =
@@ -60,6 +61,7 @@ void SaveGuiPreferences(const GuiPreferences& InPreferences)
     Out << "show_channel_activity=" << (InPreferences.bShowChannelActivity ? 1 : 0) << "\n";
     Out << "advanced_eq_mode=" << (InPreferences.bAdvancedEqMode ? 1 : 0) << "\n";
     Out << "advanced_bass_mode=" << (InPreferences.bAdvancedBassMode ? 1 : 0) << "\n";
+    Out << "auto_detect_expanded=" << (InPreferences.bAutoDetectExpanded ? 1 : 0) << "\n";
     Out << "active_tab_index=" << InPreferences.ActiveTabIndex << "\n";
     Out << "minimize_to_tray_on_close=" << (InPreferences.bMinimizeToTrayOnClose ? 1 : 0) << "\n";
     Out << "minimize_to_tray_on_minimize=" << (InPreferences.bMinimizeToTrayOnMinimize ? 1 : 0) << "\n";

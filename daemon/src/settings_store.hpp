@@ -72,6 +72,8 @@ struct PersistedSettings
 
     // Where Auto-detect's classifier runs (SetAutoDetectDevice).
     InferenceDevice AutoDetectDevice = InferenceDevice::Auto;
+    // How quickly Auto-detect reacts (SetAutoDetectTiming), clamped.
+    AutoDetectTiming DetectTiming;
 };
 
 // The per-device spatial mode rule, on switching to Device: a remembered

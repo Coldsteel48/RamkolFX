@@ -11,6 +11,8 @@
 
 #include <string>
 
+#include <cmath>
+
 #include "ramkolfx/protocol.hpp"
 #include "test_harness.hpp"
 
@@ -102,16 +104,56 @@ TEST(StatusAutoDetectFields)
     CHECK(Out->Detected == DetectedClass::Jazz && Out->DetectedConfidence == 82);
     CHECK(Out->AutoDetectDevice == InferenceDevice::Npu && Out->InferenceDeviceLabel == "NPU (OpenVINO)");
     CHECK(Out->DetectedTableRevision == 7);
+    CHECK(Out->bHasAutoDetectTiming);
+
+    // A daemon from before the timing settings: Auto-detect, no timing.
+    const auto NoTiming =
+        DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectTimingWireSize));
+    REQUIRE(NoTiming);
+    CHECK(NoTiming->bHasAutoDetect && NoTiming->DetectedTableRevision == 7);
+    CHECK(!NoTiming->bHasAutoDetectTiming && NoTiming->DetectTiming == AutoDetectTiming{});
 
     // An older daemon's Status stops right after PresetSourceApp: still
     // decodes, with the defaults.
-    const size_t AutoDetectBytes = 7 + 2 + In.InferenceDeviceLabel.size() + 4;
+    const size_t AutoDetectBytes = 7 + 2 + In.InferenceDeviceLabel.size() + 4 + AutoDetectTimingWireSize;
     const auto Old = DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectBytes));
     REQUIRE(Old);
     CHECK(Old->PresetSource == EqPresetSource::Device && !Old->bAutoDetectActive && !Old->bHasAutoDetect);
     CHECK(Old->AutoDetect == AutoDetectAvailability::Ok);
     // But a partial block is malformed.
     CHECK(!DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectBytes + 3)));
+}
+
+TEST(StatusCarriesAutoDetectTiming)
+{
+    Status In;
+    In.DetectTiming = {750, 0, 30000, 2.5f};
+    const auto Message = EncodeStatusResponse(In);
+    const auto Out = DecodeStatusResponse(Payload(Message), PayloadLength(Message));
+    REQUIRE(Out);
+    CHECK(Out->bHasAutoDetectTiming && Out->DetectTiming == In.DetectTiming);
+}
+
+TEST(SetAutoDetectTimingRoundTrip)
+{
+    const AutoDetectTiming Timing{1500, 2500, 5000, 3.0f};
+    auto Message = EncodeSetAutoDetectTimingRequest(Timing);
+    const auto Command = DecodeCommand(Opcode::SetAutoDetectTiming, Payload(Message), PayloadLength(Message));
+    REQUIRE(Command);
+    CHECK(Command->Timing == Timing);
+    CHECK(!DecodeCommand(Opcode::SetAutoDetectTiming, Payload(Message), PayloadLength(Message) - 1));
+}
+
+TEST(AutoDetectTimingIsClampedIntoRange)
+{
+    CHECK(ClampAutoDetectTiming({}) == AutoDetectTiming{});
+    const AutoDetectTiming Low = ClampAutoDetectTiming({0, 0, 0, 0.0f});
+    CHECK(Low.CheckEveryMs == MinCheckEveryMs && Low.SwitchAfterMs == 0 && Low.KeepAtLeastMs == 0);
+    CHECK(Low.CpuLimitPercent == MinCpuLimitPercent);
+    const AutoDetectTiming High = ClampAutoDetectTiming({1u << 31, 1u << 31, 1u << 31, 1e9f});
+    CHECK(High.CheckEveryMs == MaxCheckEveryMs && High.SwitchAfterMs == MaxSwitchAfterMs);
+    CHECK(High.KeepAtLeastMs == MaxKeepAtLeastMs && High.CpuLimitPercent == MaxCpuLimitPercent);
+    CHECK(ClampAutoDetectTiming({2000, 4000, 10000, std::nanf("")}).CpuLimitPercent == 1.0f);
 }
 
 TEST(DetectedClassesRoundTrip)

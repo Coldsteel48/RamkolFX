@@ -47,6 +47,10 @@ struct GuiPreferences
     // convenience, never sent to the daemon.
     int ActiveTabIndex = 0;
 
+    // Whether the Equalizer tab's Auto-detect card is expanded (class
+    // table and timing sliders showing). Local UX only, like the tab.
+    bool bAutoDetectExpanded = false;
+
     // Window-close / window-minimize hide the window to the system tray
     // instead of quitting / iconifying it - see main.cpp's event loop. Only
     // honored while the tray icon is actually up (see Tray::IsIconShown),

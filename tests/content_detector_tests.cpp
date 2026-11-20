@@ -432,6 +432,27 @@ TEST(TooSlowGivesUp)
     REQUIRE(WaitFor([&] { return !Loaded(Detector); }));
 }
 
+TEST(RaisingTheCpuLimitRetriesAfterTooSlow)
+{
+    FakeState State;
+    State.SpinUs = 4000; // too slow at 1% (see TooSlowGivesUp)
+    ContentDetector Detector(FakeBackend(State), FastTuning());
+    Detector.SetActive(true, 1);
+    REQUIRE(WaitFor([&] { return Loaded(Detector); }));
+    TapAudio(Detector, 2000);
+    REQUIRE(WaitFor([&] { return Detector.Availability() == AutoDetectAvailability::TooSlow; }));
+
+    SchedulerTuning Cadence = FastTuning().Scheduler;
+    Cadence.MaxDutyCycle = 0.05f; // 4 ms at 5%: 80 ms, inside the 200 ms max
+    Detector.SetCadence(Cadence);
+    CHECK(Detector.Availability() == AutoDetectAvailability::Ok);
+    REQUIRE(WaitFor([&] { return Loaded(Detector); }));
+    const int RunsBefore = State.Runs;
+    TapAudio(Detector, 2000);
+    REQUIRE(WaitFor([&] { return State.Runs >= RunsBefore + 4; }));
+    CHECK(Detector.Availability() == AutoDetectAvailability::Ok);
+}
+
 TEST(IdleUnloadAndReload)
 {
     FakeState State;

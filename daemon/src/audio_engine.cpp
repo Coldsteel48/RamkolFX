@@ -363,6 +363,7 @@ int AudioEngine::Run()
     {
         AutoDetectDevicePolicy.store(LoadedSettings->AutoDetectDevice, std::memory_order_relaxed);
         Detector->SetDevice(LoadedSettings->AutoDetectDevice);
+        ApplyAutoDetectTiming(LoadedSettings->DetectTiming);
         Mode.store(LoadedSettings->Mode, std::memory_order_relaxed);
         bNearFieldEnabled.store(LoadedSettings->bNearFieldEnabled, std::memory_order_relaxed);
         for (uint8 i = 0; i < SpeakerCount; ++i)
@@ -1109,6 +1110,10 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
         Detector->SetDevice(InCommand.DeviceValue);
         fprintf(stderr, "[ramkolfxd] auto-detect: device set to %s\n", InferenceDeviceKey(InCommand.DeviceValue));
     }
+    else if (InCommand.CommandOpcode == Opcode::SetAutoDetectTiming)
+    {
+        bPersistedStateChanged = ApplyAutoDetectTiming(InCommand.Timing);
+    }
 
     if (bReevaluateAutoSwitch)
     {
@@ -1150,6 +1155,8 @@ Status AudioEngine::BuildStatus()
         // Paused only: while it learns or re-checks, detection is running
         // and may end the hold on its own.
         OutStatus.bDetectionHeld = AutoDetect.IsPaused();
+        OutStatus.bHasAutoDetectTiming = true;
+        OutStatus.DetectTiming = DetectTiming;
     }
     {
         std::lock_guard<std::mutex> Lock(PresetMutex);
@@ -1196,6 +1203,7 @@ void AudioEngine::PersistCurrentSettings()
     ToSave.bPresetModified = CurrentStatus.bPresetModified;
     ToSave.bActivePresetBuiltIn = FindBuiltInEqPreset(CurrentStatus.ActivePresetName) != nullptr;
     ToSave.AutoDetectDevice = CurrentStatus.AutoDetectDevice;
+    ToSave.DetectTiming = CurrentStatus.DetectTiming;
     {
         std::lock_guard<std::mutex> Lock(DeviceModeMutex);
         ToSave.DeviceSpatialModes = DeviceSpatialModes;
@@ -1380,6 +1388,27 @@ AutoSwitchTarget AudioEngine::ResolveCurrentTarget(int64_t NowMs)
     Detector->SetActive(AutoDetect.IsActive(), SpellIdOf(Binding));
     Detector->SetSettled(AutoDetect.IsSettled(NowMs));
     return Target;
+}
+
+bool AudioEngine::ApplyAutoDetectTiming(const AutoDetectTiming& Requested)
+{
+    const AutoDetectTiming Timing = ClampAutoDetectTiming(Requested);
+    std::lock_guard<std::mutex> Lock(AutoSwitchMutex);
+    if (Timing == DetectTiming)
+    {
+        return false;
+    }
+    DetectTiming = Timing;
+    // Both under AutoSwitchMutex, so two clients' changes can't leave the
+    // smoother on one's timing and the scheduler on the other's.
+    AutoDetect.SetTuning(DetectionTuningFor(Timing));
+    Detector->SetCadence(SchedulerTuningFor(Timing));
+    fprintf(stderr,
+            "[ramkolfxd] auto-detect: check every %.1f s, switch after %.1f s, keep at least %.0f s, "
+            "CPU limit %.1f%%\n",
+            Timing.CheckEveryMs / 1000.0, Timing.SwitchAfterMs / 1000.0, Timing.KeepAtLeastMs / 1000.0,
+            static_cast<double>(Timing.CpuLimitPercent));
+    return true;
 }
 
 void AudioEngine::HoldAutoDetect()

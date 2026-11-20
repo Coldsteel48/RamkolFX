@@ -51,7 +51,7 @@ Everything runs locally; no audio or results leave the machine.
   between songs, measured on the audio itself in 100 ms chunks - forgets
   the old track's scores and waives that 10 s, so a new song switches
   ~5 s in. Gapless/crossfaded changes take ~6-14 s. All values tuned in
-  phase 0.
+  phase 0, and adjustable in the GUI (see `SetAutoDetectTiming`).
 - **Tweaks pause detection until the content changes.** Moving a slider
   or picking/saving a preset by hand while an Auto binding is in effect
   holds detection. The resolver returns the pending target
@@ -343,6 +343,16 @@ in `data/models/` with its license, installed to
   Asking also re-probes an unavailable runtime/model.
 - New `SetAutoDetectDevice([InferenceDevice])`; re-sending the current
   device retries one that failed.
+- New `SetAutoDetectTiming([checkEveryMs u32][switchAfterMs u32]
+  [keepAtLeastMs u32][cpuLimitPercent float])` (0x1F), clamped by the
+  daemon, applied live; `Status` appends the same block after
+  `DetectedTableRevision` (decoder-only `bHasAutoDetectTiming`; the GUI
+  disables the sliders against a daemon that predates it). Mapping:
+  check every = fast cadence (slow = 3x); switch after = `ConfirmMs`,
+  with the score EMA at 3/4 of it and the boundary window at it + 11 s;
+  keep at least = `MinDwellMs`; CPU limit = the governor's duty cap
+  (raising it forgets a TooSlow verdict). The defaults (2 s, 4 s, 10 s,
+  1%) are the values above.
 - `Status` appends: `AutoDetect` (ok / no runtime / no model / failed /
   too slow), `bDeviceAutoDetect`, `bAutoDetectActive` (an Auto binding
   is in effect; `PresetSource` stays App/Device and says which),
@@ -361,7 +371,9 @@ in `data/models/` with its license, installed to
   holds) and `detected.<class>=<preset>`. Deleting a preset drops the
   class-table entries pointing at it (that class becomes "no switch");
   constructor renames of shadowed user presets apply to them too.
-- `settings.conf`: `auto_detect.device` (`auto` | `cpu` | `gpu` | `npu`).
+- `settings.conf`: `auto_detect.device` (`auto` | `cpu` | `gpu` | `npu`),
+  `auto_detect.check_every_ms`, `auto_detect.switch_after_ms`,
+  `auto_detect.keep_at_least_ms`, `auto_detect.cpu_limit_percent`.
 
 ## Phases
 

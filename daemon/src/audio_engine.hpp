@@ -311,6 +311,9 @@ private:
     // Detection state for the Auto-detect binding in effect (if any), fed
     // by Detector's events. Guarded by AutoSwitchMutex alone.
     AutoDetectSession AutoDetect;
+    // The timing AutoDetect and Detector were last given (persisted as
+    // auto_detect.*). Guarded by AutoSwitchMutex.
+    AutoDetectTiming DetectTiming;
     // The hold phase last logged (LogHoldPhaseChange). Guarded by
     // AutoSwitchMutex.
     AutoDetectSession::EHold LoggedHoldPhase = AutoDetectSession::EHold::None;
@@ -366,6 +369,10 @@ private:
     // switches the detection worker on or off to match. Caller holds
     // AutoSwitchMutex and PresetMutex.
     AutoSwitchTarget ResolveCurrentTarget(int64_t NowMs);
+
+    // Clamps Timing and hands it to AutoDetect and Detector. Takes
+    // AutoSwitchMutex. Returns whether it changed (and needs saving).
+    bool ApplyAutoDetectTiming(const AutoDetectTiming& Timing);
 
     // The user changed the EQ by hand: pause detection for the Auto-detect
     // binding in effect, if any (see AutoDetectSession::Hold). Takes

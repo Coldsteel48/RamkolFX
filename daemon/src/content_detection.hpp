@@ -117,6 +117,12 @@ public:
     }
 
     void Reset();
+    // New thresholds/timings, applied from the next AddScores; the
+    // scores and class so far are kept.
+    void SetTuning(const DetectionTuning& InTuning)
+    {
+        Tuning = InTuning;
+    }
     void AddScores(const ClassScores& Scores, int64_t NowMs);
     // A new track started at NowMs: its class is judged on its own
     // scores, not averaged with the last one's, and may replace the
@@ -297,6 +303,14 @@ public:
     {
     }
 
+    // New cadence and budget; the run timings so far are kept, and a
+    // give-up verdict is re-judged on the next run.
+    void SetTuning(const SchedulerTuning& InTuning);
+    const SchedulerTuning& GetTuning() const
+    {
+        return Tuning;
+    }
+
     // Forget timings - for a new session (another execution provider or
     // model), whose speed the old numbers say nothing about.
     void Reset();
@@ -333,5 +347,14 @@ private:
     bool bGaveUp = false;
     std::array<int64_t, HistorySize> History{};
 };
+
+// The user-facing AutoDetectTiming (clamped first), as smoother and
+// scheduler settings. The defaults map to the defaults above.
+// - SwitchAfterMs is ConfirmMs; the score EMA's time constant is 3/4 of
+//   it, so new evidence can win within the confirm time; the boundary
+//   window stretches so a confirm can finish inside it.
+// - CheckEveryMs is the fast cadence, three times it the slow one.
+DetectionTuning DetectionTuningFor(const AutoDetectTiming& Timing);
+SchedulerTuning SchedulerTuningFor(const AutoDetectTiming& Timing);
 
 } // namespace ramkolfx

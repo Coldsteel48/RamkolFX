@@ -1474,15 +1474,122 @@ constexpr size_t AutoDetectTableColumns = 3;
 constexpr size_t AutoDetectTableRows = (DetectedClassCount - 1 + AutoDetectTableColumns - 1) / AutoDetectTableColumns;
 } // namespace
 
+void App::DrawAutoDetectTimingRow(float RowStartX, float RowWidth)
+{
+    const bool bSupported = LastStatus.bHasAutoDetectTiming;
+    AutoDetectTiming Timing = bEditingTiming ? EditedTiming : LastStatus.DetectTiming;
+
+    // The fastest cadence the CPU limit allows, from the measured run time
+    // (0 before any run): the daemon stretches the interval up to it.
+    const double LimitedToS =
+        AutoDetectReport.Runs > 0 && Timing.CpuLimitPercent > 0.0f
+            ? static_cast<double>(AutoDetectReport.P50Us) / 1e6 / (static_cast<double>(Timing.CpuLimitPercent) / 100.0)
+            : 0.0;
+    const bool bCpuLimited = LimitedToS * 1000.0 > static_cast<double>(Timing.CheckEveryMs) + 50.0;
+
+    const ImGuiStyle& Style = ImGui::GetStyle();
+    constexpr int Columns = 4;
+    const float ColumnGap = 2.0f * Style.ItemSpacing.x;
+    const float ColumnWidth = (RowWidth - ColumnGap * (Columns - 1)) / Columns;
+    const float LabelWidth = ImGui::CalcTextSize("Keep at least").x + Style.ItemSpacing.x;
+    const float SliderWidth = ColumnWidth - LabelWidth;
+    const float Y = ImGui::GetCursorScreenPos().y + Style.ItemSpacing.y;
+
+    bool bAnyActive = false;
+    bool bCommit = false;
+    int Column = 0;
+    // One labelled slider. Values in ms are shown in seconds and snapped
+    // to StepMs.
+    auto Slider = [&](const char* Label, const char* Id, float* Value, float Min, float Max, const char* Format,
+                      const char* Tooltip, bool bWarn)
+    {
+        const float X = RowStartX + static_cast<float>(Column++) * (ColumnWidth + ColumnGap);
+        ImGui::SetCursorScreenPos(ImVec2(X, Y + Style.FramePadding.y));
+        ImGui::TextColored(bWarn ? palette::WarningV4 : palette::TextSecondaryV4, "%s", Label);
+        const bool bLabelHovered = ImGui::IsItemHovered();
+        ImGui::SetCursorScreenPos(ImVec2(X + LabelWidth, Y));
+        ImGui::SetNextItemWidth(SliderWidth);
+        const bool bChanged = ImGui::SliderFloat(Id, Value, Min, Max, Format, ImGuiSliderFlags_AlwaysClamp);
+        bAnyActive |= ImGui::IsItemActive();
+        bCommit |= ImGui::IsItemDeactivatedAfterEdit();
+        if ((bLabelHovered || ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) && !ImGui::IsItemActive())
+        {
+            if (!bSupported)
+            {
+                ImGui::SetTooltip("Restart the RamkolFX daemon to adjust Auto-detect's timing");
+            }
+            else
+            {
+                ImGui::SetTooltip("%s", Tooltip);
+            }
+        }
+        return bChanged;
+    };
+    auto MsSlider = [&](const char* Label, const char* Id, uint32& Ms, uint32 MinMs, uint32 MaxMs, uint32 StepMs,
+                        const char* Format, const char* Tooltip, bool bWarn = false)
+    {
+        float Seconds = static_cast<float>(Ms) / 1000.0f;
+        if (Slider(Label, Id, &Seconds, static_cast<float>(MinMs) / 1000.0f, static_cast<float>(MaxMs) / 1000.0f,
+                   Format, Tooltip, bWarn))
+        {
+            Ms = static_cast<uint32>(std::lround(Seconds * 1000.0f / static_cast<float>(StepMs))) * StepMs;
+        }
+    };
+
+    ImGui::BeginDisabled(!bSupported);
+    std::string CheckTooltip =
+        "How often the AI listens to what's playing while it works out what it is (three times less often "
+        "once that has settled, or on battery). Shorter notices changes sooner and costs more CPU.";
+    if (bCpuLimited)
+    {
+        char Note[160];
+        snprintf(Note, sizeof(Note), "\n\nRight now each check takes %.1f ms, so the %.1f%% CPU limit holds it to "
+                 "one every %.1f s.",
+                 static_cast<double>(AutoDetectReport.P50Us) / 1000.0, static_cast<double>(Timing.CpuLimitPercent),
+                 LimitedToS);
+        CheckTooltip += Note;
+    }
+    MsSlider("Check every", "##detect_check_every", Timing.CheckEveryMs, MinCheckEveryMs, MaxCheckEveryMs, 100,
+             bCpuLimited ? "%.1f s (CPU limit)" : "%.1f s", CheckTooltip.c_str(), bCpuLimited);
+    MsSlider("Switch after", "##detect_switch_after", Timing.SwitchAfterMs, 0, MaxSwitchAfterMs, 100, "%.1f s",
+             "How long new content has to stand out before the EQ switches to it. Shorter reacts faster; "
+             "longer ignores brief sounds, like a jingle or someone talking over music.");
+    MsSlider("Keep at least", "##detect_keep_at_least", Timing.KeepAtLeastMs, 0, MaxKeepAtLeastMs, 1000, "%.0f s",
+             "The shortest time between two switches, so content that's on the fence doesn't flip the EQ back "
+             "and forth. Skipped after a gap between tracks.");
+    float CpuPercent = Timing.CpuLimitPercent;
+    if (Slider("CPU limit", "##detect_cpu_limit", &CpuPercent, MinCpuLimitPercent, MaxCpuLimitPercent, "%.1f%%",
+               "The most of one CPU core detection may use. When a check takes longer than this allows, checks "
+               "are spaced further apart to stay under it.",
+               false))
+    {
+        Timing.CpuLimitPercent = std::round(CpuPercent * 10.0f) / 10.0f;
+    }
+    ImGui::EndDisabled();
+
+    if (bAnyActive)
+    {
+        EditedTiming = Timing;
+    }
+    if (bCommit && bSupported && Timing != LastStatus.DetectTiming)
+    {
+        Apply(Client.SetAutoDetectTiming(Timing));
+    }
+    bEditingTiming = bAnyActive;
+    // Leave the cursor below the row, as a normal row would.
+    ImGui::SetCursorScreenPos(ImVec2(RowStartX, Y + ImGui::GetFrameHeight()));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+}
+
 float App::AutoDetectCardHeight(float CardPad) const
 {
     const float Row = ImGui::GetFrameHeight();
     const float Spacing = ImGui::GetStyle().ItemSpacing.y;
     float Height = 2.0f * CardPad + Row; // header
-    if (bAutoDetectExpanded)
+    if (Preferences.bAutoDetectExpanded)
     {
-        // "Run detection on" row, then the table.
-        Height += (1 + AutoDetectTableRows) * (Spacing + Row) + Spacing;
+        // "Run detection on" row, the timing row, then the table.
+        Height += (2 + AutoDetectTableRows) * (Spacing + Row) + Spacing;
     }
     return Height;
 }
@@ -1494,9 +1601,10 @@ void App::DrawAutoDetectCard()
     const bool bUnavailable = !IsAutoDetectUsable();
 
     // Header: expand arrow, title, and what detection is doing right now.
-    if (ImGui::ArrowButton("##auto_detect_expand", bAutoDetectExpanded ? ImGuiDir_Down : ImGuiDir_Right))
+    if (ImGui::ArrowButton("##auto_detect_expand", Preferences.bAutoDetectExpanded ? ImGuiDir_Down : ImGuiDir_Right))
     {
-        bAutoDetectExpanded = !bAutoDetectExpanded;
+        Preferences.bAutoDetectExpanded = !Preferences.bAutoDetectExpanded;
+        PersistGuiPreferences();
         bHaveAutoDetectReport = false; // fetch fresh on expand
     }
     ImGui::SameLine();
@@ -1528,7 +1636,7 @@ void App::DrawAutoDetectCard()
             ImGui::SetTooltip("%s", AutoDetectUnavailableReason());
         }
     }
-    if (!bAutoDetectExpanded)
+    if (!Preferences.bAutoDetectExpanded)
     {
         return;
     }
@@ -1588,6 +1696,8 @@ void App::DrawAutoDetectCard()
                            LastStatus.InferenceDeviceLabel.empty() ? "Loads when first needed"
                                                                    : LastStatus.InferenceDeviceLabel.c_str());
     }
+
+    DrawAutoDetectTimingRow(RowStart.x, RowWidth);
 
     // Class -> preset table, AutoDetectTableColumns per row: name, preset, live score.
     const float Row = ImGui::GetFrameHeight();

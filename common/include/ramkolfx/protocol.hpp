@@ -68,6 +68,7 @@ enum class Opcode : uint8
     BindDetectedClass = 0x1C,    // [class:1][preset: raw remainder, empty = no switch]
     GetDetectedClasses = 0x1D,
     SetAutoDetectDevice = 0x1E, // [InferenceDevice:1]
+    SetAutoDetectTiming = 0x1F, // [AutoDetectTiming: AutoDetectTimingWireSize]
     GetChannelLevels = 0x20,
     // Responses
     StatusResponse = 0x81,
@@ -261,6 +262,43 @@ enum class InferenceDevice : uint8
 const char* InferenceDeviceKey(InferenceDevice Device);
 std::optional<InferenceDevice> InferenceDeviceFromKey(const std::string& Key);
 
+// How quickly Auto-detect reacts, against how steady it is and what it
+// costs (settings: auto_detect.*). The daemon derives its smoothing,
+// confirm/dwell and inference cadence from these four; see
+// DetectionTuningFor / SchedulerTuningFor in the daemon.
+struct AutoDetectTiming
+{
+    // Inference cadence while finding the class; three times this once
+    // it has settled, or on battery.
+    uint32 CheckEveryMs = 2000;
+    // How long new content must lead before the EQ switches to it (the
+    // score smoothing scales with it, too).
+    uint32 SwitchAfterMs = 4000;
+    // Minimum time between two switches, so ambiguous content doesn't
+    // flip the EQ back and forth. Waived after a gap between tracks.
+    uint32 KeepAtLeastMs = 10000;
+    // Hard cap on inference time / interval, in percent of one core: the
+    // cadence stretches to stay under it.
+    float CpuLimitPercent = 1.0f;
+
+    bool operator==(const AutoDetectTiming&) const = default;
+};
+
+// Accepted ranges; the daemon clamps what it's sent into them.
+inline constexpr uint32 MinCheckEveryMs = 500;
+inline constexpr uint32 MaxCheckEveryMs = 10000;
+inline constexpr uint32 MaxSwitchAfterMs = 15000;
+inline constexpr uint32 MaxKeepAtLeastMs = 60000;
+inline constexpr float MinCpuLimitPercent = 0.5f;
+inline constexpr float MaxCpuLimitPercent = 5.0f;
+
+// Timing with every field clamped into its range (a NaN CPU limit
+// becomes the default).
+AutoDetectTiming ClampAutoDetectTiming(const AutoDetectTiming& Timing);
+
+// Wire size of AutoDetectTiming: three u32 then a float.
+inline constexpr size_t AutoDetectTimingWireSize = 16;
+
 // Whether Auto-detect bindings can work on this machine. Anything but Ok
 // makes them count as unbound. Sent as one byte, so new values go before
 // Count.
@@ -304,6 +342,7 @@ struct Command
     BassEnhancerSettings BassEnhancer; // valid when CommandOpcode == SetBassEnhancer
     DetectedClass ClassValue = DetectedClass::None; // valid when CommandOpcode == BindDetectedClass (never None)
     InferenceDevice DeviceValue = InferenceDevice::Auto; // valid when CommandOpcode == SetAutoDetectDevice
+    AutoDetectTiming Timing;      // valid when CommandOpcode == SetAutoDetectTiming (not yet clamped)
 };
 
 enum class EqPresetSource : uint8
@@ -384,6 +423,12 @@ struct Status
     // PresetCatalogRevision changes (a deleted preset leaves its classes
     // with no switch).
     uint32 DetectedTableRevision = 0;
+
+    // Auto-detect timing (SetAutoDetectTiming). Decoded only if present:
+    // bHasAutoDetectTiming false means a daemon that predates it and would
+    // refuse SetAutoDetectTiming.
+    bool bHasAutoDetectTiming = false;
+    AutoDetectTiming DetectTiming;
 };
 
 // Per-channel activity of the 7.1 signal entering the spatializer, for the
@@ -648,6 +693,7 @@ std::vector<uint8> EncodeBindDeviceAutoDetectRequest(const std::string& DeviceNa
 std::vector<uint8> EncodeBindDetectedClassRequest(DetectedClass Class, const std::string& PresetName);
 std::vector<uint8> EncodeGetDetectedClassesRequest();
 std::vector<uint8> EncodeSetAutoDetectDeviceRequest(InferenceDevice Device);
+std::vector<uint8> EncodeSetAutoDetectTimingRequest(const AutoDetectTiming& Timing);
 std::vector<uint8> EncodeGetChannelLevelsRequest();
 
 // Resolves the default control socket path: $XDG_RUNTIME_DIR/ramkolfx/control.sock,

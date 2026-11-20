@@ -116,6 +116,11 @@ public:
     // and a Failed/TooSlow verdict is forgotten (the new device may do).
     void SetDevice(InferenceDevice Device);
 
+    // Changes the inference cadence and CPU budget (Tuning.Scheduler is
+    // only the initial one); the next run is rescheduled at the new
+    // cadence. A TooSlow verdict is forgotten: the new budget may do.
+    void SetCadence(const SchedulerTuning& Cadence);
+
     // Re-probes the runtime and model files if a probe is what the
     // current availability rests on (no load tried yet, or none since
     // they went missing) - so installing ONNX Runtime while the daemon
@@ -165,6 +170,7 @@ private:
     int64_t InactiveSinceMs = 0;
     InferenceDevice Device = InferenceDevice::Auto;
     bool bDeviceChanged = false;
+    bool bCadenceChanged = false; // SetCadence since the last Step
     AutoDetectAvailability CurrentAvailability = AutoDetectAvailability::Ok;
     bool bVerdictFromLoad = false; // CurrentAvailability came from a load, not a probe
     std::vector<DetectionEvent> Events;

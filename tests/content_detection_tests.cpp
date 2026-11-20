@@ -159,6 +159,40 @@ TEST(GaplessSwitchBetweenCoarseClassesTakesSeconds)
 
 // Real genre scores (EfficientAT on 3 s windows) are low: a clear genre
 // often scores 0.15-0.3, with the others near zero.
+TEST(DefaultTimingMapsToTheDefaultTuning)
+{
+    const DetectionTuning Detection = DetectionTuningFor({});
+    const DetectionTuning Defaults;
+    CHECK(Detection.EmaTauMs == Defaults.EmaTauMs && Detection.ConfirmMs == Defaults.ConfirmMs);
+    CHECK(Detection.MinDwellMs == Defaults.MinDwellMs && Detection.BoundaryWindowMs == Defaults.BoundaryWindowMs);
+    const SchedulerTuning Cadence = SchedulerTuningFor({});
+    const SchedulerTuning DefaultCadence;
+    CHECK(Cadence.FastIntervalMs == DefaultCadence.FastIntervalMs);
+    CHECK(Cadence.SlowIntervalMs == DefaultCadence.SlowIntervalMs);
+    CHECK(Cadence.MaxIntervalMs == DefaultCadence.MaxIntervalMs);
+    CHECK(Cadence.MaxDutyCycle == DefaultCadence.MaxDutyCycle);
+}
+
+TEST(FastTimingSwitchesWithinSeconds)
+{
+    // Check every 1 s, switch after 1 s, keep at least 0: a gapless
+    // change from speech to music lands ~2 s in instead of ~8.
+    DetectionSmoother Smoother(DetectionTuningFor({1000, 1000, 0, 1.0f}));
+    Feed(Smoother, Speech, 0, 60000, 1000);
+    Feed(Smoother, Jazz, 61000, 62000, 1000);
+    CHECK(Smoother.Current() == DetectedClass::Jazz);
+}
+
+TEST(TuningCanChangeMidSpell)
+{
+    DetectionSmoother Smoother;
+    Feed(Smoother, Speech, 0, 60000);
+    Smoother.SetTuning(DetectionTuningFor({1000, 1000, 0, 1.0f}));
+    CHECK(Smoother.Current() == DetectedClass::Speech); // kept
+    Feed(Smoother, Jazz, 61000, 62000, 1000);
+    CHECK(Smoother.Current() == DetectedClass::Jazz);
+}
+
 TEST(LowButClearGenreIsDetected)
 {
     DetectionSmoother Smoother;
@@ -442,6 +476,27 @@ TEST(GovernorGivesUpOnlyOnASteadyTrend)
 
     Scheduler.Reset();
     CHECK(!Scheduler.GaveUp() && Scheduler.RunCount() == 0);
+}
+
+TEST(NewCadenceAndBudgetApplyAndRejudgeAGiveUp)
+{
+    InferenceScheduler Scheduler;
+    for (int i = 0; i < 3; ++i)
+    {
+        Scheduler.OnRun(200000); // 200 ms at 1% needs 20 s: over the 15 s max
+    }
+    CHECK(Scheduler.GaveUp());
+
+    Scheduler.SetTuning(SchedulerTuningFor({500, 4000, 10000, 5.0f})); // 200 ms at 5%: 4 s
+    CHECK(!Scheduler.GaveUp() && Scheduler.RunCount() == 3);
+    Scheduler.OnRun(200000);
+    CHECK(!Scheduler.GaveUp());
+    CHECK(Scheduler.NextIntervalMs(false, false) == 4000);
+
+    InferenceScheduler Fast(SchedulerTuningFor({500, 4000, 10000, 5.0f}));
+    Fast.OnRun(4000); // 4 ms: well inside 5%
+    CHECK(Fast.NextIntervalMs(false, false) == 500);
+    CHECK(Fast.NextIntervalMs(true, false) == 1500);
 }
 
 TEST(PercentilesOverRecentRuns)

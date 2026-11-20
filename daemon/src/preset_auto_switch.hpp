@@ -104,6 +104,13 @@ public:
     {
     }
 
+    // New smoothing/confirm/dwell timings (see DetectionTuningFor), from
+    // the next inference result on; what was detected so far stands.
+    void SetTuning(const DetectionTuning& Tuning)
+    {
+        Smoother.SetTuning(Tuning);
+    }
+
     // Binding is what the rule resolved this tick. Returns the target for
     // AutoSwitchController: a preset binding as-is; for Auto-detect, the
     // preset the class table gives the detected class - or the pending

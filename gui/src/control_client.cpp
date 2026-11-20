@@ -285,6 +285,11 @@ std::optional<Status> ControlClient::SetAutoDetectDevice(InferenceDevice Device)
     return SendStatusRequest(EncodeSetAutoDetectDeviceRequest(Device));
 }
 
+std::optional<Status> ControlClient::SetAutoDetectTiming(const AutoDetectTiming& Timing)
+{
+    return SendStatusRequest(EncodeSetAutoDetectTimingRequest(Timing));
+}
+
 std::optional<DetectionReport> ControlClient::RequestDetectedClasses()
 {
     return RequestDecoded(EncodeGetDetectedClassesRequest(), Opcode::DetectedClassesResponse,

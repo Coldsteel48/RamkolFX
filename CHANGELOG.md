@@ -12,6 +12,21 @@ follows [Semantic Versioning](https://semver.org/) — see
 - **Man pages** for `ramkolfxd` and `ramkolfx-gui` (`man ramkolfxd`).
 - **AppStream metadata,** so software centres such as GNOME Software and
   KDE Discover can list RamkolFX with its description and screenshots.
+- **Auto-detect timing sliders.** The expanded Auto-detect card has
+  four new sliders, so you can trade reaction speed against stability
+  and CPU use:
+  - *Check every:* how often detection listens. The default is 2 s, and
+    3x that once the class has settled.
+  - *Switch after:* how long new content has to stand out before the EQ
+    switches (default 4 s).
+  - *Keep at least:* the minimum time between two switches (default
+    10 s; skipped after a gap between tracks).
+  - *CPU limit:* the most of one core detection may use (default 1%).
+
+  The daemon saves them in `settings.conf`. Each check costs about 10 ms
+  of CPU, so at the default 1% limit checks can't come more often than
+  about once a second. When the limit is what holds detection back, the
+  slider says so.
 
 ### Changed
 

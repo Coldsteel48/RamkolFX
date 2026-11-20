@@ -73,6 +73,7 @@ public:
     // Empty PresetName = no switch for that class.
     std::optional<Status> BindDetectedClass(DetectedClass Class, const std::string& PresetName);
     std::optional<Status> SetAutoDetectDevice(InferenceDevice Device);
+    std::optional<Status> SetAutoDetectTiming(const AutoDetectTiming& Timing);
     std::optional<DetectionReport> RequestDetectedClasses();
     // Peak levels since the previous call (see protocol.hpp's
     // ChannelLevels). An older daemon that doesn't know this request

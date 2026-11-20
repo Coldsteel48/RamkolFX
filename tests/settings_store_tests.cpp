@@ -61,6 +61,30 @@ TEST(OldFileWithoutDeviceModesLoads)
     CHECK(!Out->bActivePresetBuiltIn); // unknown, not "user preset"
 }
 
+TEST(AutoDetectTimingRoundTripsAndIsClamped)
+{
+    TempPath Path;
+    PersistedSettings In;
+    In.DetectTiming = {800, 1500, 0, 2.5f};
+    const SettingsStore Store(Path.Get());
+    Store.Save(In);
+    auto Out = Store.Load();
+    REQUIRE(Out);
+    CHECK(Out->DetectTiming == In.DetectTiming);
+
+    {
+        std::ofstream File(Path.Get());
+        File << "mode=0\nauto_detect.check_every_ms=10\nauto_detect.switch_after_ms=-5\n"
+                "auto_detect.keep_at_least_ms=999999\nauto_detect.cpu_limit_percent=50\n";
+    }
+    Out = Store.Load();
+    REQUIRE(Out);
+    CHECK(Out->DetectTiming.CheckEveryMs == MinCheckEveryMs);
+    CHECK(Out->DetectTiming.SwitchAfterMs == AutoDetectTiming{}.SwitchAfterMs); // unreadable: the default
+    CHECK(Out->DetectTiming.KeepAtLeastMs == MaxKeepAtLeastMs);
+    CHECK(Out->DetectTiming.CpuLimitPercent == MaxCpuLimitPercent);
+}
+
 TEST(UnknownAutoDetectDeviceFallsBackToAuto)
 {
     TempPath Path;

@@ -225,6 +225,22 @@ void ContentDetector::SetDevice(InferenceDevice NewDevice)
     Wake.notify_all();
 }
 
+void ContentDetector::SetCadence(const SchedulerTuning& Cadence)
+{
+    {
+        std::lock_guard Lock(Mutex);
+        Scheduler.SetTuning(Cadence);
+        bCadenceChanged = true;
+        if (bVerdictFromLoad && CurrentAvailability == AutoDetectAvailability::TooSlow)
+        {
+            // Judged against the old budget: try again under the new one.
+            bVerdictFromLoad = false;
+            CurrentAvailability = Backend.Probe ? Backend.Probe() : AutoDetectAvailability::Ok;
+        }
+    }
+    Wake.notify_all();
+}
+
 void ContentDetector::RefreshAvailability()
 {
     std::lock_guard Lock(Mutex);
@@ -450,6 +466,11 @@ void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
 {
     const bool bSettled = bSettledFlag.load(std::memory_order_relaxed);
     const bool bPaused = bPausedFlag.load(std::memory_order_relaxed);
+    if (bCadenceChanged)
+    {
+        bCadenceChanged = false;
+        NextRunAtMs = 0; // the next run was scheduled at the old cadence
+    }
     Lock.unlock();
 
     // Paused, no inference runs, so the battery (which paces it) can wait.
@@ -577,7 +598,7 @@ void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
                 "[ramkolfxd] auto-detect: stopped - inference takes %.1f ms on %s, too slow to stay under %.0f%% "
                 "of a core\n",
                 static_cast<double>(Scheduler.PercentileUs(0.5f)) / 1000.0, DeviceLabel.c_str(),
-                static_cast<double>(Tuning.Scheduler.MaxDutyCycle) * 100.0);
+                static_cast<double>(Scheduler.GetTuning().MaxDutyCycle) * 100.0);
         CurrentAvailability = AutoDetectAvailability::TooSlow;
         bVerdictFromLoad = true;
         Unload(Lock);
@@ -590,8 +611,8 @@ void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
 
     const int64_t Interval = Scheduler.NextIntervalMs(bSettled, bBattery);
     NextRunAtMs = Now + Interval;
-    const int64_t Base =
-        bSettled || bBattery ? Tuning.Scheduler.SlowIntervalMs : Tuning.Scheduler.FastIntervalMs;
+    const SchedulerTuning& Cadence = Scheduler.GetTuning();
+    const int64_t Base = bSettled || bBattery ? Cadence.SlowIntervalMs : Cadence.FastIntervalMs;
     const bool bStretching = Interval > Base;
     if (bStretching != bGovernorStretching)
     {

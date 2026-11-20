@@ -9,6 +9,7 @@
 #include "ramkolfx/protocol.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -110,6 +111,27 @@ BassEnhancerSettings ReadBassEnhancerSettings(const uint8* Payload)
     Settings.Drive = ReadFloatBE(Payload + 5);
     Settings.Mix = ReadFloatBE(Payload + 9);
     return Settings;
+}
+
+void AppendAutoDetectTiming(std::vector<uint8>& Out, const AutoDetectTiming& Timing)
+{
+    AppendU32BE(Out, Timing.CheckEveryMs);
+    AppendU32BE(Out, Timing.SwitchAfterMs);
+    AppendU32BE(Out, Timing.KeepAtLeastMs);
+    AppendFloatBE(Out, Timing.CpuLimitPercent);
+}
+
+// Reads a fixed AutoDetectTimingWireSize-byte AutoDetectTiming, as sent
+// (unclamped). Caller must have already verified that many bytes are
+// available.
+AutoDetectTiming ReadAutoDetectTiming(const uint8* Payload)
+{
+    AutoDetectTiming Timing;
+    Timing.CheckEveryMs = ReadU32BE(Payload);
+    Timing.SwitchAfterMs = ReadU32BE(Payload + 4);
+    Timing.KeepAtLeastMs = ReadU32BE(Payload + 8);
+    Timing.CpuLimitPercent = ReadFloatBE(Payload + 12);
+    return Timing;
 }
 
 // Appends a length-prefixed (u16 BE) string. Used for fields embedded
@@ -391,6 +413,13 @@ std::optional<Command> DecodeCommand(Opcode InOpcode, const uint8* Payload, uint
         }
         OutCommand.DeviceValue = static_cast<InferenceDevice>(Payload[0]);
         return OutCommand;
+    case Opcode::SetAutoDetectTiming:
+        if (PayloadLength < AutoDetectTimingWireSize)
+        {
+            return std::nullopt;
+        }
+        OutCommand.Timing = ReadAutoDetectTiming(Payload);
+        return OutCommand;
     case Opcode::GetChannelLevels:
         return OutCommand;
     default:
@@ -486,6 +515,20 @@ std::optional<Status> DecodeStatusResponse(const uint8* Payload, uint16 PayloadL
         return std::nullopt;
     }
     OutStatus.DetectedTableRevision = ReadU32BE(Payload + Offset);
+    Offset += 4;
+
+    // Auto-detect timing: [AutoDetectTiming]. Absent from an older daemon;
+    // a partial block is malformed.
+    if (Offset == PayloadLength)
+    {
+        return OutStatus;
+    }
+    if (Offset + AutoDetectTimingWireSize > PayloadLength)
+    {
+        return std::nullopt;
+    }
+    OutStatus.bHasAutoDetectTiming = true;
+    OutStatus.DetectTiming = ReadAutoDetectTiming(Payload + Offset);
     return OutStatus;
 }
 
@@ -677,6 +720,7 @@ std::vector<uint8> EncodeStatusResponse(const Status& InStatus)
     Payload.push_back(static_cast<uint8>(InStatus.AutoDetectDevice));
     AppendString(Payload, InStatus.InferenceDeviceLabel);
     AppendU32BE(Payload, InStatus.DetectedTableRevision);
+    AppendAutoDetectTiming(Payload, InStatus.DetectTiming);
 
     std::vector<uint8> Out;
     Out.reserve(HeaderSize + Payload.size());
@@ -1022,6 +1066,27 @@ std::vector<uint8> EncodeSetAutoDetectDeviceRequest(InferenceDevice Device)
     std::vector<uint8> Out;
     AppendHeader(Out, Opcode::SetAutoDetectDevice, 1);
     Out.push_back(static_cast<uint8>(Device));
+    return Out;
+}
+
+std::vector<uint8> EncodeSetAutoDetectTimingRequest(const AutoDetectTiming& Timing)
+{
+    std::vector<uint8> Out;
+    AppendHeader(Out, Opcode::SetAutoDetectTiming, static_cast<uint16>(AutoDetectTimingWireSize));
+    AppendAutoDetectTiming(Out, Timing);
+    return Out;
+}
+
+AutoDetectTiming ClampAutoDetectTiming(const AutoDetectTiming& Timing)
+{
+    AutoDetectTiming Out;
+    Out.CheckEveryMs = std::clamp(Timing.CheckEveryMs, MinCheckEveryMs, MaxCheckEveryMs);
+    Out.SwitchAfterMs = std::min(Timing.SwitchAfterMs, MaxSwitchAfterMs);
+    Out.KeepAtLeastMs = std::min(Timing.KeepAtLeastMs, MaxKeepAtLeastMs);
+    if (!std::isnan(Timing.CpuLimitPercent))
+    {
+        Out.CpuLimitPercent = std::clamp(Timing.CpuLimitPercent, MinCpuLimitPercent, MaxCpuLimitPercent);
+    }
     return Out;
 }
 

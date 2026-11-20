@@ -43,6 +43,14 @@ std::string DeviceModeKey(size_t Index, const char* Field)
     return "device_mode." + std::to_string(Index) + "." + Field;
 }
 
+// A millisecond count; negative or out-of-range values read as Default
+// (ClampAutoDetectTiming then brings it into range).
+uint32 ReadMs(const KeyValueFile& File, const std::string& Key, uint32 Default)
+{
+    const long Value = File.GetLong(Key, -1);
+    return Value >= 0 && Value <= 3600000 ? static_cast<uint32>(Value) : Default;
+}
+
 bool IsValidSpatialMode(long Value)
 {
     return Value >= static_cast<long>(SpatialMode::Off) && Value <= static_cast<long>(SpatialMode::Advanced);
@@ -115,6 +123,14 @@ std::optional<PersistedSettings> SettingsStore::Load() const
     {
         Result.AutoDetectDevice = *Device;
     }
+    // Clamped, so a hand-edited value can't stall or spin detection.
+    const AutoDetectTiming Defaults;
+    AutoDetectTiming Timing;
+    Timing.CheckEveryMs = ReadMs(*File, "auto_detect.check_every_ms", Defaults.CheckEveryMs);
+    Timing.SwitchAfterMs = ReadMs(*File, "auto_detect.switch_after_ms", Defaults.SwitchAfterMs);
+    Timing.KeepAtLeastMs = ReadMs(*File, "auto_detect.keep_at_least_ms", Defaults.KeepAtLeastMs);
+    Timing.CpuLimitPercent = File->GetFloat("auto_detect.cpu_limit_percent", Defaults.CpuLimitPercent);
+    Result.DetectTiming = ClampAutoDetectTiming(Timing);
     return Result;
 }
 
@@ -150,6 +166,10 @@ void SettingsStore::Save(const PersistedSettings& InSettings) const
     {
         Out << "auto_detect.device=" << DeviceKey << "\n";
     }
+    Out << "auto_detect.check_every_ms=" << InSettings.DetectTiming.CheckEveryMs << "\n";
+    Out << "auto_detect.switch_after_ms=" << InSettings.DetectTiming.SwitchAfterMs << "\n";
+    Out << "auto_detect.keep_at_least_ms=" << InSettings.DetectTiming.KeepAtLeastMs << "\n";
+    Out << "auto_detect.cpu_limit_percent=" << InSettings.DetectTiming.CpuLimitPercent << "\n";
     WriteFileAtomically(SettingsPath, Out.str(), {.LogPrefix = "[ramkolfxd]"});
 }
 
