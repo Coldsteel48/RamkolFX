@@ -849,4 +849,152 @@ TEST(HoldDuringAGameLastsUntilItStops)
     CHECK(!Session.IsHeld() && Session.ShouldDetect());
 }
 
+namespace
+{
+// docs/playback-priority-plan.md's scenario table. G and GameAuto are
+// games, bound to a preset and to Auto-detect; Unbound.exe is a game with
+// no binding; S (Rock), SpotifyAuto and Firefox (Movie) aren't games.
+const EqPresetCatalog PriorityCatalog = []
+{
+    PresetFileContents Contents;
+    Contents.DeviceBindings = {{"desk", "Rock"}};
+    Contents.AppBindings = {{"G", "FPS"}, {"S", "Rock"}, {"Firefox", "Movie"}};
+    Contents.AutoDetectDevices = {"speakers"};
+    Contents.AutoDetectApps = {"GameAuto", "SpotifyAuto"};
+    return EqPresetCatalog(std::move(Contents));
+}();
+const std::set<std::string> PriorityGames{"G", "GameAuto", "Unbound.exe"};
+
+constexpr PlaybackPriority GameFirst = PlaybackPriority::GameFirst;
+constexpr PlaybackPriority MusicFirst = PlaybackPriority::MusicFirst;
+constexpr PlaybackPriority Latest = PlaybackPriority::Latest;
+
+ResolvedBinding ResolveWith(const AppActivityTracker& Tracker, const std::string& Device, PlaybackPriority Priority)
+{
+    return ResolveBinding(Tracker, PriorityCatalog, Device, true, PriorityGames, Priority);
+}
+
+// Which app's binding won ("" for none, "device" for the device's).
+std::string WinnerOf(const AppActivityTracker& Tracker, const std::string& Device, PlaybackPriority Priority)
+{
+    const ResolvedBinding Binding = ResolveWith(Tracker, Device, Priority);
+    return Binding.Source == EqPresetSource::Device ? "device" : Binding.Key;
+}
+} // namespace
+
+TEST(PriorityGameStartsFirstThenMusic) // rows 1 and 4
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"G"}, 0);
+    Tracker.Update({"G", "S"}, 1000);
+    CHECK(WinnerOf(Tracker, "", GameFirst) == "G");
+    CHECK(WinnerOf(Tracker, "", MusicFirst) == "S");
+    CHECK(WinnerOf(Tracker, "", Latest) == "S");
+    CHECK(ResolveWith(Tracker, "", GameFirst).PresetName == "FPS");
+
+    // The music pauses for longer than the grace period: the game is back.
+    Tracker.Update({"G"}, 4000);
+    for (const PlaybackPriority Priority : {GameFirst, MusicFirst, Latest})
+    {
+        CHECK(WinnerOf(Tracker, "", Priority) == "G");
+    }
+}
+
+TEST(PriorityMusicStartsFirstThenGame) // row 2
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"S"}, 0);
+    Tracker.Update({"S", "G"}, 1000);
+    CHECK(WinnerOf(Tracker, "", GameFirst) == "G");
+    CHECK(WinnerOf(Tracker, "", MusicFirst) == "S");
+    CHECK(WinnerOf(Tracker, "", Latest) == "G");
+}
+
+TEST(PriorityGameReopeningItsStream) // row 3
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"G"}, 0);
+    Tracker.Update({"G", "S"}, 1000);
+    Tracker.Update({"S"}, 4000); // the game's stream closed for a long load: dropped
+    Tracker.Update({"S", "G"}, 5000);
+    CHECK(WinnerOf(Tracker, "", GameFirst) == "G");
+    CHECK(WinnerOf(Tracker, "", MusicFirst) == "S");
+    CHECK(WinnerOf(Tracker, "", Latest) == "G"); // the reason Latest isn't the default
+}
+
+TEST(PriorityUnboundGameUnderDeviceAuto) // row 5
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"Unbound.exe"}, 0);
+    Tracker.Update({"Unbound.exe", "S"}, 1000);
+    CHECK((ResolveWith(Tracker, "speakers", GameFirst) ==
+           ResolvedBinding{EqPresetSource::Device, "speakers", "", true, 0, true}));
+    CHECK(WinnerOf(Tracker, "speakers", MusicFirst) == "S");
+    CHECK(WinnerOf(Tracker, "speakers", Latest) == "S");
+
+    // Started the other way round, Latest picks the game.
+    AppActivityTracker Reversed;
+    Reversed.Update({"S"}, 0);
+    Reversed.Update({"S", "Unbound.exe"}, 1000);
+    CHECK(ResolveWith(Reversed, "speakers", Latest).bGame);
+}
+
+TEST(PriorityUnboundAppsNeverTakePart) // rows 6, 7 and 8
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"Unbound.exe"}, 0);
+    Tracker.Update({"Unbound.exe", "Spotify", "Discord"}, 1000);
+    for (const PlaybackPriority Priority : {GameFirst, MusicFirst, Latest})
+    {
+        // Device Auto: the game, whatever else plays unbound.
+        CHECK((ResolveWith(Tracker, "speakers", Priority) ==
+               ResolvedBinding{EqPresetSource::Device, "speakers", "", true, 0, true}));
+        // A device preset binding: an unbound game isn't a contender.
+        CHECK((ResolveWith(Tracker, "desk", Priority) ==
+               ResolvedBinding{EqPresetSource::Device, "desk", "Rock", false, 0}));
+        // No device binding at all: nothing applies.
+        CHECK(ResolveWith(Tracker, "", Priority) == ResolvedBinding{});
+    }
+}
+
+TEST(PriorityBetweenAutoBindings) // row 9
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"GameAuto"}, 0);
+    Tracker.Update({"GameAuto", "SpotifyAuto"}, 1000);
+    CHECK((ResolveWith(Tracker, "", GameFirst) ==
+           ResolvedBinding{EqPresetSource::App, "GameAuto", "", true, 0, true}));
+    CHECK((ResolveWith(Tracker, "", MusicFirst) ==
+           ResolvedBinding{EqPresetSource::App, "SpotifyAuto", "", true, 1000, false}));
+    CHECK(WinnerOf(Tracker, "", Latest) == "SpotifyAuto");
+}
+
+TEST(PriorityDoesNotAffectNonGameApps) // row 10
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"S"}, 0);
+    Tracker.Update({"S", "Firefox"}, 1000);
+    for (const PlaybackPriority Priority : {GameFirst, MusicFirst, Latest})
+    {
+        CHECK(WinnerOf(Tracker, "", Priority) == "Firefox");
+    }
+}
+
+TEST(PriorityBetweenTwoGamesIsLatest)
+{
+    AppActivityTracker Tracker;
+    Tracker.Update({"G"}, 0);
+    Tracker.Update({"G", "Unbound.exe"}, 1000);
+    // The unbound game started later and stands for the device binding.
+    CHECK(ResolveWith(Tracker, "speakers", MusicFirst).bGame);
+    CHECK(ResolveWith(Tracker, "speakers", GameFirst).Source == EqPresetSource::Device);
+    // Without device Auto it isn't a contender: the bound game wins.
+    CHECK(WinnerOf(Tracker, "", GameFirst) == "G");
+
+    // Equal start times: the alphabetically first wins.
+    AppActivityTracker Same;
+    Same.Update({"G", "GameAuto"}, 0);
+    CHECK(WinnerOf(Same, "", GameFirst) == "G");
+}
+
 RAMKOLFX_TEST_MAIN()

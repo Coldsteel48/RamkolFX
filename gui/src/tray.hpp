@@ -9,7 +9,10 @@
 #pragma once
 
 #include <chrono>
+#include <optional>
 #include <string>
+
+#include "ramkolfx/protocol.hpp"
 
 struct DBusConnection;
 struct DBusMessage;
@@ -73,6 +76,12 @@ public:
     // A minimized window gets "Show", which brings it back.
     void SetWindowShown(bool bShown);
 
+    // The context menu's Priority submenu (docs/playback-priority-plan.md):
+    // hidden unless bSupported (false only for a daemon known to predate
+    // the setting), with Current's radio item checked - none while the GUI
+    // hasn't heard from the daemon yet.
+    void SetPlaybackPriority(bool bSupported, std::optional<PlaybackPriority> Current);
+
     // Whether the icon can be shown: a tray host (StatusNotifierWatcher) is
     // on the bus and hasn't kept rejecting - or ignoring - the icon. Stays
     // true while a registration is still in flight, or after a failure or
@@ -123,6 +132,11 @@ public:
         bool bShowWindow = false;   // menu "Show", or a second instance was launched
         bool bHideWindow = false;   // menu "Hide"
         bool bQuit = false;         // menu Quit
+        // A Priority submenu choice (applied by the GUI, not a window
+        // request: it neither carries nor uses an activation token).
+        std::optional<PlaybackPriority> PriorityChoice;
+        // The menu is about to open: a chance to refresh what it shows.
+        bool bMenuOpening = false;
         // The xdg-activation token handed over by the tray host or a second
         // instance for this request (empty if none). Wayland compositors
         // only let a window grab focus with one of these. Single-use, so it
@@ -247,6 +261,8 @@ private:
     int RegistrationCount = 0;
 
     bool bWindowShown = true;
+    bool bPrioritySupported = true;
+    std::optional<PlaybackPriority> CurrentPriority;
     unsigned int MenuRevision = 1;
 
     Requests PendingRequests;

@@ -318,6 +318,9 @@ private:
     // The timing AutoDetect and Detector were last given (persisted as
     // auto_detect.*). Guarded by AutoSwitchMutex.
     AutoDetectTiming DetectTiming;
+    // Who wins when a game and another bound app play at once (persisted
+    // as auto_switch.priority). Guarded by AutoSwitchMutex.
+    PlaybackPriority Priority = PlaybackPriority::GameFirst;
     // The hold phase last logged (LogHoldPhaseChange). Guarded by
     // AutoSwitchMutex.
     AutoDetectSession::EHold LoggedHoldPhase = AutoDetectSession::EHold::None;

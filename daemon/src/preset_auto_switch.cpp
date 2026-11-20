@@ -28,49 +28,80 @@ void AppActivityTracker::Update(const std::vector<std::string>& PlayingApps, int
                   [&](const auto& Entry) { return NowMs - Entry.second.LastPlayingAtMs > GraceMs; });
 }
 
+namespace
+{
+// Lower ranks first: Priority's order between games and everything else.
+int KindRank(PlaybackPriority Priority, bool bGame)
+{
+    switch (Priority)
+    {
+    case PlaybackPriority::GameFirst:
+        return bGame ? 0 : 1;
+    case PlaybackPriority::MusicFirst:
+        return bGame ? 1 : 0;
+    default:
+        return 0;
+    }
+}
+} // namespace
+
 ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPresetCatalog& Catalog,
                                const std::string& OutputDevice, bool bAutoDetectAvailable,
-                               const std::set<std::string>& GameApps)
+                               const std::set<std::string>& GameApps, PlaybackPriority Priority)
 {
     const PresetBindingMap& AppBindings = Catalog.AppBindings();
+    const std::string DevicePreset = OutputDevice.empty() ? std::string() : Catalog.DeviceBinding(OutputDevice);
+    const bool bDeviceAuto = !OutputDevice.empty() && DevicePreset.empty() && bAutoDetectAvailable &&
+                             Catalog.IsDeviceAutoDetect(OutputDevice);
+
     const std::string* WinnerApp = nullptr;
     const AppActivityTracker::Activity* WinnerState = nullptr;
-    // Activity.Apps() iterates in name order, so on equal start times the
-    // alphabetically first app wins - strict '>' keeps the earlier one.
+    bool bWinnerBound = false;
+    int WinnerRank = 0;
+    // Activity.Apps() iterates in name order, so on equal rank and start
+    // time the alphabetically first app wins - strict '>' keeps the
+    // earlier one.
     for (const auto& [App, State] : Activity.Apps())
     {
         const bool bBound = AppBindings.contains(App) || (bAutoDetectAvailable && Catalog.IsAppAutoDetect(App));
-        if (bBound && (!WinnerApp || State.StartedAtMs > WinnerState->StartedAtMs))
+        const bool bGame = GameApps.contains(App);
+        // If you're gaming under a device Auto binding, the game takes part
+        // even unbound: it stands for the device binding.
+        if (!bBound && !(bGame && bDeviceAuto))
+        {
+            continue;
+        }
+        const int Rank = KindRank(Priority, bGame);
+        if (!WinnerApp || Rank < WinnerRank || (Rank == WinnerRank && State.StartedAtMs > WinnerState->StartedAtMs))
         {
             WinnerApp = &App;
             WinnerState = &State;
+            bWinnerBound = bBound;
+            WinnerRank = Rank;
         }
     }
-    if (WinnerApp)
+    if (WinnerApp && bWinnerBound)
     {
         const std::string Preset = Catalog.AppBinding(*WinnerApp);
         const bool bAuto = Preset.empty();
         return {EqPresetSource::App, *WinnerApp, Preset, bAuto, WinnerState->StartedAtMs,
                 bAuto && GameApps.contains(*WinnerApp)};
     }
+    if (WinnerApp)
+    {
+        // An unbound game under the device's Auto binding. No spell start:
+        // a game reopening its stream mustn't look like a new binding.
+        return {EqPresetSource::Device, OutputDevice, "", true, 0, true};
+    }
 
-    if (OutputDevice.empty())
+    if (!DevicePreset.empty())
     {
-        return {};
+        return {EqPresetSource::Device, OutputDevice, DevicePreset, false, 0};
     }
-    if (std::string Preset = Catalog.DeviceBinding(OutputDevice); !Preset.empty())
+    if (bDeviceAuto)
     {
-        return {EqPresetSource::Device, OutputDevice, std::move(Preset), false, 0};
-    }
-    if (bAutoDetectAvailable && Catalog.IsDeviceAutoDetect(OutputDevice))
-    {
-        // If you're gaming, the game wins over whatever plays alongside it.
-        bool bGame = false;
-        for (const auto& [App, State] : Activity.Apps())
-        {
-            bGame = bGame || GameApps.contains(App);
-        }
-        return {EqPresetSource::Device, OutputDevice, "", true, 0, bGame};
+        // No game is playing: a game would have been a contender.
+        return {EqPresetSource::Device, OutputDevice, "", true, 0, false};
     }
     return {};
 }

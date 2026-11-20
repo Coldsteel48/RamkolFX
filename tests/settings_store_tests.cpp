@@ -97,6 +97,29 @@ TEST(UnknownAutoDetectDeviceFallsBackToAuto)
     CHECK(Out->AutoDetectDevice == InferenceDevice::Auto);
 }
 
+TEST(PlaybackPriorityRoundTripsAndDefaultsToGameFirst)
+{
+    TempPath Path;
+    PersistedSettings In;
+    In.Priority = PlaybackPriority::MusicFirst;
+    const SettingsStore Store(Path.Get());
+    Store.Save(In);
+    auto Out = Store.Load();
+    REQUIRE(Out);
+    CHECK(Out->Priority == PlaybackPriority::MusicFirst);
+
+    for (const char* Line : {"mode=0\n", "mode=0\nauto_switch.priority=loudest\n"})
+    {
+        {
+            std::ofstream File(Path.Get());
+            File << Line;
+        }
+        Out = Store.Load();
+        REQUIRE(Out);
+        CHECK(Out->Priority == PlaybackPriority::GameFirst);
+    }
+}
+
 TEST(InvalidDeviceModesAreDropped)
 {
     TempPath Path;

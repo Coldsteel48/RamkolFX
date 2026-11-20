@@ -176,6 +176,11 @@ than the sound (launched by Steam, run through Wine/Proton, or marked as a
 game by the app itself) and get the Game class's preset, Action by default.
 Details are in [docs/content-detect-plan.md](docs/content-detect-plan.md).
 
+There is one EQ curve for everything that plays, so when a game and a
+bound music app play together, the **Priority** setting decides whose
+preset applies: Game first (the default), Music first, or Latest first -
+see [docs/playback-priority-plan.md](docs/playback-priority-plan.md).
+
 - **Runtime:** it runs on ONNX Runtime 1.17 or newer, which the packages
   depend on. Gentoo is the exception: there it's a manual install, as
   ::gentoo has no ONNX Runtime. Without it, Auto-detect shows as

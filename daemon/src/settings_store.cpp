@@ -131,6 +131,10 @@ std::optional<PersistedSettings> SettingsStore::Load() const
     Timing.KeepAtLeastMs = ReadMs(*File, "auto_detect.keep_at_least_ms", Defaults.KeepAtLeastMs);
     Timing.CpuLimitPercent = File->GetFloat("auto_detect.cpu_limit_percent", Defaults.CpuLimitPercent);
     Result.DetectTiming = ClampAutoDetectTiming(Timing);
+    if (const auto Priority = PlaybackPriorityFromKey(File->GetString("auto_switch.priority", "")))
+    {
+        Result.Priority = *Priority;
+    }
     return Result;
 }
 
@@ -170,6 +174,10 @@ void SettingsStore::Save(const PersistedSettings& InSettings) const
     Out << "auto_detect.switch_after_ms=" << InSettings.DetectTiming.SwitchAfterMs << "\n";
     Out << "auto_detect.keep_at_least_ms=" << InSettings.DetectTiming.KeepAtLeastMs << "\n";
     Out << "auto_detect.cpu_limit_percent=" << InSettings.DetectTiming.CpuLimitPercent << "\n";
+    if (const char* PriorityKey = PlaybackPriorityKey(InSettings.Priority))
+    {
+        Out << "auto_switch.priority=" << PriorityKey << "\n";
+    }
     WriteFileAtomically(SettingsPath, Out.str(), {.LogPrefix = "[ramkolfxd]"});
 }
 

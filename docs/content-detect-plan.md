@@ -179,8 +179,9 @@ gains `bGame`:
 
 - An **app** Auto binding: the winning app is a game.
 - A **device** Auto binding: any app that is playing (or within the 2 s
-  grace) is a game. If you're gaming, the game wins over whatever else
-  plays alongside it.
+  grace) is a game. Whether it beats a bound app playing alongside it is
+  the Priority setting's call (Game first by default); see
+  [docs/playback-priority-plan.md](playback-priority-plan.md).
 - **A game counts as playing while its stream is open**, not only while
   it runs. Games go quiet for seconds at a time (menus, loading,
   alt-tab), and with the 2 s grace the EQ flipped between the Game preset

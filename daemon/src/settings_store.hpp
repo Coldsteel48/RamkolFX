@@ -74,6 +74,9 @@ struct PersistedSettings
     InferenceDevice AutoDetectDevice = InferenceDevice::Auto;
     // How quickly Auto-detect reacts (SetAutoDetectTiming), clamped.
     AutoDetectTiming DetectTiming;
+    // Who wins when a game and another bound app play at once
+    // (SetPlaybackPriority).
+    PlaybackPriority Priority = PlaybackPriority::GameFirst;
 };
 
 // The per-device spatial mode rule, on switching to Device: a remembered

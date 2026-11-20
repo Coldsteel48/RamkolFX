@@ -74,7 +74,21 @@ public:
     // warn when the tray options currently have nothing to minimize to.
     void SetTrayAvailable(bool bAvailable) { bTrayAvailable = bAvailable; }
 
+    // The tray's Priority submenu (docs/playback-priority-plan.md).
+    // Supported is false only for a daemon known to predate the setting;
+    // Current is nullopt until the daemon has been heard from.
+    bool IsPlaybackPrioritySupported() const;
+    std::optional<PlaybackPriority> CurrentPlaybackPriority() const;
+    // The tray menu is opening: connects if needed and refreshes the
+    // status, since nothing is polled while the window is away.
+    void RefreshForTray();
+    // From the tray or the App preset card; connects first if needed.
+    void SetPlaybackPriority(PlaybackPriority Priority);
+
 private:
+    // Connects to the daemon and fetches everything the UI shows; false
+    // (and still disconnected) if the daemon isn't there.
+    bool Connect();
     void DrawUI();
     void DrawSettingsPopup();
     void DrawSpatialTab();
@@ -233,6 +247,11 @@ private:
     void DrawAutoDetectCard();
     // The timing sliders row (check every, switch after, ...).
     void DrawAutoDetectTimingRow(float RowStartX, float RowWidth);
+    // The Priority combo (docs/playback-priority-plan.md), drawn in the App
+    // preset card and in Settings; Width fits the longest choice when it
+    // comes from PlaybackPriorityComboWidth().
+    void DrawPlaybackPriorityCombo(const char* Id, float Width);
+    float PlaybackPriorityComboWidth() const;
     // While a timing slider is dragged: the values shown, sent to the
     // daemon on release (a send per frame would log and save each step).
     AutoDetectTiming EditedTiming;

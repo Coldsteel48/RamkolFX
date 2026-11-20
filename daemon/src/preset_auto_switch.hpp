@@ -90,17 +90,23 @@ struct ResolvedBinding
     }
 };
 
-// The resolution rule: among apps tracked by Activity (i.e. playing, or
-// within the grace period) that have a binding, the one that started
-// playing most recently wins (ties broken by name, for determinism);
-// otherwise the current output device's binding; otherwise Manual.
+// The resolution rule (docs/playback-priority-plan.md). The contenders
+// are the apps tracked by Activity (playing, or within the grace period)
+// that have a binding, plus - while the output device is bound to
+// Auto-detect - every game among them, bound or not, standing in for that
+// device binding. Priority decides between games and the rest; within
+// the same kind (or under Latest) the one that started playing most
+// recently wins, ties broken by name for determinism. With no contender:
+// the current output device's binding, otherwise Manual.
+//
 // Auto-detect bindings take part only if bAutoDetectAvailable; otherwise
 // they count as unbound and the rule falls through past them. GameApps:
-// the apps whose streams look like games (game_detection.hpp), which set
+// the apps whose streams look like games (game_detection.hpp); they set
 // an Auto-detect binding's bGame.
 ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPresetCatalog& Catalog,
                                const std::string& OutputDevice, bool bAutoDetectAvailable,
-                               const std::set<std::string>& GameApps = {});
+                               const std::set<std::string>& GameApps = {},
+                               PlaybackPriority Priority = PlaybackPriority::GameFirst);
 
 // Runs detection for the Auto-detect binding in effect and turns its
 // result into a switch target (docs/content-detect-plan.md). AudioEngine

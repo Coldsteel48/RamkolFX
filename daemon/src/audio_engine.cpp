@@ -364,6 +364,10 @@ int AudioEngine::Run()
         AutoDetectDevicePolicy.store(LoadedSettings->AutoDetectDevice, std::memory_order_relaxed);
         Detector->SetDevice(LoadedSettings->AutoDetectDevice);
         ApplyAutoDetectTiming(LoadedSettings->DetectTiming);
+        {
+            std::lock_guard<std::mutex> Lock(AutoSwitchMutex);
+            Priority = LoadedSettings->Priority;
+        }
         Mode.store(LoadedSettings->Mode, std::memory_order_relaxed);
         bNearFieldEnabled.store(LoadedSettings->bNearFieldEnabled, std::memory_order_relaxed);
         for (uint8 i = 0; i < SpeakerCount; ++i)
@@ -1114,6 +1118,20 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
     {
         bPersistedStateChanged = ApplyAutoDetectTiming(InCommand.Timing);
     }
+    else if (InCommand.CommandOpcode == Opcode::SetPlaybackPriority)
+    {
+        {
+            std::lock_guard<std::mutex> Lock(AutoSwitchMutex);
+            bPersistedStateChanged = Priority != InCommand.PriorityValue;
+            Priority = InCommand.PriorityValue;
+        }
+        if (bPersistedStateChanged)
+        {
+            fprintf(stderr, "[ramkolfxd] auto-switch: priority set to %s\n", PlaybackPriorityKey(Priority));
+            // The winner may change right away, not on the next tick.
+            bReevaluateAutoSwitch = true;
+        }
+    }
 
     if (bReevaluateAutoSwitch)
     {
@@ -1157,6 +1175,8 @@ Status AudioEngine::BuildStatus()
         OutStatus.bDetectionHeld = AutoDetect.IsPaused();
         OutStatus.bHasAutoDetectTiming = true;
         OutStatus.DetectTiming = DetectTiming;
+        OutStatus.bHasPlaybackPriority = true;
+        OutStatus.Priority = Priority;
     }
     {
         std::lock_guard<std::mutex> Lock(PresetMutex);
@@ -1204,6 +1224,7 @@ void AudioEngine::PersistCurrentSettings()
     ToSave.bActivePresetBuiltIn = FindBuiltInEqPreset(CurrentStatus.ActivePresetName) != nullptr;
     ToSave.AutoDetectDevice = CurrentStatus.AutoDetectDevice;
     ToSave.DetectTiming = CurrentStatus.DetectTiming;
+    ToSave.Priority = CurrentStatus.Priority;
     {
         std::lock_guard<std::mutex> Lock(DeviceModeMutex);
         ToSave.DeviceSpatialModes = DeviceSpatialModes;
@@ -1379,7 +1400,7 @@ AutoSwitchTarget AudioEngine::ResolveCurrentTarget(int64_t NowMs)
     // it can't, they count as unbound and the rule falls through.
     const bool bDetectionAvailable = Detector->Availability() == AutoDetectAvailability::Ok;
     const ResolvedBinding Binding =
-        ResolveBinding(AppActivity, PresetCatalog, Output->GetTargetNodeName(), bDetectionAvailable, GameApps);
+        ResolveBinding(AppActivity, PresetCatalog, Output->GetTargetNodeName(), bDetectionAvailable, GameApps, Priority);
     const AutoSwitchTarget Target = AutoDetect.Update(Binding, PresetCatalog);
     // Paused before SetActive, which may wake the worker: it must not see
     // a new spell with the old pause flag. While held, the worker stays

@@ -71,6 +71,84 @@ App::App(float InDpiScale, float InMinContentWidth, const GuiPreferences& InPref
 {
 }
 
+bool App::Connect()
+{
+    if (!Client.Connect())
+    {
+        return false;
+    }
+    auto Result = Client.RequestStatus();
+    if (!Result)
+    {
+        Client.Disconnect();
+        return false;
+    }
+    LastStatus = *Result;
+    if (auto DeviceResult = Client.RequestDevices())
+    {
+        Devices = std::move(*DeviceResult);
+    }
+    if (auto HrtfResult = Client.RequestHrtfCatalog())
+    {
+        HrtfCatalog = std::move(*HrtfResult);
+    }
+    if (auto EqResult = Client.RequestHwEqState())
+    {
+        HwEqBands = *EqResult;
+    }
+    if (auto BassResult = Client.RequestBassEnhancerState())
+    {
+        BassEnhancer = *BassResult;
+    }
+    if (auto PresetResult = Client.RequestEqPresetCatalog())
+    {
+        EqPresets = std::move(*PresetResult);
+    }
+    DevicePollTimerSeconds = DevicePollIntervalSeconds;
+    bChannelLevelsUnsupported = false; // may be a newer daemon now
+    bDetectedClassesUnsupported = false;
+    bLevelPollPrimed = false;
+    bConnected = true;
+    return true;
+}
+
+bool App::IsPlaybackPrioritySupported() const
+{
+    // Unknown until connected: offered, so a click can connect.
+    return !bConnected || LastStatus.bHasPlaybackPriority;
+}
+
+std::optional<PlaybackPriority> App::CurrentPlaybackPriority() const
+{
+    if (bConnected && LastStatus.bHasPlaybackPriority)
+    {
+        return LastStatus.Priority;
+    }
+    return std::nullopt;
+}
+
+void App::RefreshForTray()
+{
+    // Nothing is polled while the window is away, and a window started
+    // hidden has never connected at all.
+    if (!bConnected)
+    {
+        Connect();
+    }
+    else
+    {
+        Apply(Client.RequestStatus());
+    }
+}
+
+void App::SetPlaybackPriority(PlaybackPriority Priority)
+{
+    if (bConnected || Connect())
+    {
+        Apply(Client.SetPlaybackPriority(Priority));
+    }
+}
+
 void App::Tick(float DeltaTimeSeconds)
 {
     if (!bConnected)
@@ -79,42 +157,7 @@ void App::Tick(float DeltaTimeSeconds)
         if (ReconnectTimerSeconds <= 0.0f)
         {
             ReconnectTimerSeconds = ReconnectIntervalSeconds;
-            if (Client.Connect())
-            {
-                if (auto Result = Client.RequestStatus())
-                {
-                    LastStatus = *Result;
-                    if (auto DeviceResult = Client.RequestDevices())
-                    {
-                        Devices = std::move(*DeviceResult);
-                    }
-                    if (auto HrtfResult = Client.RequestHrtfCatalog())
-                    {
-                        HrtfCatalog = std::move(*HrtfResult);
-                    }
-                    if (auto EqResult = Client.RequestHwEqState())
-                    {
-                        HwEqBands = *EqResult;
-                    }
-                    if (auto BassResult = Client.RequestBassEnhancerState())
-                    {
-                        BassEnhancer = *BassResult;
-                    }
-                    if (auto PresetResult = Client.RequestEqPresetCatalog())
-                    {
-                        EqPresets = std::move(*PresetResult);
-                    }
-                    DevicePollTimerSeconds = DevicePollIntervalSeconds;
-                    bChannelLevelsUnsupported = false; // may be a newer daemon now
-                    bDetectedClassesUnsupported = false;
-                    bLevelPollPrimed = false;
-                    bConnected = true;
-                }
-                else
-                {
-                    Client.Disconnect();
-                }
-            }
+            Connect();
         }
     }
     else
@@ -509,6 +552,25 @@ void App::DrawSettingsPopup()
                            "No usable system tray found - close and minimize behave normally until one is "
                            "available (on GNOME, install the AppIndicator extension).");
     }
+    ImGui::PopTextWrapPos();
+
+    // The same setting as the App preset card's combo and the tray menu's
+    // Priority submenu - all three follow LastStatus.
+    ImGui::Spacing();
+    ImGui::TextColored(palette::TextMutedV4, "EQ auto-switch");
+    {
+        const float RowStartX = ImGui::GetCursorScreenPos().x;
+        const float ComboWidth = PlaybackPriorityComboWidth();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("When a game and music play together");
+        ImGui::SameLine();
+        RightAlignCursor(RowStartX, RowWidth, ComboWidth);
+        DrawPlaybackPriorityCombo("##settings_playback_priority", ComboWidth);
+    }
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + RowWidth);
+    ImGui::TextColored(palette::TextMutedV4,
+                       "Only one EQ curve plays at a time. Only apps with a binding take part. Also in the "
+                       "tray menu, to change in the middle of a game.");
     ImGui::PopTextWrapPos();
 
     ImGui::Spacing();
@@ -1313,14 +1375,33 @@ void App::DrawAppPresetCard()
     {
         const ImVec2 RowStart = ImGui::GetCursorScreenPos();
         const float RowWidth = ImGui::GetContentRegionAvail().x;
-        const size_t PlayingCount =
-            std::count_if(Apps.begin(), Apps.end(), [](const AppEntry& E) { return E.bPlaying; });
-        char Summary[32];
-        std::snprintf(Summary, sizeof(Summary), "%zu playing", PlayingCount);
         ImGui::TextUnformatted("App preset");
         ImGui::SameLine();
-        RightAlignCursor(RowStart.x, RowWidth, ImGui::CalcTextSize(Summary).x);
-        ImGui::TextColored(palette::TextMutedV4, "%s", Summary);
+        if (LastStatus.bHasPlaybackPriority)
+        {
+            // No vertical frame padding: the combo is exactly one text line
+            // tall, so the header row keeps its height and lines up with the
+            // device card's.
+            const ImGuiStyle& Style = ImGui::GetStyle();
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Style.FramePadding.x, 0.0f));
+            const float ComboWidth = PlaybackPriorityComboWidth();
+            const char* Caption = "Priority";
+            RightAlignCursor(RowStart.x, RowWidth, ImGui::CalcTextSize(Caption).x + Style.ItemSpacing.x + ComboWidth);
+            ImGui::TextColored(palette::TextMutedV4, "%s", Caption);
+            ImGui::SameLine();
+            DrawPlaybackPriorityCombo("##card_playback_priority", ComboWidth);
+            ImGui::PopStyleVar();
+        }
+        else
+        {
+            // A daemon from before the priority setting.
+            const size_t PlayingCount =
+                std::count_if(Apps.begin(), Apps.end(), [](const AppEntry& E) { return E.bPlaying; });
+            char Summary[32];
+            std::snprintf(Summary, sizeof(Summary), "%zu playing", PlayingCount);
+            RightAlignCursor(RowStart.x, RowWidth, ImGui::CalcTextSize(Summary).x);
+            ImGui::TextColored(palette::TextMutedV4, "%s", Summary);
+        }
     }
 
     // App picker - only apps currently routed into RamkolFX are listed,
@@ -1398,6 +1479,36 @@ void App::DrawAppPresetCard()
     }
     ImGui::EndDisabled();
 
+    // Who else wants the EQ right now (docs/playback-priority-plan.md),
+    // mirroring the daemon's contenders: playing apps with a binding, plus
+    // games while the device is bound to Auto-detect. A game counts as
+    // playing while it's open. Only the winner is reported by the daemon;
+    // the losers are the rest, so the rule isn't repeated here.
+    const bool bAutoUsable = IsAutoDetectUsable();
+    const auto IsBound = [&](const AppEntry& E) { return !E.BoundPreset.empty() || (E.bAutoDetect && bAutoUsable); };
+    const bool bDeviceGameWins = LastStatus.PresetSource == EqPresetSource::Device && LastStatus.bAutoDetectActive &&
+                                 LastStatus.Detected == DetectedClass::Game;
+    const AppEntry* WinnerApp =
+        LastStatus.PresetSource == EqPresetSource::App ? Find(LastStatus.PresetSourceApp) : nullptr;
+    std::vector<const AppEntry*> Waiting;
+    if (WinnerApp || bDeviceGameWins)
+    {
+        for (const AppEntry& Entry : Apps)
+        {
+            const bool bContender = (Entry.bPlaying || Entry.bGame) &&
+                                    (IsBound(Entry) || (Entry.bGame && LastStatus.bDeviceAutoDetect && bAutoUsable));
+            // Under a device game, the unbound games are the winner.
+            const bool bWinner = &Entry == WinnerApp || (bDeviceGameWins && Entry.bGame && !IsBound(Entry));
+            if (bContender && !bWinner)
+            {
+                Waiting.push_back(&Entry);
+            }
+        }
+    }
+    const bool bSelectedWaiting =
+        Selected && std::find_if(Waiting.begin(), Waiting.end(), [&](const AppEntry* E)
+                                 { return E->Name == Selected->Name; }) != Waiting.end();
+
     // Apps holds copies, so Selected stays valid even if the bind above
     // refreshed ContentStreams; its BoundPreset just catches up next frame.
     if (!Selected)
@@ -1423,6 +1534,11 @@ void App::DrawAppPresetCard()
             ImGui::TextColored(palette::SuccessV4, "Active now");
         }
     }
+    else if (bSelectedWaiting)
+    {
+        ImGui::TextColored(palette::TextMutedV4, "Waiting: %s has priority",
+                           WinnerApp ? WinnerApp->Name.c_str() : "the game");
+    }
     else if (Selected->bAutoDetect)
     {
         ImGui::TextColored(palette::TextMutedV4, Selected->bGame ? "Recognised as a game: uses the Game preset"
@@ -1435,6 +1551,117 @@ void App::DrawAppPresetCard()
     else
     {
         ImGui::TextColored(palette::TextMutedV4, "Follows device / manual");
+    }
+
+    // Each name selects that app above.
+    const auto AppLink = [&](const AppEntry& Entry, const ImVec4& Color)
+    {
+        ImGui::TextColored(Color, "%s", Entry.Name.c_str());
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+        if (ImGui::IsItemClicked())
+        {
+            SelectedApp = Entry.Name;
+        }
+    };
+    if (!Waiting.empty())
+    {
+        ImGui::TextColored(palette::TextMutedV4, "Waiting:");
+        for (size_t i = 0; i < Waiting.size(); ++i)
+        {
+            ImGui::SameLine(0.0f, i == 0 ? -1.0f : 0.0f);
+            if (i > 0)
+            {
+                ImGui::TextColored(palette::TextMutedV4, ",");
+                ImGui::SameLine();
+            }
+            AppLink(*Waiting[i], palette::AccentSolidV4);
+        }
+        return;
+    }
+
+    // Music first only lets *bound* apps take over from a game: say so
+    // when an unbound one plays alongside it, the one case where the
+    // setting seems to do nothing.
+    const bool bGameWins = bDeviceGameWins || (WinnerApp && WinnerApp->bGame);
+    if (LastStatus.bHasPlaybackPriority && LastStatus.Priority == PlaybackPriority::MusicFirst && bGameWins)
+    {
+        auto Unbound = std::find_if(Apps.begin(), Apps.end(),
+                                    [&](const AppEntry& E) { return E.bPlaying && !E.bGame && !IsBound(E); });
+        if (Unbound != Apps.end())
+        {
+            AppLink(*Unbound, palette::WarningV4);
+            ImGui::SameLine();
+            ImGui::TextColored(palette::TextMutedV4, "isn't bound: bind it to beat the game");
+        }
+    }
+}
+
+namespace
+{
+struct PlaybackPriorityChoice
+{
+    PlaybackPriority Value;
+    const char* Help;
+};
+constexpr PlaybackPriorityChoice PlaybackPriorityChoices[] = {
+    {PlaybackPriority::GameFirst, "While a game is open, its preset plays. Bound music and video apps wait."},
+    {PlaybackPriority::MusicFirst, "A bound app that plays (Spotify, say) takes over from the game. The game's "
+                                   "preset comes back 2 s after it stops."},
+    {PlaybackPriority::Latest, "Whichever app started playing most recently wins."},
+};
+constexpr const char* PlaybackPriorityHelp = "Only one EQ curve plays at a time. This decides whose it is when a "
+                                             "game and another bound app play together.";
+} // namespace
+
+float App::PlaybackPriorityComboWidth() const
+{
+    const ImGuiStyle& Style = ImGui::GetStyle();
+    float LabelWidth = 0.0f;
+    for (const PlaybackPriorityChoice& Entry : PlaybackPriorityChoices)
+    {
+        LabelWidth = std::max(LabelWidth, ImGui::CalcTextSize(PlaybackPriorityLabel(Entry.Value)).x);
+    }
+    return LabelWidth + Style.FramePadding.x * 2.0f + ImGui::GetFrameHeight() + Style.ItemInnerSpacing.x;
+}
+
+void App::DrawPlaybackPriorityCombo(const char* Id, float Width)
+{
+    // Every copy of this combo (App preset card, Settings) and the tray's
+    // Priority submenu read LastStatus and change it only through
+    // SetPlaybackPriority, so they always show the same choice.
+    const bool bUsable = bConnected && LastStatus.bHasPlaybackPriority;
+    ImGui::BeginDisabled(!bUsable);
+    ImGui::SetNextItemWidth(Width);
+    const char* Current = bUsable ? PlaybackPriorityLabel(LastStatus.Priority) : nullptr;
+    if (ImGui::BeginCombo(Id, Current ? Current : "-"))
+    {
+        for (const PlaybackPriorityChoice& Entry : PlaybackPriorityChoices)
+        {
+            if (ImGui::Selectable(PlaybackPriorityLabel(Entry.Value), Entry.Value == LastStatus.Priority) &&
+                Entry.Value != LastStatus.Priority)
+            {
+                SetPlaybackPriority(Entry.Value);
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("%s", Entry.Help);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+        ImGui::TextUnformatted(!bConnected                         ? "Not connected to the RamkolFX daemon"
+                               : !LastStatus.bHasPlaybackPriority ? "Restart the RamkolFX daemon to use this setting"
+                                                                  : PlaybackPriorityHelp);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
     }
 }
 

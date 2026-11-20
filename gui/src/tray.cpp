@@ -100,8 +100,37 @@ enum MenuItemId : int
     MenuShowHide = 1,
     MenuSeparator = 2,
     MenuQuit = 3,
+    // The Priority submenu (docs/playback-priority-plan.md), with one
+    // radio item per PlaybackPriority, in enum order.
+    MenuPriority = 4,
+    MenuPriorityFirstChoice = 5,
+    MenuPriorityLastChoice = MenuPriorityFirstChoice + static_cast<int>(PlaybackPriority::Count) - 1,
+    MenuPrioritySeparator = MenuPriorityLastChoice + 1,
+    MenuLastId = MenuPrioritySeparator,
 };
-constexpr int MenuChildren[] = {MenuShowHide, MenuSeparator, MenuQuit};
+constexpr int MenuChildren[] = {MenuShowHide, MenuSeparator, MenuPriority, MenuPrioritySeparator, MenuQuit};
+
+// One dbusmenu item property: dbusmenu mixes strings ("label"), ints
+// ("toggle-state") and booleans ("visible").
+struct MenuProperty
+{
+    const char* Name;
+    int Type; // DBUS_TYPE_STRING, DBUS_TYPE_INT32 or DBUS_TYPE_BOOLEAN
+    const char* String = nullptr;
+    dbus_int32_t Int = 0;
+};
+MenuProperty StringProperty(const char* Name, const char* Value)
+{
+    return {Name, DBUS_TYPE_STRING, Value};
+}
+MenuProperty IntProperty(const char* Name, dbus_int32_t Value)
+{
+    return {Name, DBUS_TYPE_INT32, nullptr, Value};
+}
+MenuProperty BoolProperty(const char* Name, bool bValue)
+{
+    return {Name, DBUS_TYPE_BOOLEAN, nullptr, bValue ? 1 : 0};
+}
 
 #define RAMKOLFX_STANDARD_INTERFACES_XML                                                                       \
     "  <interface name=\"org.freedesktop.DBus.Introspectable\">\n"                                             \
@@ -219,6 +248,17 @@ void AppendBasicVariant(DBusMessageIter* It, int Type, const void* Value)
 void AppendStringVariant(DBusMessageIter* It, const char* Value)
 {
     AppendBasicVariant(It, DBUS_TYPE_STRING, &Value);
+}
+
+void AppendPropertyVariant(DBusMessageIter* It, const MenuProperty& Property)
+{
+    if (Property.Type == DBUS_TYPE_STRING)
+    {
+        AppendStringVariant(It, Property.String);
+        return;
+    }
+    // A dbus_bool_t is a 32-bit int too, so Int serves both.
+    AppendBasicVariant(It, Property.Type, &Property.Int);
 }
 
 // a(iiay)
@@ -783,6 +823,18 @@ void Tray::SetWindowShown(bool bShown)
     EmitLayoutUpdated();
 }
 
+void Tray::SetPlaybackPriority(bool bSupported, std::optional<PlaybackPriority> Current)
+{
+    if (bSupported == bPrioritySupported && Current == CurrentPriority)
+    {
+        return;
+    }
+    bPrioritySupported = bSupported;
+    CurrentPriority = Current;
+    ++MenuRevision;
+    EmitLayoutUpdated();
+}
+
 int Tray::GetPollFd() const
 {
     int Fd = -1;
@@ -1200,34 +1252,63 @@ bool Tray::HandleItemCall(DBusMessage* Message)
 
 bool Tray::HandleMenuCall(DBusMessage* Message)
 {
-    // Each item's properties as (name, string value) - every property this
-    // menu uses happens to be a string.
-    const auto ItemProperties = [this](int Id) -> std::vector<std::pair<const char*, const char*>>
+    const auto ItemProperties = [this](int Id) -> std::vector<MenuProperty>
     {
+        if (Id >= MenuPriorityFirstChoice && Id <= MenuPriorityLastChoice)
+        {
+            const auto Choice = static_cast<PlaybackPriority>(Id - MenuPriorityFirstChoice);
+            // No choice is checked until the GUI has heard from the daemon.
+            return {StringProperty("label", PlaybackPriorityLabel(Choice)),
+                    StringProperty("toggle-type", "radio"),
+                    IntProperty("toggle-state", CurrentPriority == Choice ? 1 : 0)};
+        }
         switch (Id)
         {
         case MenuRoot:
-            return {{"children-display", "submenu"}};
+            return {StringProperty("children-display", "submenu")};
         case MenuShowHide:
-            return {{"label", bWindowShown ? "Hide RamkolFX" : "Show RamkolFX"}};
+            return {StringProperty("label", bWindowShown ? "Hide RamkolFX" : "Show RamkolFX")};
         case MenuSeparator:
-            return {{"type", "separator"}};
+            return {StringProperty("type", "separator")};
+        case MenuPriority:
+            return {StringProperty("label", "Priority"), StringProperty("children-display", "submenu"),
+                    BoolProperty("visible", bPrioritySupported)};
+        case MenuPrioritySeparator:
+            return {StringProperty("type", "separator"), BoolProperty("visible", bPrioritySupported)};
         case MenuQuit:
-            return {{"label", "Quit"}};
+            return {StringProperty("label", "Quit")};
         default:
             return {};
         }
     };
-    const auto IsValidId = [](int Id) { return Id >= MenuRoot && Id <= MenuQuit; };
+    const auto IsValidId = [](int Id) { return Id >= MenuRoot && Id <= MenuLastId; };
+    const auto ChildrenOf = [](int Id) -> std::vector<int>
+    {
+        if (Id == MenuRoot)
+        {
+            return {std::begin(MenuChildren), std::end(MenuChildren)};
+        }
+        if (Id == MenuPriority)
+        {
+            std::vector<int> Choices;
+            for (int Choice = MenuPriorityFirstChoice; Choice <= MenuPriorityLastChoice; ++Choice)
+            {
+                Choices.push_back(Choice);
+            }
+            return Choices;
+        }
+        return {};
+    };
 
     // a{sv}
     const auto AppendProperties = [&](DBusMessageIter* It, int Id)
     {
         DBusMessageIter Dict;
         dbus_message_iter_open_container(It, DBUS_TYPE_ARRAY, "{sv}", &Dict);
-        for (const auto& [Name, Value] : ItemProperties(Id))
+        for (const MenuProperty& Property : ItemProperties(Id))
         {
-            AppendDictEntry(&Dict, Name, [&](DBusMessageIter* Entry) { AppendStringVariant(Entry, Value); });
+            AppendDictEntry(&Dict, Property.Name,
+                            [&](DBusMessageIter* Entry) { AppendPropertyVariant(Entry, Property); });
         }
         dbus_message_iter_close_container(It, &Dict);
     };
@@ -1242,9 +1323,9 @@ bool Tray::HandleMenuCall(DBusMessage* Message)
         dbus_message_iter_append_basic(&Struct, DBUS_TYPE_INT32, &Id32);
         AppendProperties(&Struct, Id);
         dbus_message_iter_open_container(&Struct, DBUS_TYPE_ARRAY, "v", &Children);
-        if (Id == MenuRoot && Depth != 0)
+        if (Depth != 0)
         {
-            for (const int Child : MenuChildren)
+            for (const int Child : ChildrenOf(Id))
             {
                 DBusMessageIter Variant;
                 dbus_message_iter_open_container(&Children, DBUS_TYPE_VARIANT, "(ia{sv}av)", &Variant);
@@ -1298,7 +1379,10 @@ bool Tray::HandleMenuCall(DBusMessage* Message)
         }
         if (Ids.empty())
         {
-            Ids = {MenuRoot, MenuShowHide, MenuSeparator, MenuQuit};
+            for (int Id = MenuRoot; Id <= MenuLastId; ++Id)
+            {
+                Ids.push_back(Id);
+            }
         }
         DBusMessage* Reply = dbus_message_new_method_return(Message);
         DBusMessageIter It;
@@ -1328,14 +1412,14 @@ bool Tray::HandleMenuCall(DBusMessage* Message)
         const char* Name = nullptr;
         if (ReadBasic(&Args, DBUS_TYPE_INT32, &Id) && ReadBasic(&Args, DBUS_TYPE_STRING, &Name))
         {
-            for (const auto& [PropertyName, Value] : ItemProperties(Id))
+            for (const MenuProperty& Property : ItemProperties(Id))
             {
-                if (std::strcmp(PropertyName, Name) == 0)
+                if (std::strcmp(Property.Name, Name) == 0)
                 {
                     DBusMessage* Reply = dbus_message_new_method_return(Message);
                     DBusMessageIter It;
                     dbus_message_iter_init_append(Reply, &It);
-                    AppendStringVariant(&It, Value);
+                    AppendPropertyVariant(&It, Property);
                     SendAndRelease(Connection, Reply);
                     return true;
                 }
@@ -1385,6 +1469,11 @@ bool Tray::HandleMenuCall(DBusMessage* Message)
     }
     if (dbus_message_is_method_call(Message, MenuInterface, "AboutToShow"))
     {
+        // The menu is opening: the GUI refreshes what the Priority submenu
+        // shows (it doesn't talk to the daemon while hidden). Whatever
+        // changes goes out as LayoutUpdated, which hosts apply to an open
+        // menu too.
+        PendingRequests.bMenuOpening = true;
         DBusMessage* Reply = dbus_message_new_method_return(Message);
         const dbus_bool_t NeedUpdate = FALSE;
         dbus_message_append_args(Reply, DBUS_TYPE_BOOLEAN, &NeedUpdate, DBUS_TYPE_INVALID);
@@ -1393,6 +1482,7 @@ bool Tray::HandleMenuCall(DBusMessage* Message)
     }
     if (dbus_message_is_method_call(Message, MenuInterface, "AboutToShowGroup"))
     {
+        PendingRequests.bMenuOpening = true;
         DBusMessage* Reply = dbus_message_new_method_return(Message);
         DBusMessageIter It;
         dbus_message_iter_init_append(Reply, &It);
@@ -1424,6 +1514,10 @@ void Tray::HandleMenuEvent(int ItemId, const char* EventId)
     else if (ItemId == MenuQuit)
     {
         PendingRequests.bQuit = true;
+    }
+    else if (ItemId >= MenuPriorityFirstChoice && ItemId <= MenuPriorityLastChoice)
+    {
+        PendingRequests.PriorityChoice = static_cast<PlaybackPriority>(ItemId - MenuPriorityFirstChoice);
     }
 }
 

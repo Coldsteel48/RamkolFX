@@ -80,7 +80,9 @@ TEST(StatusRoundTrip)
     CHECK(Out->PresetSourceApp == "Firefox");
     CHECK(Out->bHasAutoDetect && Out->AutoDetect == AutoDetectAvailability::Ok && !Out->bAutoDetectActive);
 
-    CHECK(!DecodeStatusResponse(Payload(Message), PayloadLength(Message) - 1));
+    // Two bytes short cuts into the timing block (one short is a daemon
+    // without the priority byte, which is valid).
+    CHECK(!DecodeStatusResponse(Payload(Message), PayloadLength(Message) - 2));
 }
 
 TEST(StatusAutoDetectFields)
@@ -108,14 +110,15 @@ TEST(StatusAutoDetectFields)
 
     // A daemon from before the timing settings: Auto-detect, no timing.
     const auto NoTiming =
-        DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectTimingWireSize));
+        DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectTimingWireSize - 1));
     REQUIRE(NoTiming);
     CHECK(NoTiming->bHasAutoDetect && NoTiming->DetectedTableRevision == 7);
     CHECK(!NoTiming->bHasAutoDetectTiming && NoTiming->DetectTiming == AutoDetectTiming{});
+    CHECK(!NoTiming->bHasPlaybackPriority);
 
     // An older daemon's Status stops right after PresetSourceApp: still
     // decodes, with the defaults.
-    const size_t AutoDetectBytes = 7 + 2 + In.InferenceDeviceLabel.size() + 4 + AutoDetectTimingWireSize;
+    const size_t AutoDetectBytes = 7 + 2 + In.InferenceDeviceLabel.size() + 4 + AutoDetectTimingWireSize + 1;
     const auto Old = DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectBytes));
     REQUIRE(Old);
     CHECK(Old->PresetSource == EqPresetSource::Device && !Old->bAutoDetectActive && !Old->bHasAutoDetect);
@@ -132,6 +135,47 @@ TEST(StatusCarriesAutoDetectTiming)
     const auto Out = DecodeStatusResponse(Payload(Message), PayloadLength(Message));
     REQUIRE(Out);
     CHECK(Out->bHasAutoDetectTiming && Out->DetectTiming == In.DetectTiming);
+}
+
+TEST(StatusCarriesPlaybackPriority)
+{
+    Status In;
+    In.Priority = PlaybackPriority::Latest;
+    auto Message = EncodeStatusResponse(In);
+    auto Out = DecodeStatusResponse(Payload(Message), PayloadLength(Message));
+    REQUIRE(Out);
+    CHECK(Out->bHasPlaybackPriority && Out->Priority == PlaybackPriority::Latest);
+
+    // A daemon from before the priority: timing, no priority.
+    Out = DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - 1));
+    REQUIRE(Out);
+    CHECK(Out->bHasAutoDetectTiming && !Out->bHasPlaybackPriority);
+    CHECK(Out->Priority == PlaybackPriority::GameFirst);
+
+    // A newer daemon's value this build doesn't know: the default.
+    Message.back() = static_cast<uint8>(PlaybackPriority::Count);
+    Out = DecodeStatusResponse(Payload(Message), PayloadLength(Message));
+    REQUIRE(Out);
+    CHECK(Out->bHasPlaybackPriority && Out->Priority == PlaybackPriority::GameFirst);
+}
+
+TEST(SetPlaybackPriorityRoundTrip)
+{
+    auto Message = EncodeSetPlaybackPriorityRequest(PlaybackPriority::MusicFirst);
+    auto Command = DecodeCommand(Opcode::SetPlaybackPriority, Payload(Message), PayloadLength(Message));
+    REQUIRE(Command);
+    CHECK(Command->PriorityValue == PlaybackPriority::MusicFirst);
+    CHECK(!DecodeCommand(Opcode::SetPlaybackPriority, Payload(Message), 0));
+    Message = EncodeSetPlaybackPriorityRequest(PlaybackPriority::Count);
+    CHECK(!DecodeCommand(Opcode::SetPlaybackPriority, Payload(Message), PayloadLength(Message)));
+
+    for (size_t i = 0; i < static_cast<size_t>(PlaybackPriority::Count); ++i)
+    {
+        const auto Priority = static_cast<PlaybackPriority>(i);
+        CHECK(PlaybackPriorityFromKey(PlaybackPriorityKey(Priority)) == Priority);
+        CHECK(PlaybackPriorityLabel(Priority) != nullptr);
+    }
+    CHECK(!PlaybackPriorityFromKey("loudest"));
 }
 
 TEST(SetAutoDetectTimingRoundTrip)

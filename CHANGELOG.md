@@ -26,6 +26,20 @@ follows [Semantic Versioning](https://semver.org/) — see
 
   The app list marks games. Bind a game to a preset (FPS, RPG) to give
   it its own curve.
+- **Priority when a game and music play together.** There is one EQ
+  curve for everything, so a new Priority setting in the App preset card
+  decides whose preset applies:
+  - *Game first* (default): while a game is open, its preset plays. Bound
+    music and video apps wait.
+  - *Music first:* a bound app that plays takes over from the game; the
+    game's preset comes back when it stops.
+  - *Latest first:* whichever app started playing most recently wins.
+
+  It's also in Settings and in the tray menu (to change in the middle of
+  a game); all three stay in step. The
+  card lists the bound apps that are waiting. Only bound apps take
+  part: an unbound music app never takes over, and the card says so under
+  Music first.
 
 ## [0.3.0] - 2026-11-20
 

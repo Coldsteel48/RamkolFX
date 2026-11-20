@@ -800,6 +800,16 @@ int main(int argc, char** argv)
             // could hold up the exit.
             break;
         }
+        if (Requests.bMenuOpening)
+        {
+            App.RefreshForTray();
+        }
+        if (Requests.PriorityChoice)
+        {
+            App.SetPlaybackPriority(*Requests.PriorityChoice);
+        }
+        // Every pass, so a change made in the window shows in the menu too.
+        Tray.SetPlaybackPriority(App.IsPlaybackPrioritySupported(), App.CurrentPlaybackPriority());
         bool bShowRequested = Requests.bShowWindow;
         bool bHideRequested = !bShowRequested && Requests.bHideWindow;
         if (!bShowRequested && !bHideRequested && Requests.bToggleWindow)

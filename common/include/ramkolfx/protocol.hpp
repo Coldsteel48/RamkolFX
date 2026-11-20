@@ -70,6 +70,7 @@ enum class Opcode : uint8
     SetAutoDetectDevice = 0x1E, // [InferenceDevice:1]
     SetAutoDetectTiming = 0x1F, // [AutoDetectTiming: AutoDetectTimingWireSize]
     GetChannelLevels = 0x20,
+    SetPlaybackPriority = 0x21, // [PlaybackPriority:1] (docs/playback-priority-plan.md)
     // Responses
     StatusResponse = 0x81,
     ErrorResponse = 0x82,
@@ -305,6 +306,24 @@ AutoDetectTiming ClampAutoDetectTiming(const AutoDetectTiming& Timing);
 // Wire size of AutoDetectTiming: three u32 then a float.
 inline constexpr size_t AutoDetectTimingWireSize = 16;
 
+// Who wins when a game and another bound app play at once: there is one
+// EQ curve for the whole mix (docs/playback-priority-plan.md). Between two
+// non-game apps, or two games, the latest to start wins whatever this is.
+// Sent as one byte, so new values go before Count.
+enum class PlaybackPriority : uint8
+{
+    GameFirst = 0,  // the game's binding decides; bound music/video apps wait
+    MusicFirst = 1, // a bound non-game app that's playing takes over from the game
+    Latest = 2,     // whichever started most recently
+    Count,
+};
+
+// Short name for the GUI ("Game first"), and the settings-file key
+// ("game", "music", "latest"); nullptr / nullopt for an unknown value.
+const char* PlaybackPriorityLabel(PlaybackPriority Priority);
+const char* PlaybackPriorityKey(PlaybackPriority Priority);
+std::optional<PlaybackPriority> PlaybackPriorityFromKey(const std::string& Key);
+
 // Whether Auto-detect bindings can work on this machine. Anything but Ok
 // makes them count as unbound. Sent as one byte, so new values go before
 // Count.
@@ -349,6 +368,7 @@ struct Command
     DetectedClass ClassValue = DetectedClass::None; // valid when CommandOpcode == BindDetectedClass (never None)
     InferenceDevice DeviceValue = InferenceDevice::Auto; // valid when CommandOpcode == SetAutoDetectDevice
     AutoDetectTiming Timing;      // valid when CommandOpcode == SetAutoDetectTiming (not yet clamped)
+    PlaybackPriority PriorityValue = PlaybackPriority::GameFirst; // valid when CommandOpcode == SetPlaybackPriority
 };
 
 enum class EqPresetSource : uint8
@@ -435,6 +455,13 @@ struct Status
     // refuse SetAutoDetectTiming.
     bool bHasAutoDetectTiming = false;
     AutoDetectTiming DetectTiming;
+
+    // Who wins when a game and another bound app play at once
+    // (SetPlaybackPriority). Decoded only if present: bHasPlaybackPriority
+    // false means a daemon that predates it and would refuse
+    // SetPlaybackPriority. An unknown value decodes as GameFirst.
+    bool bHasPlaybackPriority = false;
+    PlaybackPriority Priority = PlaybackPriority::GameFirst;
 };
 
 // Per-channel activity of the 7.1 signal entering the spatializer, for the
@@ -704,6 +731,7 @@ std::vector<uint8> EncodeBindDetectedClassRequest(DetectedClass Class, const std
 std::vector<uint8> EncodeGetDetectedClassesRequest();
 std::vector<uint8> EncodeSetAutoDetectDeviceRequest(InferenceDevice Device);
 std::vector<uint8> EncodeSetAutoDetectTimingRequest(const AutoDetectTiming& Timing);
+std::vector<uint8> EncodeSetPlaybackPriorityRequest(PlaybackPriority Priority);
 std::vector<uint8> EncodeGetChannelLevelsRequest();
 
 // Resolves the default control socket path: $XDG_RUNTIME_DIR/ramkolfx/control.sock,

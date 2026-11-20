@@ -427,6 +427,13 @@ std::optional<Command> DecodeCommand(Opcode InOpcode, const uint8* Payload, uint
         }
         OutCommand.Timing = ReadAutoDetectTiming(Payload);
         return OutCommand;
+    case Opcode::SetPlaybackPriority:
+        if (PayloadLength < 1 || Payload[0] >= static_cast<uint8>(PlaybackPriority::Count))
+        {
+            return std::nullopt;
+        }
+        OutCommand.PriorityValue = static_cast<PlaybackPriority>(Payload[0]);
+        return OutCommand;
     case Opcode::GetChannelLevels:
         return OutCommand;
     default:
@@ -536,6 +543,19 @@ std::optional<Status> DecodeStatusResponse(const uint8* Payload, uint16 PayloadL
     }
     OutStatus.bHasAutoDetectTiming = true;
     OutStatus.DetectTiming = ReadAutoDetectTiming(Payload + Offset);
+    Offset += AutoDetectTimingWireSize;
+
+    // Playback priority: [PlaybackPriority:1]. Absent from an older daemon;
+    // a value this build doesn't know reads as the default.
+    if (Offset == PayloadLength)
+    {
+        return OutStatus;
+    }
+    OutStatus.bHasPlaybackPriority = true;
+    if (Payload[Offset] < static_cast<uint8>(PlaybackPriority::Count))
+    {
+        OutStatus.Priority = static_cast<PlaybackPriority>(Payload[Offset]);
+    }
     return OutStatus;
 }
 
@@ -741,6 +761,7 @@ std::vector<uint8> EncodeStatusResponse(const Status& InStatus)
     AppendString(Payload, InStatus.InferenceDeviceLabel);
     AppendU32BE(Payload, InStatus.DetectedTableRevision);
     AppendAutoDetectTiming(Payload, InStatus.DetectTiming);
+    Payload.push_back(static_cast<uint8>(InStatus.Priority));
 
     std::vector<uint8> Out;
     Out.reserve(HeaderSize + Payload.size());
@@ -1097,6 +1118,14 @@ std::vector<uint8> EncodeSetAutoDetectTimingRequest(const AutoDetectTiming& Timi
     return Out;
 }
 
+std::vector<uint8> EncodeSetPlaybackPriorityRequest(PlaybackPriority Priority)
+{
+    std::vector<uint8> Out;
+    AppendHeader(Out, Opcode::SetPlaybackPriority, 1);
+    Out.push_back(static_cast<uint8>(Priority));
+    return Out;
+}
+
 AutoDetectTiming ClampAutoDetectTiming(const AutoDetectTiming& Timing)
 {
     AutoDetectTiming Out;
@@ -1218,6 +1247,12 @@ namespace
 constexpr std::array<const char*, static_cast<size_t>(InferenceDevice::Count)> InferenceDeviceKeys{
     "auto", "cpu", "gpu", "npu"};
 
+// Indexed by PlaybackPriority.
+constexpr std::array<const char*, static_cast<size_t>(PlaybackPriority::Count)> PlaybackPriorityKeys{
+    "game", "music", "latest"};
+constexpr std::array<const char*, static_cast<size_t>(PlaybackPriority::Count)> PlaybackPriorityLabels{
+    "Game first", "Music first", "Latest first"};
+
 // Indexed by AutoDetectAvailability.
 constexpr std::array<const char*, static_cast<size_t>(AutoDetectAvailability::Count)> AutoDetectAvailabilityLabels{
     "", "ONNX Runtime is not installed (or older than 1.17)", "The classifier model is not installed",
@@ -1237,6 +1272,30 @@ std::optional<InferenceDevice> InferenceDeviceFromKey(const std::string& Key)
         if (Key == InferenceDeviceKeys[i])
         {
             return static_cast<InferenceDevice>(i);
+        }
+    }
+    return std::nullopt;
+}
+
+const char* PlaybackPriorityLabel(PlaybackPriority Priority)
+{
+    const size_t Index = static_cast<size_t>(Priority);
+    return Index < PlaybackPriorityLabels.size() ? PlaybackPriorityLabels[Index] : nullptr;
+}
+
+const char* PlaybackPriorityKey(PlaybackPriority Priority)
+{
+    const size_t Index = static_cast<size_t>(Priority);
+    return Index < PlaybackPriorityKeys.size() ? PlaybackPriorityKeys[Index] : nullptr;
+}
+
+std::optional<PlaybackPriority> PlaybackPriorityFromKey(const std::string& Key)
+{
+    for (size_t i = 0; i < PlaybackPriorityKeys.size(); ++i)
+    {
+        if (Key == PlaybackPriorityKeys[i])
+        {
+            return static_cast<PlaybackPriority>(i);
         }
     }
     return std::nullopt;

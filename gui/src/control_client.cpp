@@ -290,6 +290,11 @@ std::optional<Status> ControlClient::SetAutoDetectTiming(const AutoDetectTiming&
     return SendStatusRequest(EncodeSetAutoDetectTimingRequest(Timing));
 }
 
+std::optional<Status> ControlClient::SetPlaybackPriority(PlaybackPriority Priority)
+{
+    return SendStatusRequest(EncodeSetPlaybackPriorityRequest(Priority));
+}
+
 std::optional<DetectionReport> ControlClient::RequestDetectedClasses()
 {
     return RequestDecoded(EncodeGetDetectedClassesRequest(), Opcode::DetectedClassesResponse,
