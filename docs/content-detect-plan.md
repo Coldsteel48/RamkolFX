@@ -181,6 +181,11 @@ gains `bGame`:
 - A **device** Auto binding: any app that is playing (or within the 2 s
   grace) is a game. If you're gaming, the game wins over whatever else
   plays alongside it.
+- **A game counts as playing while its stream is open**, not only while
+  it runs. Games go quiet for seconds at a time (menus, loading,
+  alt-tab), and with the 2 s grace the EQ flipped between the Game preset
+  and the previous curve all session (seen with Arma Reforger). This
+  applies to every binding of a game, preset bindings included.
 
 `bGame` is part of the binding's identity, so a game starting or
 stopping under a device Auto binding starts detection afresh, like a
@@ -540,7 +545,11 @@ order. Game detection comes first: it needs no license decisions and
 fixes the most common case for this app. Model work waits for a test set
 that can show whether a change helps.
 
-6. **Game detection** from stream metadata. *(In progress.)* See
+6. **Game detection** from stream metadata. *(Done, not yet tried with
+   a real game: the decision, resolver, session, wire and GUI are in, with
+   unit tests on a faked `/proc`, plus one check against live processes.
+   Still to confirm on real games: that SDL sets `media.role=Game`, and
+   which binary names Proton reports.)* See
    [Game detection](#game-detection-phase-6).
 7. **Test set and scoring.** About 100 of the user's tracks with known
    genres, plus podcasts, film clips and game recordings. A script runs

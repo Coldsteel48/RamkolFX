@@ -245,7 +245,8 @@ TEST(EqPresetCatalogRoundTrip)
 
 TEST(ContentStreamListRoundTrip)
 {
-    const std::vector<ContentStreamInfo> In{{"Firefox", "Tab", true, "Vocal", false}, {"mpv", "", false, "", true}};
+    const std::vector<ContentStreamInfo> In{{"Firefox", "Tab", true, "Vocal", false, true},
+                                            {"mpv", "", false, "", true, false}};
     const auto Message = EncodeContentStreamListResponse(In);
     const auto Out = DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message));
     REQUIRE(Out);
@@ -254,12 +255,18 @@ TEST(ContentStreamListRoundTrip)
     CHECK((*Out)[0].bPlaying && (*Out)[0].BoundPresetName == "Vocal");
     CHECK(!(*Out)[1].bPlaying && (*Out)[1].BoundPresetName.empty());
     CHECK(!(*Out)[0].bAutoDetect && (*Out)[1].bAutoDetect);
+    CHECK((*Out)[0].bGame && !(*Out)[1].bGame);
 
-    // An older daemon's list has no trailer: still decodes, nothing Auto.
-    const auto Old = DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message) - 2);
+    // A daemon from before game detection sends only the bAutoDetect block.
+    const auto NoGame = DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message) - 2);
+    REQUIRE(NoGame && NoGame->size() == 2);
+    CHECK((*NoGame)[1].bAutoDetect && !(*NoGame)[0].bGame);
+
+    // An older one still has no trailer: still decodes, nothing Auto.
+    const auto Old = DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message) - 4);
     REQUIRE(Old && Old->size() == 2);
-    CHECK((*Old)[1].AppName == "mpv" && !(*Old)[1].bAutoDetect);
-    CHECK(!DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message) - 3));
+    CHECK((*Old)[1].AppName == "mpv" && !(*Old)[1].bAutoDetect && !(*Old)[0].bGame);
+    CHECK(!DecodeContentStreamListResponse(Payload(Message), PayloadLength(Message) - 5));
 }
 
 TEST(ContentStreamListOverflowKeepsTheTrailer)
@@ -267,7 +274,7 @@ TEST(ContentStreamListOverflowKeepsTheTrailer)
     std::vector<ContentStreamInfo> In;
     for (int i = 0; i < 200; ++i)
     {
-        In.push_back({"app" + std::to_string(i), std::string(30, 'm'), true, "Preset", i % 2 == 1});
+        In.push_back({"app" + std::to_string(i), std::string(30, 'm'), true, "Preset", i % 2 == 1, i % 3 == 0});
     }
     const auto Message = EncodeContentStreamListResponse(In);
     CHECK(PayloadLength(Message) <= MaxPayloadSize);
@@ -276,6 +283,7 @@ TEST(ContentStreamListOverflowKeepsTheTrailer)
     for (size_t i = 0; i < Out->size(); ++i)
     {
         CHECK((*Out)[i].bAutoDetect == (i % 2 == 1));
+        CHECK((*Out)[i].bGame == (i % 3 == 0));
     }
 }
 

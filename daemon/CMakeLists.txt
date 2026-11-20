@@ -119,6 +119,7 @@ add_library(ramkolfx_presets STATIC
     src/preset_store.cpp
     src/preset_auto_switch.cpp
     src/content_detection.cpp
+    src/game_detection.cpp
     src/settings_store.cpp
     src/dsp/biquad.cpp
     src/dsp/graphic_eq_filter.cpp

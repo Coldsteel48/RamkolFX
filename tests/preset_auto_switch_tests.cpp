@@ -13,6 +13,8 @@
 #include "preset_auto_switch.hpp"
 #include "test_harness.hpp"
 
+#include <set>
+
 using namespace ramkolfx;
 
 namespace
@@ -752,6 +754,99 @@ TEST(EndToEndAutoBindingSwitchesAndRestores)
 
     CHECK(Tick(10000, {})); // grace over: back to the hand-tuned curve
     CHECK(Live.Bands[3].GainDb == -4.0f && Live.PresetName.empty());
+}
+
+TEST(GamesResolveFromMetadata)
+{
+    const std::set<std::string> Games{"Game.exe", "Firefox", "mpv"};
+
+    // An app Auto binding on a game.
+    AppActivityTracker Tracker;
+    Tracker.Update({"Firefox"}, 100);
+    CHECK((ResolveBinding(Tracker, AutoCatalog, "", true, Games) ==
+           ResolvedBinding{EqPresetSource::App, "Firefox", "", true, 100, true}));
+
+    // A device Auto binding: any app playing that is a game, bound or not.
+    AppActivityTracker Device;
+    Device.Update({"Game.exe", "Spotify"}, 0);
+    CHECK(ResolveBinding(Device, AutoCatalog, "speakers", true, Games).bGame);
+    Device.Update({"Spotify"}, 10000); // the game's grace has run out
+    CHECK(!ResolveBinding(Device, AutoCatalog, "speakers", true, Games).bGame);
+
+    // A game bound to a preset is just a preset binding.
+    AppActivityTracker Mpv;
+    Mpv.Update({"mpv"}, 0);
+    const ResolvedBinding Bound = ResolveBinding(Mpv, AutoCatalog, "", true, Games);
+    CHECK(Bound.PresetName == "Bass Boost" && !Bound.bGame);
+
+    // Without a game list (or no game among it) nothing changes.
+    CHECK(!ResolveBinding(Tracker, AutoCatalog, "", true).bGame);
+}
+
+TEST(GameGetsItsPresetWithoutListening)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Game{EqPresetSource::Device, "speakers", "", true, 0, true};
+    CHECK((Session.Update(Game, AutoCatalog) == AutoSwitchTarget{EqPresetSource::Device, "speakers", "Action"}));
+    CHECK(Session.IsActive() && !Session.NeedsAudio() && !Session.ShouldDetect());
+    CHECK(Session.Current() == DetectedClass::Game && Session.Confidence() == 1.0f);
+    CHECK(Session.IsSettled(0));
+    CHECK(ScoreOf(Session.LiveScores(), DetectedClass::Game) == 1.0f);
+
+    // Audio results (from before the switch, say) change nothing.
+    Feed(Session, SpeechScores, 0, 8000);
+    Session.AddTrackBoundary(9000);
+    CHECK(Session.Current() == DetectedClass::Game);
+    CHECK(ScoreOf(Session.LiveScores(), DetectedClass::Speech) == 0.0f);
+
+    // The class table decides, as for any class.
+    EqPresetCatalog Catalog;
+    REQUIRE(Catalog.BindDetectedClass(DetectedClass::Game, "FPS") == EqPresetCatalog::Result::Ok);
+    AutoDetectSession Fps;
+    CHECK(Fps.Update(Game, Catalog).PresetName == "FPS");
+}
+
+TEST(GameStoppingStartsListeningAfresh)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Speakers{EqPresetSource::Device, "speakers", "", true, 0};
+    ResolvedBinding Game = Speakers;
+    Game.bGame = true;
+
+    Session.Update(Speakers, AutoCatalog);
+    Feed(Session, JazzScores, 0, 4000);
+    CHECK(Session.Current() == DetectedClass::Jazz);
+
+    CHECK(Session.Update(Game, AutoCatalog).PresetName == "Action");
+    CHECK(Session.Update(Speakers, AutoCatalog).PresetName.empty()); // listening again, from scratch
+    CHECK(Session.NeedsAudio() && Session.ShouldDetect());
+    CHECK(Session.Current() == DetectedClass::None);
+}
+
+TEST(HoldDuringAGameLastsUntilItStops)
+{
+    AutoDetectSession Session;
+    const ResolvedBinding Speakers{EqPresetSource::Device, "speakers", "", true, 0};
+    ResolvedBinding Game = Speakers;
+    Game.bGame = true;
+
+    Session.Update(Game, AutoCatalog);
+    Session.Hold(1000);
+    CHECK(Session.IsHeld() && Session.IsPaused() && !Session.ShouldDetect());
+    CHECK(Session.Update(Game, AutoCatalog).PresetName.empty());
+
+    // No gap re-checks: there's no audio detection to re-check with.
+    Session.AddTrackBoundary(5000);
+    CHECK(Session.IsPaused());
+    CHECK(Session.Update(Game, AutoCatalog).PresetName.empty());
+
+    // Re-tuning stays held too.
+    Session.Hold(6000);
+    CHECK(Session.IsPaused() && Session.Current() == DetectedClass::Game);
+
+    // The game stops: the hold ends and detection takes over.
+    Session.Update(Speakers, AutoCatalog);
+    CHECK(!Session.IsHeld() && Session.ShouldDetect());
 }
 
 RAMKOLFX_TEST_MAIN()

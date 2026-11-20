@@ -29,7 +29,8 @@ void AppActivityTracker::Update(const std::vector<std::string>& PlayingApps, int
 }
 
 ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPresetCatalog& Catalog,
-                               const std::string& OutputDevice, bool bAutoDetectAvailable)
+                               const std::string& OutputDevice, bool bAutoDetectAvailable,
+                               const std::set<std::string>& GameApps)
 {
     const PresetBindingMap& AppBindings = Catalog.AppBindings();
     const std::string* WinnerApp = nullptr;
@@ -48,7 +49,9 @@ ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPrese
     if (WinnerApp)
     {
         const std::string Preset = Catalog.AppBinding(*WinnerApp);
-        return {EqPresetSource::App, *WinnerApp, Preset, Preset.empty(), WinnerState->StartedAtMs};
+        const bool bAuto = Preset.empty();
+        return {EqPresetSource::App, *WinnerApp, Preset, bAuto, WinnerState->StartedAtMs,
+                bAuto && GameApps.contains(*WinnerApp)};
     }
 
     if (OutputDevice.empty())
@@ -61,7 +64,13 @@ ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPrese
     }
     if (bAutoDetectAvailable && Catalog.IsDeviceAutoDetect(OutputDevice))
     {
-        return {EqPresetSource::Device, OutputDevice, "", true, 0};
+        // If you're gaming, the game wins over whatever plays alongside it.
+        bool bGame = false;
+        for (const auto& [App, State] : Activity.Apps())
+        {
+            bGame = bGame || GameApps.contains(App);
+        }
+        return {EqPresetSource::Device, OutputDevice, "", true, 0, bGame};
     }
     return {};
 }
@@ -80,6 +89,17 @@ AutoSwitchTarget AutoDetectSession::Update(const ResolvedBinding& NewBinding, co
         bActive = true;
         EndHold();
         Smoother.Reset();
+    }
+    if (Binding.bGame)
+    {
+        // The class is known from metadata; a hold lasts until the game
+        // stops (the binding changes).
+        AutoSwitchTarget Target = Binding.AsTarget();
+        if (HoldState == EHold::None)
+        {
+            Target.PresetName = Catalog.DetectedClassPreset(DetectedClass::Game);
+        }
+        return Target;
     }
     if (Smoother.Current() != DetectedClass::None)
     {
@@ -119,9 +139,24 @@ void AutoDetectSession::AddScores(const ClassScores& Scores, int64_t NowMs)
     }
 }
 
-void AutoDetectSession::AddTrackBoundary(int64_t NowMs)
+ClassScores AutoDetectSession::LiveScores() const
 {
     if (!bActive)
+    {
+        return {};
+    }
+    if (Binding.bGame)
+    {
+        ClassScores Scores{};
+        ScoreOf(Scores, DetectedClass::Game) = 1.0f;
+        return Scores;
+    }
+    return Smoother.Smoothed();
+}
+
+void AutoDetectSession::AddTrackBoundary(int64_t NowMs)
+{
+    if (!NeedsAudio())
     {
         return;
     }
@@ -177,6 +212,14 @@ void AutoDetectSession::Hold(int64_t NowMs)
 {
     if (!bActive)
     {
+        return;
+    }
+    if (Binding.bGame)
+    {
+        // Nothing to learn or re-check: held until the game stops.
+        HeldClass = DetectedClass::Game;
+        HoldState = EHold::Held;
+        HeldAtMs = NowMs;
         return;
     }
     switch (HoldState)

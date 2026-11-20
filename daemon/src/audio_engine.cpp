@@ -77,7 +77,7 @@ int64_t SteadyNowMs()
 uint64_t SpellIdOf(const ResolvedBinding& Binding)
 {
     const uint64_t KeyHash = std::hash<std::string>{}(Binding.Key);
-    return KeyHash ^ (static_cast<uint64_t>(Binding.Source) << 56) ^
+    return KeyHash ^ (static_cast<uint64_t>(Binding.Source) << 56) ^ (static_cast<uint64_t>(Binding.bGame) << 48) ^
            (static_cast<uint64_t>(Binding.SpellStartedAtMs) * 0x9E3779B97F4A7C15ull);
 }
 
@@ -1379,13 +1379,14 @@ AutoSwitchTarget AudioEngine::ResolveCurrentTarget(int64_t NowMs)
     // it can't, they count as unbound and the rule falls through.
     const bool bDetectionAvailable = Detector->Availability() == AutoDetectAvailability::Ok;
     const ResolvedBinding Binding =
-        ResolveBinding(AppActivity, PresetCatalog, Output->GetTargetNodeName(), bDetectionAvailable);
+        ResolveBinding(AppActivity, PresetCatalog, Output->GetTargetNodeName(), bDetectionAvailable, GameApps);
     const AutoSwitchTarget Target = AutoDetect.Update(Binding, PresetCatalog);
     // Paused before SetActive, which may wake the worker: it must not see
     // a new spell with the old pause flag. While held, the worker stays
     // active - tracking silence for the gap that starts a re-check.
     Detector->SetPaused(!AutoDetect.ShouldDetect());
-    Detector->SetActive(AutoDetect.IsActive(), SpellIdOf(Binding));
+    // A game's class comes from metadata: the worker stays off entirely.
+    Detector->SetActive(AutoDetect.NeedsAudio(), SpellIdOf(Binding));
     Detector->SetSettled(AutoDetect.IsSettled(NowMs));
     return Target;
 }
@@ -1511,10 +1512,7 @@ std::vector<uint8> AudioEngine::BuildDetectedClassesResponse()
 
     ClassScores Live{};
     std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
-    if (AutoDetect.IsActive())
-    {
-        Live = AutoDetect.GetSmoother().Smoothed();
-    }
+    Live = AutoDetect.LiveScores();
     std::lock_guard<std::mutex> Lock(PresetMutex);
     for (size_t i = 1; i < DetectedClassCount; ++i)
     {
@@ -1543,11 +1541,20 @@ bool AudioEngine::EvaluateAutoSwitch()
     std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
 
     std::vector<std::string> PlayingApps;
+    GameApps.clear();
     for (const ContentStreamInfo& Stream : Devices->GetContentStreams())
     {
-        if (Stream.bPlaying)
+        // A game counts as playing for as long as its stream is open, not
+        // only while it's running: games go quiet for seconds at a time
+        // (menus, loading, alt-tab), and the 2 s grace would otherwise flip
+        // the EQ back and forth all session.
+        if (Stream.bPlaying || Stream.bGame)
         {
             PlayingApps.push_back(Stream.AppName);
+        }
+        if (Stream.bGame)
+        {
+            GameApps.insert(Stream.AppName);
         }
     }
     const int64_t NowMs = SteadyNowMs();

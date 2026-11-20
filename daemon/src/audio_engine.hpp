@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -307,6 +308,9 @@ private:
     // PresetMutex alone.
     std::mutex AutoSwitchMutex;
     AppActivityTracker AppActivity;
+    // Apps whose streams look like games, from the last stream sample;
+    // guarded by AutoSwitchMutex alone, like AppActivity.
+    std::set<std::string> GameApps;
     AutoSwitchController AutoSwitch;
     // Detection state for the Auto-detect binding in effect (if any), fed
     // by Detector's events. Guarded by AutoSwitchMutex alone.

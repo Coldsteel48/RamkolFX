@@ -21,6 +21,7 @@
 #include <spa/utils/dict.h>
 #include <spa/utils/json.h>
 
+#include "game_detection.hpp"
 #include "virtual_sink.hpp"
 
 namespace ramkolfx
@@ -233,6 +234,15 @@ void DeviceRegistry::HandleGlobalAdded(uint32 Id, const char* Type, const spa_di
         return;
     }
 
+    if (std::strcmp(Type, PW_TYPE_INTERFACE_Client) == 0)
+    {
+        if (const char* Pid = spa_dict_lookup(Props, PW_KEY_SEC_PID))
+        {
+            ClientPids[Id] = std::strtoll(Pid, nullptr, 10);
+        }
+        return;
+    }
+
     if (std::strcmp(Type, PW_TYPE_INTERFACE_Link) == 0)
     {
         const char* OutputNode = spa_dict_lookup(Props, PW_KEY_LINK_OUTPUT_NODE);
@@ -383,6 +393,8 @@ void DeviceRegistry::HandleGlobalRemoved(uint32 Id)
         DevicesById.erase(Id);
     }
 
+    ClientPids.erase(Id);
+
     std::unique_ptr<TrackedStream> RemovedStream;
     {
         std::lock_guard<std::mutex> Lock(StreamsMutex);
@@ -406,30 +418,86 @@ void DeviceRegistry::HandleGlobalRemoved(uint32 Id)
 
 void DeviceRegistry::HandleStreamInfo(uint32 Id, const pw_node_info* Info)
 {
-    std::lock_guard<std::mutex> Lock(StreamsMutex);
-    const auto It = StreamsById.find(Id);
-    if (It == StreamsById.end())
+    const bool bHasProps = (Info->change_mask & PW_NODE_CHANGE_MASK_PROPS) && Info->props;
+
+    // What the game decision rests on (see game_detection.hpp): the
+    // node's own process keys - set for streams through pipewire-pulse -
+    // else the client's server-verified pid, for native PipeWire streams.
+    std::optional<GameStreamHints> Hints;
+    if (bHasProps)
     {
-        return;
-    }
-    TrackedStream& Stream = *It->second;
-    if (Info->change_mask & PW_NODE_CHANGE_MASK_STATE)
-    {
-        Stream.bRunning = Info->state == PW_NODE_STATE_RUNNING;
-    }
-    if ((Info->change_mask & PW_NODE_CHANGE_MASK_PROPS) && Info->props)
-    {
-        // Registry globals only carry a filtered subset of properties;
-        // the bound node's full props are authoritative for the app name.
-        if (const char* AppName = LookupFirst(Info->props, {PW_KEY_APP_NAME, PW_KEY_APP_PROCESS_BINARY}))
+        Hints.emplace();
+        if (const char* Role = spa_dict_lookup(Info->props, PW_KEY_MEDIA_ROLE))
         {
-            Stream.AppName = AppName;
+            Hints->MediaRole = Role;
         }
-        // media.name tends to follow the current track/tab title.
-        if (const char* MediaName = LookupFirst(Info->props, {PW_KEY_MEDIA_NAME, PW_KEY_NODE_DESCRIPTION}))
+        if (const char* Binary = spa_dict_lookup(Info->props, PW_KEY_APP_PROCESS_BINARY))
         {
-            Stream.MediaName = MediaName;
+            Hints->Binary = Binary;
         }
+        if (const char* Pid = spa_dict_lookup(Info->props, PW_KEY_APP_PROCESS_ID))
+        {
+            Hints->Pid = std::strtoll(Pid, nullptr, 10);
+        }
+        else if (const char* Client = spa_dict_lookup(Info->props, PW_KEY_CLIENT_ID))
+        {
+            const auto It = ClientPids.find(static_cast<uint32>(std::strtoul(Client, nullptr, 10)));
+            Hints->Pid = It != ClientPids.end() ? It->second : 0;
+        }
+    }
+
+    std::string AppName;
+    {
+        std::lock_guard<std::mutex> Lock(StreamsMutex);
+        const auto It = StreamsById.find(Id);
+        if (It == StreamsById.end())
+        {
+            return;
+        }
+        TrackedStream& Stream = *It->second;
+        if (Info->change_mask & PW_NODE_CHANGE_MASK_STATE)
+        {
+            Stream.bRunning = Info->state == PW_NODE_STATE_RUNNING;
+        }
+        if (bHasProps)
+        {
+            // Registry globals only carry a filtered subset of properties;
+            // the bound node's full props are authoritative for the app name.
+            if (const char* Name = LookupFirst(Info->props, {PW_KEY_APP_NAME, PW_KEY_APP_PROCESS_BINARY}))
+            {
+                Stream.AppName = Name;
+            }
+            // media.name tends to follow the current track/tab title.
+            if (const char* MediaName = LookupFirst(Info->props, {PW_KEY_MEDIA_NAME, PW_KEY_NODE_DESCRIPTION}))
+            {
+                Stream.MediaName = MediaName;
+            }
+        }
+        if (!Hints)
+        {
+            return;
+        }
+        std::string Key = Hints->MediaRole + '\n' + Hints->Binary + '\n' + std::to_string(Hints->Pid);
+        if (Key == Stream.GameHintsKey)
+        {
+            return; // decided already; this props event only renamed the media
+        }
+        Stream.GameHintsKey = std::move(Key);
+        AppName = Stream.AppName;
+    }
+
+    // Reads /proc, so outside the lock GetContentStreams() takes.
+    const bool bGame = LooksLikeGame(*Hints);
+    {
+        std::lock_guard<std::mutex> Lock(StreamsMutex);
+        if (const auto It = StreamsById.find(Id); It != StreamsById.end())
+        {
+            It->second->bGame = bGame;
+        }
+    }
+    if (bGame && LoggedGameApps.insert(AppName).second)
+    {
+        fprintf(stderr, "[ramkolfxd] '%s' looks like a game\n", AppName.c_str());
     }
 }
 
@@ -452,7 +520,7 @@ std::vector<ContentStreamInfo> DeviceRegistry::GetContentStreams() const
     {
         if (FeedingNodes.contains(Id))
         {
-            Result.push_back({Stream->AppName, Stream->MediaName, Stream->bRunning, {}});
+            Result.push_back({Stream->AppName, Stream->MediaName, Stream->bRunning, {}, false, Stream->bGame});
         }
     }
     std::sort(Result.begin(), Result.end(),

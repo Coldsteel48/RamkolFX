@@ -171,8 +171,10 @@ previous sound when they stop - see
 An app or device can also be bound to **Auto-detect (AI)** (experimental).
 A local audio classifier listens to what's playing and picks the preset
 through an editable class -> preset table: Speech, Movie, Music, and for
-music the best-scoring genre. Details are in
-[docs/content-detect-plan.md](docs/content-detect-plan.md).
+music the best-scoring genre. Games are recognised from the app rather
+than the sound (launched by Steam, run through Wine/Proton, or marked as a
+game by the app itself) and get the Game class's preset, Action by default.
+Details are in [docs/content-detect-plan.md](docs/content-detect-plan.md).
 
 - **Runtime:** it runs on ONNX Runtime 1.17 or newer, which the packages
   depend on. Gentoo is the exception: there it's a manual install, as

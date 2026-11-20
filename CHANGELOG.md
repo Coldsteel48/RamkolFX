@@ -7,6 +7,26 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-detect recognises games.** A new Game class in the Auto-detect
+  table, with Action as its default preset. A game is recognised from
+  the app, not the sound: Steam launched it, it runs through Wine or
+  Proton, or it marks its own audio as a game's (SDL-based games do).
+  So Discord or in-game dialogue no longer makes a game count as Speech.
+  - *App binding:* an app bound to Auto-detect that is a game gets the
+    Game preset.
+  - *Device binding:* while any game plays, the Game preset applies,
+    whatever else plays alongside it.
+  - *No model needed:* the audio classifier doesn't run while a game is
+    in effect.
+  - *Holding:* tweaking the EQ holds your curve until the game stops.
+  - *Quiet moments:* a game counts as playing for as long as it's open,
+    so menus and loading screens don't flip the EQ back and forth.
+
+  The app list marks games. Bind a game to a preset (FPS, RPG) to give
+  it its own curve.
+
 ## [0.3.0] - 2026-11-20
 
 ### Added

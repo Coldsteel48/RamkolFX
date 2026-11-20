@@ -242,7 +242,10 @@ const std::string& DefaultDetectedClassPreset(DetectedClass Class)
         std::array<std::string, DetectedClassCount> Table;
         Table[static_cast<size_t>(DetectedClass::Speech)] = "Spoken Word";
         Table[static_cast<size_t>(DetectedClass::Movie)] = "Movie";
-        for (size_t i = static_cast<size_t>(DetectedClass::Rock); i < DetectedClassCount; ++i)
+        // No single game curve fits every game; Action is the all-rounder.
+        // The user points it at FPS, RPG etc. (or binds the game itself).
+        Table[static_cast<size_t>(DetectedClass::Game)] = "Action";
+        for (size_t i = static_cast<size_t>(FirstGenreClass); i <= static_cast<size_t>(LastGenreClass); ++i)
         {
             Table[i] = DetectedClassLabel(static_cast<DetectedClass>(i)); // genre labels are the built-ins' names
         }

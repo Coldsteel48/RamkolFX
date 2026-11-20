@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -207,11 +208,16 @@ std::optional<std::vector<T>> DecodeListResponse(const uint8* Payload, uint16 Pa
 // EncodeEntry appends, stopping before - never mid-entry - a further
 // entry would push the payload past MaxPayloadSize. Mirrors
 // DecodeListResponse above; pulled out for the same reason.
+//
+// TrailerBlocks are fields added later, after the whole list, which older
+// decoders (that stop after the entries) never see: each is one byte per
+// entry, written as its own block - [block 0: one byte per entry][block 1
+// ...] - so a decoder that knows only the first block still reads it right.
 template <typename T, typename EntryEncoder>
 std::vector<uint8> EncodeListResponse(Opcode InOpcode, const std::vector<T>& Items, EntryEncoder&& EncodeEntry,
-                                      size_t TrailerBytesPerEntry = 0,
-                                      void (*AppendTrailer)(std::vector<uint8>&, const T&) = nullptr)
+                                      std::initializer_list<uint8 (*)(const T&)> TrailerBlocks = {})
 {
+    const size_t TrailerBytesPerEntry = TrailerBlocks.size();
     std::vector<uint8> Payload;
     Payload.push_back(0); // count placeholder, patched below once the final count is known
     Payload.push_back(0);
@@ -230,11 +236,12 @@ std::vector<uint8> EncodeListResponse(Opcode InOpcode, const std::vector<T>& Ite
     }
     Payload[0] = static_cast<uint8>((Count >> 8) & 0xFF);
     Payload[1] = static_cast<uint8>(Count & 0xFF);
-    // A per-entry trailer after the whole list: fields added later, which
-    // older decoders (that stop after the entries) never see.
-    for (uint16 i = 0; AppendTrailer && i < Count; ++i)
+    for (uint8 (*Block)(const T&) : TrailerBlocks)
     {
-        AppendTrailer(Payload, Items[i]);
+        for (uint16 i = 0; i < Count; ++i)
+        {
+            Payload.push_back(Block(Items[i]));
+        }
     }
 
     std::vector<uint8> Out;
@@ -611,12 +618,25 @@ std::optional<std::vector<ContentStreamInfo>> DecodeContentStreamListResponse(co
             return ReadString(P, Len, Offset, Info.BoundPresetName);
         },
         &End);
-    // Trailer: one bAutoDetect byte per entry - absent from an older daemon.
-    if (Streams && End + Streams->size() <= PayloadLength)
+    // Trailer blocks, one byte per entry each, absent from older daemons:
+    // bAutoDetect, then bGame.
+    if (!Streams)
     {
-        for (size_t i = 0; i < Streams->size(); ++i)
+        return Streams;
+    }
+    const size_t N = Streams->size();
+    if (End + N <= PayloadLength)
+    {
+        for (size_t i = 0; i < N; ++i)
         {
             (*Streams)[i].bAutoDetect = Payload[End + i] != 0;
+        }
+    }
+    if (End + 2 * N <= PayloadLength)
+    {
+        for (size_t i = 0; i < N; ++i)
+        {
+            (*Streams)[i].bGame = Payload[End + N + i] != 0;
         }
     }
     return Streams;
@@ -803,8 +823,8 @@ std::vector<uint8> EncodeContentStreamListResponse(const std::vector<ContentStre
                                    Entry.push_back(Stream.bPlaying ? 1 : 0);
                                    AppendString(Entry, Stream.BoundPresetName);
                                },
-                               1, +[](std::vector<uint8>& Out, const ContentStreamInfo& Stream)
-                               { Out.push_back(Stream.bAutoDetect ? 1 : 0); });
+                               {+[](const ContentStreamInfo& Stream) -> uint8 { return Stream.bAutoDetect ? 1 : 0; },
+                                +[](const ContentStreamInfo& Stream) -> uint8 { return Stream.bGame ? 1 : 0; }});
 }
 
 std::vector<uint8> EncodeDetectedClassesResponse(const DetectionReport& Report)
@@ -1164,6 +1184,7 @@ constexpr std::array<DetectedClassName, DetectedClassCount> DetectedClassNames{{
     {"Blues", "blues"},
     {"Reggae", "reggae"},
     {"Acoustic", "acoustic"},
+    {"Game", "game"},
 }};
 } // namespace
 

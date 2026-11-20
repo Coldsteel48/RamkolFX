@@ -185,11 +185,13 @@ TEST(DetectedClassTableDefaultsAndOverrides)
     CHECK(Catalog.DetectedClassPreset(DetectedClass::Movie) == "Movie");
     CHECK(Catalog.DetectedClassPreset(DetectedClass::Music).empty());
     CHECK(Catalog.DetectedClassPreset(DetectedClass::None).empty());
+    CHECK(Catalog.DetectedClassPreset(DetectedClass::Game) == "Action");
     // Every genre has a same-named built-in.
-    for (size_t i = static_cast<size_t>(DetectedClass::Rock); i < DetectedClassCount; ++i)
+    for (size_t i = static_cast<size_t>(FirstGenreClass); i <= static_cast<size_t>(LastGenreClass); ++i)
     {
-        const std::string Preset = Catalog.DetectedClassPreset(static_cast<DetectedClass>(i));
-        CHECK(FindBuiltInEqPreset(Preset) != nullptr);
+        const auto Genre = static_cast<DetectedClass>(i);
+        CHECK(Catalog.DetectedClassPreset(Genre) == DetectedClassLabel(Genre));
+        CHECK(FindBuiltInEqPreset(Catalog.DetectedClassPreset(Genre)) != nullptr);
     }
 
     CHECK(Catalog.BindDetectedClass(DetectedClass::None, "Flat") == Result::InvalidName);

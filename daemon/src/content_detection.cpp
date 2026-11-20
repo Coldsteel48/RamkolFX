@@ -130,7 +130,7 @@ DetectedClass DetectionSmoother::Decide() const
     // it clearly.
     DetectedClass BestGenre = DetectedClass::None;
     float BestScore = 0.0f;
-    for (size_t i = static_cast<size_t>(DetectedClass::Rock); i < DetectedClassCount; ++i)
+    for (size_t i = static_cast<size_t>(FirstGenreClass); i <= static_cast<size_t>(LastGenreClass); ++i)
     {
         const DetectedClass Genre = static_cast<DetectedClass>(i);
         const float Score = Evidence[i] * (Genre == CurrentClass ? Tuning.GenreHysteresis : 1.0f);
@@ -191,7 +191,7 @@ void DetectionSmoother::AddScores(const ClassScores& Scores, int64_t NowMs)
     const auto Decay = static_cast<float>(std::exp(-ElapsedMs / static_cast<double>(Tuning.GenreTauMs)));
     GenreWeight = GenreWeight * Decay + 1.0f;
     Evidence = Ema;
-    for (size_t i = static_cast<size_t>(DetectedClass::Rock); i < DetectedClassCount; ++i)
+    for (size_t i = static_cast<size_t>(FirstGenreClass); i <= static_cast<size_t>(LastGenreClass); ++i)
     {
         GenreSum[i] = GenreSum[i] * Decay + Scores[i];
         Evidence[i] = GenreSum[i] / GenreWeight;

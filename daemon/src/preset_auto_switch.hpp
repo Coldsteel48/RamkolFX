@@ -12,6 +12,7 @@
 #include <array>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 
 #include "content_detection.hpp"
@@ -73,6 +74,11 @@ struct ResolvedBinding
     std::string PresetName;   // empty for Auto-detect
     bool bAutoDetect = false;
     int64_t SpellStartedAtMs = 0; // app bindings: start of the app's playing spell
+    // Auto-detect only: a game is in effect - the bound app is one, or,
+    // for a device binding, any app playing is. The class is then Game,
+    // from metadata, and the audio model doesn't run. Part of the
+    // binding's identity: a game starting or stopping starts afresh.
+    bool bGame = false;
 
     bool operator==(const ResolvedBinding&) const = default;
 
@@ -89,9 +95,12 @@ struct ResolvedBinding
 // playing most recently wins (ties broken by name, for determinism);
 // otherwise the current output device's binding; otherwise Manual.
 // Auto-detect bindings take part only if bAutoDetectAvailable; otherwise
-// they count as unbound and the rule falls through past them.
+// they count as unbound and the rule falls through past them. GameApps:
+// the apps whose streams look like games (game_detection.hpp), which set
+// an Auto-detect binding's bGame.
 ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPresetCatalog& Catalog,
-                               const std::string& OutputDevice, bool bAutoDetectAvailable);
+                               const std::string& OutputDevice, bool bAutoDetectAvailable,
+                               const std::set<std::string>& GameApps = {});
 
 // Runs detection for the Auto-detect binding in effect and turns its
 // result into a switch target (docs/content-detect-plan.md). AudioEngine
@@ -158,16 +167,22 @@ public:
         return bActive ? HoldState : EHold::None;
     }
 
-    // An Auto-detect binding is in effect and detection is needed: not
-    // held, or held but learning / re-checking. (Otherwise, while paused,
-    // the worker only tracks silence: see IsActive.)
+    // An Auto-detect binding is in effect and inference is needed: not a
+    // game, and not held, or held but learning / re-checking. (Otherwise,
+    // while paused, the worker only tracks silence: see NeedsAudio.)
     bool ShouldDetect() const
     {
-        return bActive && HoldState != EHold::Held;
+        return NeedsAudio() && HoldState != EHold::Held;
     }
     bool IsActive() const
     {
         return bActive;
+    }
+    // The worker should listen at all: an Auto-detect binding is in
+    // effect and it isn't a game's, whose class comes from metadata.
+    bool NeedsAudio() const
+    {
+        return bActive && !Binding.bGame;
     }
     // The user is in charge of the curve, whatever detection is doing.
     bool IsHeld() const
@@ -181,16 +196,27 @@ public:
     }
     DetectedClass Current() const
     {
-        return bActive ? Smoother.Current() : DetectedClass::None;
+        if (!bActive)
+        {
+            return DetectedClass::None;
+        }
+        return Binding.bGame ? DetectedClass::Game : Smoother.Current();
     }
     float Confidence() const
     {
-        return bActive ? Smoother.Confidence() : 0.0f;
+        if (!bActive)
+        {
+            return 0.0f;
+        }
+        return Binding.bGame ? 1.0f : Smoother.Confidence();
     }
     bool IsSettled(int64_t NowMs) const
     {
-        return bActive && Smoother.IsSettled(NowMs);
+        return bActive && (Binding.bGame || Smoother.IsSettled(NowMs));
     }
+    // The live per-class scores, for the class table: the smoother's, or
+    // Game alone at 1 while a game is in effect. All 0 when not active.
+    ClassScores LiveScores() const;
     const DetectionSmoother& GetSmoother() const
     {
         return Smoother;

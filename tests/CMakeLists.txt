@@ -21,6 +21,7 @@ ramkolfx_add_test(preset_store_tests ramkolfx_presets)
 ramkolfx_add_test(preset_auto_switch_tests ramkolfx_presets)
 ramkolfx_add_test(settings_store_tests ramkolfx_presets)
 ramkolfx_add_test(content_detection_tests ramkolfx_presets)
+ramkolfx_add_test(game_detection_tests ramkolfx_presets)
 ramkolfx_add_test(content_detector_tests ramkolfx_detect)
 # Needs ONNX Runtime at run time (dlopened); exits 77 = skipped without it.
 ramkolfx_add_test(onnx_classifier_tests ramkolfx_detect)

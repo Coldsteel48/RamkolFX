@@ -1270,6 +1270,7 @@ void App::DrawAppPresetCard()
         std::string BoundPreset;
         bool bPlaying = false;
         bool bAutoDetect = false;
+        bool bGame = false; // any of its streams looks like a game
     };
     std::vector<AppEntry> Apps;
     for (const ContentStreamInfo& Stream : ContentStreams)
@@ -1277,10 +1278,12 @@ void App::DrawAppPresetCard()
         auto It = std::find_if(Apps.begin(), Apps.end(), [&](const AppEntry& E) { return E.Name == Stream.AppName; });
         if (It == Apps.end())
         {
-            Apps.push_back(
-                {Stream.AppName, Stream.MediaName, Stream.BoundPresetName, Stream.bPlaying, Stream.bAutoDetect});
+            Apps.push_back({Stream.AppName, Stream.MediaName, Stream.BoundPresetName, Stream.bPlaying,
+                            Stream.bAutoDetect, Stream.bGame});
+            continue;
         }
-        else if (Stream.bPlaying && !It->bPlaying)
+        It->bGame = It->bGame || Stream.bGame;
+        if (Stream.bPlaying && !It->bPlaying)
         {
             It->bPlaying = true;
             It->MediaName = Stream.MediaName; // show what's actually playing
@@ -1339,6 +1342,11 @@ void App::DrawAppPresetCard()
             ImGui::SameLine();
             ImGui::TextColored(Entry.bPlaying ? palette::SuccessV4 : palette::TextMutedV4,
                                Entry.bPlaying ? "playing" : "paused");
+            if (Entry.bGame)
+            {
+                ImGui::SameLine();
+                ImGui::TextColored(palette::TextMutedV4, "- game");
+            }
             ImGui::PopID();
         }
         ImGui::EndCombo();
@@ -1415,7 +1423,8 @@ void App::DrawAppPresetCard()
     }
     else if (Selected->bAutoDetect)
     {
-        ImGui::TextColored(palette::TextMutedV4, "Detects what it plays");
+        ImGui::TextColored(palette::TextMutedV4, Selected->bGame ? "Recognised as a game: uses the Game preset"
+                                                                 : "Detects what it plays");
     }
     else if (!Selected->BoundPreset.empty())
     {
@@ -1734,6 +1743,11 @@ void App::DrawAutoDetectCard()
         const bool bDetectedNow = LastStatus.bAutoDetectActive && LastStatus.Detected == Entry.Class;
         ImGui::TextColored(bDetectedNow ? palette::AccentSolidV4 : palette::TextSecondaryV4, "%s",
                            DetectedClassLabel(Entry.Class));
+        if (Entry.Class == DetectedClass::Game && ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Recognised from the app, not the sound: launched by Steam,\n"
+                              "run through Wine/Proton, or marked as a game by the app");
+        }
 
         ImGui::SetCursorScreenPos(ImVec2(X + LabelWidth, Y));
         ImGui::SetNextItemWidth(ComboWidth);

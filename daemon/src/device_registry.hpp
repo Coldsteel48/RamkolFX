@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <spa/utils/hook.h>
@@ -126,6 +127,12 @@ public:
         std::string AppName;
         std::string MediaName;
         bool bRunning = false;
+        // Looks like a game (game_detection.hpp), decided from the node's
+        // props; GameHintsKey is what it was decided from, so it's only
+        // re-decided (with /proc reads) when those change, not on every
+        // media.name update.
+        bool bGame = false;
+        std::string GameHintsKey;
         pw_proxy* Proxy = nullptr;
         spa_hook Listener{};
     };
@@ -189,6 +196,14 @@ private:
     std::unordered_map<uint32, std::unique_ptr<TrackedStream>> StreamsById;
     std::unordered_map<uint32, LinkEnds> LinksById;
     uint32 VirtualSinkNodeId = 0xFFFFFFFFu; // SPA_ID_INVALID until our sink's global appears
+
+    // Client global id -> pipewire.sec.pid (set by the server from the
+    // socket's credentials). The process behind a native PipeWire stream,
+    // whose node carries no application.process.id. Main-loop thread only.
+    std::unordered_map<uint32, int64_t> ClientPids;
+    // Apps already logged as games, so a game with several streams is
+    // logged once. Main-loop thread only.
+    std::unordered_set<std::string> LoggedGameApps;
 };
 
 } // namespace ramkolfx

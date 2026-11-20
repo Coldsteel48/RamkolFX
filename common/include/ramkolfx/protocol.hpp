@@ -204,8 +204,9 @@ inline constexpr float ReferenceSpeakerDistanceMeters = 1.0f;
 
 // What the content classifier thinks is playing, for Auto-detect
 // bindings (docs/content-detect-plan.md). None = nothing confident yet.
-// Speech/Movie/Music are the coarse classes; the rest are genres within
-// Music. Sent as one byte, so new values go before Count.
+// Speech/Movie/Music are the coarse classes from audio, Rock..Acoustic
+// the genres within Music, and Game comes from stream metadata rather
+// than audio. Sent as one byte, so new values go before Count.
 enum class DetectedClass : uint8
 {
     None = 0,
@@ -223,14 +224,19 @@ enum class DetectedClass : uint8
     Blues,
     Reggae,
     Acoustic,
+    Game,
     Count,
 };
 
 inline constexpr size_t DetectedClassCount = static_cast<size_t>(DetectedClass::Count);
 
+// The genres: an explicit range, since classes after them (Game) aren't.
+inline constexpr DetectedClass FirstGenreClass = DetectedClass::Rock;
+inline constexpr DetectedClass LastGenreClass = DetectedClass::Acoustic;
+
 constexpr bool IsGenreClass(DetectedClass Class)
 {
-    return Class >= DetectedClass::Rock && Class < DetectedClass::Count;
+    return Class >= FirstGenreClass && Class <= LastGenreClass;
 }
 
 // Display name ("Hip-Hop", "R&B"); "Unknown" for a value this build
@@ -535,6 +541,10 @@ struct ContentStreamInfo
     // it's a flag byte per entry *after* the whole list, so an older GUI
     // ignores it and an older daemon's list still decodes (all false).
     bool bAutoDetect = false;
+    // The stream looks like a game (media.role, a Wine process, launched
+    // by Steam; see game_detection.hpp). A second trailer block after
+    // bAutoDetect's, decoded only if present.
+    bool bGame = false;
 };
 
 // One row of the class -> preset table (GetDetectedClasses).
