@@ -29,16 +29,15 @@ Pre-releases are never published: on Arch, `vercmp` sorts `0.3.0_alpha1`
    gh secret set AUR_SSH_PRIVATE_KEY < ~/.ssh/aur
    ```
 
-4. The first push creates the package. To publish the current release now
-   instead of waiting for the next tag:
+The first stable tag after this creates the package; no manual upload is
+needed. (Don't publish 0.2.2 or older by hand: those sources predate the
+`RAMKOLFX_SYSTEM_*` options the PKGBUILD now passes, so they won't build.)
+To try the AUR package locally once that tag is pushed:
 
-   ```sh
-   git -c core.sshCommand='ssh -i ~/.ssh/aur' clone ssh://aur@aur.archlinux.org/ramkolfx.git /tmp/aur-ramkolfx
-   packaging/aur/update.sh /tmp/aur-ramkolfx
-   cd /tmp/aur-ramkolfx && makepkg -si     # optional: test it
-   git add PKGBUILD .SRCINFO && git commit -m "Initial upload"
-   git -c core.sshCommand='ssh -i ~/.ssh/aur' push origin HEAD:master
-   ```
+```sh
+mkdir /tmp/aur-ramkolfx && packaging/aur/update.sh /tmp/aur-ramkolfx
+cd /tmp/aur-ramkolfx && makepkg -si
+```
 
 `packaging/aur/update.sh` copies `packaging/arch/PKGBUILD` and fills in the
 real checksum of GitHub's tag tarball (the in-repo copy has `SKIP`, because
@@ -64,10 +63,10 @@ If you release a packaging-only fix without a new version, bump `pkgrel` by hand
    with an auth error, renew it there and set the secret again.
 4. If the project isn't named `ramkolfx`, set the repo variable instead:
    `gh variable set COPR_PROJECT --body <name>`.
-5. To build the current release now: *Builds → New Build → SCM*. Use clone URL
-   `https://github.com/Coldsteel48/RamkolFX`, committish `master` (tags
-   before 0.2.3 lack `.copr/`), spec file `packaging/rpm/ramkolfx.spec` and
-   SRPM method `make_srpm`.
+
+The first stable tag after this starts the first build. (Releases up to
+0.2.2 can't be built there: they lack `.copr/` and the `RAMKOLFX_SYSTEM_*`
+options the spec now passes.)
 
 COPR runs [`.copr/Makefile`](../.copr/Makefile) to download the spec's
 sources and make the SRPM, then builds that offline for each chroot.

@@ -3,15 +3,19 @@ Section: sound
 Priority: optional
 Maintainer: Roman Levin (Coldsteel48) <noreply@github.com>
 Build-Depends: debhelper-compat (= 13), cmake (>= 3.20), ninja-build, pkg-config,
- g++, libpipewire-0.3-dev, zlib1g-dev, libsdl2-dev (>= 2.0.18), libgl-dev,
- libfontconfig-dev, libdbus-1-dev, libx11-dev, curl, ca-certificates
-Standards-Version: 4.6.2
+ g++, libpipewire-0.3-dev, libmysofa-dev, libkissfft-dev, zlib1g-dev,
+ libsdl2-dev (>= 2.0.18), libgl-dev, libfontconfig-dev, libdbus-1-dev,
+ libx11-dev, appstream <!nocheck>, desktop-file-utils <!nocheck>,
+ curl, ca-certificates
+Standards-Version: 4.7.2
 Homepage: https://github.com/Coldsteel48/RamkolFX
+Vcs-Browser: https://github.com/Coldsteel48/RamkolFX
+Vcs-Git: https://github.com/Coldsteel48/RamkolFX.git
 Rules-Requires-Root: no
 
 Package: ramkolfx
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends},
+Depends: ${shlibs:Depends}, ${misc:Depends}, hicolor-icon-theme,
  libonnxruntime1.21 | libonnxruntime1.23
 Recommends: pipewire, wireplumber
 Description: 3D spatial audio, EQ and bass enhancer for PipeWire

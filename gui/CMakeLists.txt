@@ -75,6 +75,11 @@ target_include_directories(imgui PUBLIC
     ${imgui_SOURCE_DIR}/backends
 )
 target_link_libraries(imgui PUBLIC PkgConfig::SDL2 OpenGL::GL)
+# IM_ASSERT is assert(): only Debug builds should abort on one. Release and
+# RelWithDebInfo get NDEBUG from CMake anyway, but distro builds use
+# CMAKE_BUILD_TYPE=None (Arch, Debian) or none at all, which would otherwise
+# ship ImGui's asserts, and its source paths, in the packaged GUI.
+target_compile_definitions(imgui PUBLIC $<$<NOT:$<CONFIG:Debug>>:NDEBUG>)
 
 add_executable(ramkolfx-gui
     src/main.cpp
@@ -123,7 +128,29 @@ if(RAMKOLFX_BUILD_TESTS)
 endif()
 
 install(TARGETS ramkolfx-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ramkolfx)
+configure_file(${PROJECT_SOURCE_DIR}/packaging/common/ramkolfx-gui.1.in
+               ${CMAKE_CURRENT_BINARY_DIR}/ramkolfx-gui.1 @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/ramkolfx-gui.1
+        DESTINATION ${CMAKE_INSTALL_MANDIR}/man1 COMPONENT ramkolfx)
 install(FILES ${CMAKE_SOURCE_DIR}/packaging/common/ramkolfx.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT ramkolfx)
 install(FILES ${RAMKOLFX_LOGO_SVG}
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps COMPONENT ramkolfx)
+set(RAMKOLFX_METAINFO ${PROJECT_SOURCE_DIR}/packaging/common/io.github.coldsteel48.RamkolFX.metainfo.xml)
+install(FILES ${RAMKOLFX_METAINFO}
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo COMPONENT ramkolfx)
+
+# What distro tooling and software centres read: checked when the validators
+# are installed, so packagers' test runs catch a broken file.
+if(RAMKOLFX_BUILD_TESTS)
+    find_program(APPSTREAMCLI appstreamcli)
+    if(APPSTREAMCLI)
+        add_test(NAME appstream_metainfo_valid
+                 COMMAND ${APPSTREAMCLI} validate --no-net ${RAMKOLFX_METAINFO})
+    endif()
+    find_program(DESKTOP_FILE_VALIDATE desktop-file-validate)
+    if(DESKTOP_FILE_VALIDATE)
+        add_test(NAME desktop_entry_valid
+                 COMMAND ${DESKTOP_FILE_VALIDATE} ${PROJECT_SOURCE_DIR}/packaging/common/ramkolfx.desktop)
+    endif()
+endif()

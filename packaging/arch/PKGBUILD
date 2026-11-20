@@ -10,28 +10,33 @@ url='https://github.com/Coldsteel48/RamkolFX'
 license=('GPL-3.0-only')
 # onnxruntime (onnxruntime-cpu, -cuda or -rocm) runs Auto-detect; it is
 # dlopened, so namcap may call it unused.
-depends=('pipewire' 'sdl2' 'fontconfig' 'zlib' 'libgl' 'dbus' 'hicolor-icon-theme' 'onnxruntime')
+depends=('pipewire' 'libmysofa' 'kissfft' 'sdl2' 'fontconfig' 'zlib' 'libgl' 'dbus'
+         'hicolor-icon-theme' 'onnxruntime')
 makedepends=('cmake' 'ninja' 'libx11')
-options=('!debug')
+checkdepends=('appstream' 'desktop-file-utils')
+# Dear ImGui is compiled in: it isn't packaged for Arch, and the GUI targets
+# this exact version (it uses imgui_internal.h).
 source=("RamkolFX-$_semver.tar.gz::$url/archive/v$_semver.tar.gz"
-        'libmysofa-1.3.5.tar.gz::https://github.com/hoene/libmysofa/archive/refs/tags/v1.3.5.tar.gz'
-        'kissfft-131.2.0.tar.gz::https://github.com/mborgerding/kissfft/archive/refs/tags/131.2.0.tar.gz'
         'imgui-1.91.6.tar.gz::https://github.com/ocornut/imgui/archive/refs/tags/v1.91.6.tar.gz')
-sha256sums=('SKIP' # replaced by `updpkgsums` once the v$_semver tag exists
-            'f29508c335c83d8703f943ffc9ca783ac39aca84e851357f13a55af0f8143137'
-            '205a8f6a448ef12b091f8ac6a514b5091bb5f6b0b543431ed75f673116cf5cbf'
+sha256sums=('SKIP' # filled in for the AUR by packaging/aur/update.sh
             'c5fbc5dcab1d46064001c3b84d7a88812985cde7e0e9ced03f5677bec1ba502a')
 
 build() {
   cmake -S "RamkolFX-$_semver" -B build -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_BUILD_TYPE=None \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DRAMKOLFX_HRTF_DATA_DIR=/usr/share/ramkolfx/hrtf \
     -DRAMKOLFX_MODEL_DATA_DIR=/usr/share/ramkolfx/models \
+    -DRAMKOLFX_SYSTEM_MYSOFA=ON \
+    -DRAMKOLFX_SYSTEM_KISSFFT=ON \
     -DRAMKOLFX_BUILD_GUI=ON \
-    -DRAMKOLFX_BUILD_TESTS=OFF \
+    -DRAMKOLFX_BUILD_TESTS=ON \
     $(sh "RamkolFX-$_semver/packaging/ci/vendor-flags.sh" "$srcdir")
   cmake --build build
+}
+
+check() {
+  ctest --test-dir build --output-on-failure
 }
 
 package() {
