@@ -55,6 +55,10 @@ if(RAMKOLFX_SYSTEM_KISSFFT)
     pkg_check_modules(KISSFFT REQUIRED IMPORTED_TARGET kissfft-float>=131)
     target_link_libraries(ramkolfx_kissfft INTERFACE PkgConfig::KISSFFT)
 else()
+    # Distro builds may pass -DBUILD_SHARED_LIBS=ON (Fedora's %cmake does),
+    # which KissFFT refuses next to KISSFFT_STATIC. A normal variable
+    # shadows that cache entry here and in KissFFT's directory only.
+    set(BUILD_SHARED_LIBS OFF)
     set(KISSFFT_STATIC ON CACHE BOOL "" FORCE)
     set(KISSFFT_TEST OFF CACHE BOOL "" FORCE)
     set(KISSFFT_TOOLS OFF CACHE BOOL "" FORCE)
