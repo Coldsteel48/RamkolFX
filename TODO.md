@@ -1,16 +1,18 @@
 # TODO (owner)
 
 Things only the project owner can do: they need accounts, identity or a
-decision. Code-side work lives in issues, not here.
+decision.
 
 ## Distro repositories you run (see packaging/PUBLISHING.md)
 
-- [ ] @TODO AUR: create an account at aur.archlinux.org, add an SSH key,
-      `gh secret set AUR_SSH_PRIVATE_KEY < ~/.ssh/aur`, then do the first
-      upload by hand (PUBLISHING.md, "AUR: one-time setup").
-- [ ] @TODO COPR: create a Fedora account, a COPR project `ramkolfx` (Fedora
-      42+ chroots), `gh secret set COPR_CONFIG < ~/.config/copr`, then start
-      the first build from the web UI. Renew the API token every 180 days.
+- [ ] @TODO AUR: create an account at aur.archlinux.org, add an SSH key and
+      `gh secret set AUR_SSH_PRIVATE_KEY < ~/.ssh/aur`.
+- [ ] @TODO COPR: create a Fedora account and a COPR project `ramkolfx`
+      (Fedora 42+ chroots), then `gh secret set COPR_CONFIG < ~/.config/copr`.
+      Renew the API token every 180 days.
+- [ ] @TODO Tag the next stable release (0.2.3 or later). With the secrets
+      set, CI creates the AUR package and starts the first COPR build; 0.2.2
+      can't be published there, as its sources predate the packaging changes.
 - [ ] @TODO After both are live: add an "Install from your distro" section to
       README.md (or ask Claude to).
 
@@ -18,10 +20,10 @@ decision. Code-side work lives in issues, not here.
 
 - [ ] @TODO Use a real e-mail address as package maintainer. Debian, Fedora
       and Arch all require one that reaches you; today the recipes say
-      `noreply@github.com`. It's in packaging/debian/control, the changelog
-      entries version.sh writes (`maint=` in packaging/version.sh), the
-      Fedora %changelog and the PKGBUILD `# Maintainer:` line. Decide which
-      address you're happy to publish.
+      `noreply@github.com` in packaging/debian/control and in the Debian and
+      Fedora changelog entries version.sh writes (`maint=` in
+      packaging/version.sh), and the PKGBUILD's `# Maintainer:` line has no
+      address at all. Decide which address you're happy to publish.
 - [ ] @TODO Decide where the Auto-detect model goes in Debian. Debian's ML
       policy may not accept pretrained weights it can't rebuild in `main`:
       ship it in a separate `ramkolfx-model` package in `contrib`, or have
