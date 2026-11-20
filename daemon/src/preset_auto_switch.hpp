@@ -14,6 +14,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "content_detection.hpp"
 #include "preset_store.hpp"
@@ -39,13 +40,18 @@ public:
     {
         int64_t StartedAtMs = 0;     // start of the current playing spell (survives gaps < grace)
         int64_t LastPlayingAtMs = 0; // last Update() at which any of its streams was running
+        // Its streams looked like a game's (game_detection.hpp) when it was
+        // last seen playing - kept through the grace period, so a game whose
+        // stream closes for a moment still ranks as a game.
+        bool bGame = false;
     };
 
-    // PlayingApps: every app with at least one running stream right now.
-    // An app that (re)starts after being silent for longer than GraceMs
-    // gets a fresh StartedAtMs; entries silent for longer than GraceMs are
-    // dropped.
-    void Update(const std::vector<std::string>& PlayingApps, int64_t NowMs, int64_t GraceMs = AutoSwitchGraceMs);
+    // PlayingApps: every app with at least one running stream right now;
+    // GameApps: those of them that are games. An app that (re)starts after
+    // being silent for longer than GraceMs gets a fresh StartedAtMs;
+    // entries silent for longer than GraceMs are dropped.
+    void Update(const std::vector<std::string>& PlayingApps, int64_t NowMs,
+                const std::set<std::string>& GameApps = {}, int64_t GraceMs = AutoSwitchGraceMs);
 
     const std::map<std::string, Activity>& Apps() const
     {
@@ -90,6 +96,18 @@ struct ResolvedBinding
     }
 };
 
+// Who took part in the resolution and who lost (docs/playback-priority-
+// plan.md), for the GUI's "Waiting:" line. Not part of the binding's
+// identity: the losers changing doesn't change what applies.
+struct BindingContest
+{
+    std::string WinnerApp;           // the winning contender; empty when none
+    bool bWinnerIsGame = false;
+    std::vector<std::string> Waiting; // the other contenders, in name order
+
+    bool operator==(const BindingContest&) const = default;
+};
+
 // The resolution rule (docs/playback-priority-plan.md). The contenders
 // are the apps tracked by Activity (playing, or within the grace period)
 // that have a binding, plus - while the output device is bound to
@@ -100,13 +118,13 @@ struct ResolvedBinding
 // the current output device's binding, otherwise Manual.
 //
 // Auto-detect bindings take part only if bAutoDetectAvailable; otherwise
-// they count as unbound and the rule falls through past them. GameApps:
-// the apps whose streams look like games (game_detection.hpp); they set
-// an Auto-detect binding's bGame.
+// they count as unbound and the rule falls through past them. Which apps
+// are games comes from Activity; a game sets an Auto-detect binding's
+// bGame. OutContest, if given, receives the winner and the losers.
 ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPresetCatalog& Catalog,
                                const std::string& OutputDevice, bool bAutoDetectAvailable,
-                               const std::set<std::string>& GameApps = {},
-                               PlaybackPriority Priority = PlaybackPriority::GameFirst);
+                               PlaybackPriority Priority = PlaybackPriority::GameFirst,
+                               BindingContest* OutContest = nullptr);
 
 // Runs detection for the Auto-detect binding in effect and turns its
 // result into a switch target (docs/content-detect-plan.md). AudioEngine

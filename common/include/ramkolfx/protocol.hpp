@@ -459,9 +459,20 @@ struct Status
     // Who wins when a game and another bound app play at once
     // (SetPlaybackPriority). Decoded only if present: bHasPlaybackPriority
     // false means a daemon that predates it and would refuse
-    // SetPlaybackPriority. An unknown value decodes as GameFirst.
+    // SetPlaybackPriority. A value this build doesn't know (from a newer
+    // daemon) is kept as sent: PlaybackPriorityLabel gives nullptr for it.
     bool bHasPlaybackPriority = false;
     PlaybackPriority Priority = PlaybackPriority::GameFirst;
+
+    // The last resolution's contest (docs/playback-priority-plan.md): the
+    // winning contender's app name (empty when no app contends - the
+    // device binding or the manual curve applies), whether it's a game,
+    // and the contenders waiting behind it. Decoded only if present:
+    // bHasContest false means a daemon that predates it.
+    bool bHasContest = false;
+    std::string ContestWinnerApp;
+    bool bContestWinnerIsGame = false;
+    std::vector<std::string> WaitingApps;
 };
 
 // Per-channel activity of the 7.1 signal entering the spatializer, for the

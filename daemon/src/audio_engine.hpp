@@ -308,9 +308,9 @@ private:
     // PresetMutex alone.
     std::mutex AutoSwitchMutex;
     AppActivityTracker AppActivity;
-    // Apps whose streams look like games, from the last stream sample;
-    // guarded by AutoSwitchMutex alone, like AppActivity.
-    std::set<std::string> GameApps;
+    // Who won and who's waiting in the last resolution, for Status.
+    // Guarded by AutoSwitchMutex alone, like AppActivity.
+    BindingContest LastContest;
     AutoSwitchController AutoSwitch;
     // Detection state for the Auto-detect binding in effect (if any), fed
     // by Detector's events. Guarded by AutoSwitchMutex alone.

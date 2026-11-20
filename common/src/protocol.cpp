@@ -52,6 +52,17 @@ void AppendU32BE(std::vector<uint8>& Out, uint32 Value)
     Out.push_back(static_cast<uint8>(Value & 0xFF));
 }
 
+void AppendU16BE(std::vector<uint8>& Out, uint16 Value)
+{
+    Out.push_back(static_cast<uint8>((Value >> 8) & 0xFF));
+    Out.push_back(static_cast<uint8>(Value & 0xFF));
+}
+
+uint16 ReadU16BE(const uint8* Payload)
+{
+    return static_cast<uint16>((Payload[0] << 8) | Payload[1]);
+}
+
 uint32 ReadU32BE(const uint8* Payload)
 {
     return (static_cast<uint32>(Payload[0]) << 24) | (static_cast<uint32>(Payload[1]) << 16) |
@@ -546,16 +557,39 @@ std::optional<Status> DecodeStatusResponse(const uint8* Payload, uint16 PayloadL
     Offset += AutoDetectTimingWireSize;
 
     // Playback priority: [PlaybackPriority:1]. Absent from an older daemon;
-    // a value this build doesn't know reads as the default.
+    // a value this build doesn't know is kept as sent.
     if (Offset == PayloadLength)
     {
         return OutStatus;
     }
     OutStatus.bHasPlaybackPriority = true;
-    if (Payload[Offset] < static_cast<uint8>(PlaybackPriority::Count))
+    OutStatus.Priority = static_cast<PlaybackPriority>(Payload[Offset]);
+    ++Offset;
+
+    // Contest: [winner app: string][winner is a game:1][count: u16]
+    // [waiting app: string]*count. Absent from an older daemon; a partial
+    // block is malformed.
+    if (Offset == PayloadLength)
     {
-        OutStatus.Priority = static_cast<PlaybackPriority>(Payload[Offset]);
+        return OutStatus;
     }
+    if (!ReadString(Payload, PayloadLength, Offset, OutStatus.ContestWinnerApp) || Offset + 3 > PayloadLength)
+    {
+        return std::nullopt;
+    }
+    OutStatus.bContestWinnerIsGame = Payload[Offset] != 0;
+    const uint16 WaitingCount = ReadU16BE(Payload + Offset + 1);
+    Offset += 3;
+    for (uint16 i = 0; i < WaitingCount; ++i)
+    {
+        std::string App;
+        if (!ReadString(Payload, PayloadLength, Offset, App))
+        {
+            return std::nullopt;
+        }
+        OutStatus.WaitingApps.push_back(std::move(App));
+    }
+    OutStatus.bHasContest = true;
     return OutStatus;
 }
 
@@ -762,6 +796,14 @@ std::vector<uint8> EncodeStatusResponse(const Status& InStatus)
     AppendU32BE(Payload, InStatus.DetectedTableRevision);
     AppendAutoDetectTiming(Payload, InStatus.DetectTiming);
     Payload.push_back(static_cast<uint8>(InStatus.Priority));
+    AppendString(Payload, InStatus.ContestWinnerApp);
+    Payload.push_back(InStatus.bContestWinnerIsGame ? 1 : 0);
+    const size_t WaitingCount = std::min<size_t>(InStatus.WaitingApps.size(), 0xFFFF);
+    AppendU16BE(Payload, static_cast<uint16>(WaitingCount));
+    for (size_t i = 0; i < WaitingCount; ++i)
+    {
+        AppendString(Payload, InStatus.WaitingApps[i]);
+    }
 
     std::vector<uint8> Out;
     Out.reserve(HeaderSize + Payload.size());

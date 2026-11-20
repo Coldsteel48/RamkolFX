@@ -84,6 +84,19 @@ bool App::Connect()
         return false;
     }
     LastStatus = *Result;
+    bChannelLevelsUnsupported = false; // may be a newer daemon now
+    bDetectedClassesUnsupported = false;
+    bLevelPollPrimed = false;
+    bConnected = true;
+    // The rest only matters for drawing: fetched by Tick(), so a connect
+    // made from the tray while the window is away stays one request.
+    bFullRefreshPending = true;
+    return true;
+}
+
+void App::FetchFullState()
+{
+    bFullRefreshPending = false;
     if (auto DeviceResult = Client.RequestDevices())
     {
         Devices = std::move(*DeviceResult);
@@ -105,11 +118,6 @@ bool App::Connect()
         EqPresets = std::move(*PresetResult);
     }
     DevicePollTimerSeconds = DevicePollIntervalSeconds;
-    bChannelLevelsUnsupported = false; // may be a newer daemon now
-    bDetectedClassesUnsupported = false;
-    bLevelPollPrimed = false;
-    bConnected = true;
-    return true;
 }
 
 bool App::IsPlaybackPrioritySupported() const
@@ -127,26 +135,58 @@ std::optional<PlaybackPriority> App::CurrentPlaybackPriority() const
     return std::nullopt;
 }
 
+bool App::RefreshStatusOnDemand()
+{
+    // Nothing is polled while the window is away, so the connection may
+    // be one the daemon dropped (a restart) - and a window started hidden
+    // has never connected at all. A failed request reconnects once.
+    if (bConnected)
+    {
+        if (auto Result = Client.RequestStatus())
+        {
+            // Status only: whatever else changed is fetched once the
+            // window draws again (Tick), not from the tray.
+            LastStatus = std::move(*Result);
+            bFullRefreshPending = true;
+            return true;
+        }
+        MarkDisconnected();
+    }
+    return Connect();
+}
+
 void App::RefreshForTray()
 {
-    // Nothing is polled while the window is away, and a window started
-    // hidden has never connected at all.
-    if (!bConnected)
+    // Hosts send AboutToShow for the menu and again for each submenu: one
+    // status request per opening is enough.
+    const auto Now = std::chrono::steady_clock::now();
+    if (Now - LastTrayRefresh < std::chrono::seconds(1))
     {
-        Connect();
+        return;
     }
-    else
-    {
-        Apply(Client.RequestStatus());
-    }
+    LastTrayRefresh = Now;
+    RefreshStatusOnDemand();
 }
 
 void App::SetPlaybackPriority(PlaybackPriority Priority)
 {
-    if (bConnected || Connect())
+    // A daemon too old for the setting would refuse it.
+    if ((!bConnected && !Connect()) || !LastStatus.bHasPlaybackPriority)
     {
-        Apply(Client.SetPlaybackPriority(Priority));
+        return;
     }
+    auto Result = Client.SetPlaybackPriority(Priority);
+    if (!Result)
+    {
+        // The daemon went away while the window was hidden (nothing
+        // polled, so the socket is stale): reconnect and ask again.
+        if (!RefreshStatusOnDemand() || !LastStatus.bHasPlaybackPriority)
+        {
+            return;
+        }
+        Result = Client.SetPlaybackPriority(Priority);
+    }
+    Apply(std::move(Result));
 }
 
 void App::Tick(float DeltaTimeSeconds)
@@ -157,11 +197,18 @@ void App::Tick(float DeltaTimeSeconds)
         if (ReconnectTimerSeconds <= 0.0f)
         {
             ReconnectTimerSeconds = ReconnectIntervalSeconds;
-            Connect();
+            if (Connect())
+            {
+                FetchFullState();
+            }
         }
     }
     else
     {
+        if (bFullRefreshPending)
+        {
+            FetchFullState(); // connected from the tray while the window was away
+        }
         StatusPollTimerSeconds -= DeltaTimeSeconds;
         if (StatusPollTimerSeconds <= 0.0f)
         {
@@ -1480,34 +1527,10 @@ void App::DrawAppPresetCard()
     ImGui::EndDisabled();
 
     // Who else wants the EQ right now (docs/playback-priority-plan.md),
-    // mirroring the daemon's contenders: playing apps with a binding, plus
-    // games while the device is bound to Auto-detect. A game counts as
-    // playing while it's open. Only the winner is reported by the daemon;
-    // the losers are the rest, so the rule isn't repeated here.
-    const bool bAutoUsable = IsAutoDetectUsable();
-    const auto IsBound = [&](const AppEntry& E) { return !E.BoundPreset.empty() || (E.bAutoDetect && bAutoUsable); };
-    const bool bDeviceGameWins = LastStatus.PresetSource == EqPresetSource::Device && LastStatus.bAutoDetectActive &&
-                                 LastStatus.Detected == DetectedClass::Game;
-    const AppEntry* WinnerApp =
-        LastStatus.PresetSource == EqPresetSource::App ? Find(LastStatus.PresetSourceApp) : nullptr;
-    std::vector<const AppEntry*> Waiting;
-    if (WinnerApp || bDeviceGameWins)
-    {
-        for (const AppEntry& Entry : Apps)
-        {
-            const bool bContender = (Entry.bPlaying || Entry.bGame) &&
-                                    (IsBound(Entry) || (Entry.bGame && LastStatus.bDeviceAutoDetect && bAutoUsable));
-            // Under a device game, the unbound games are the winner.
-            const bool bWinner = &Entry == WinnerApp || (bDeviceGameWins && Entry.bGame && !IsBound(Entry));
-            if (bContender && !bWinner)
-            {
-                Waiting.push_back(&Entry);
-            }
-        }
-    }
-    const bool bSelectedWaiting =
-        Selected && std::find_if(Waiting.begin(), Waiting.end(), [&](const AppEntry* E)
-                                 { return E->Name == Selected->Name; }) != Waiting.end();
+    // as the daemon resolved it: the winning contender and the ones
+    // waiting behind it. Empty from a daemon that predates the setting.
+    const std::vector<std::string>& Waiting = LastStatus.WaitingApps;
+    const bool bSelectedWaiting = Selected && std::find(Waiting.begin(), Waiting.end(), Selected->Name) != Waiting.end();
 
     // Apps holds copies, so Selected stays valid even if the bind above
     // refreshed ContentStreams; its BoundPreset just catches up next frame.
@@ -1536,8 +1559,7 @@ void App::DrawAppPresetCard()
     }
     else if (bSelectedWaiting)
     {
-        ImGui::TextColored(palette::TextMutedV4, "Waiting: %s has priority",
-                           WinnerApp ? WinnerApp->Name.c_str() : "the game");
+        ImGui::TextColored(palette::TextMutedV4, "Waiting: %s has priority", LastStatus.ContestWinnerApp.c_str());
     }
     else if (Selected->bAutoDetect)
     {
@@ -1553,17 +1575,23 @@ void App::DrawAppPresetCard()
         ImGui::TextColored(palette::TextMutedV4, "Follows device / manual");
     }
 
-    // Each name selects that app above.
-    const auto AppLink = [&](const AppEntry& Entry, const ImVec4& Color)
+    // Each name selects that app above - if it's listed there (a waiting
+    // app's streams may have just gone).
+    const auto AppLink = [&](const std::string& Name, const ImVec4& Color)
     {
-        ImGui::TextColored(Color, "%s", Entry.Name.c_str());
+        if (!Find(Name))
+        {
+            ImGui::TextColored(palette::TextMutedV4, "%s", Name.c_str());
+            return;
+        }
+        ImGui::TextColored(Color, "%s", Name.c_str());
         if (ImGui::IsItemHovered())
         {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         }
         if (ImGui::IsItemClicked())
         {
-            SelectedApp = Entry.Name;
+            SelectedApp = Name;
         }
     };
     if (!Waiting.empty())
@@ -1577,7 +1605,7 @@ void App::DrawAppPresetCard()
                 ImGui::TextColored(palette::TextMutedV4, ",");
                 ImGui::SameLine();
             }
-            AppLink(*Waiting[i], palette::AccentSolidV4);
+            AppLink(Waiting[i], palette::AccentSolidV4);
         }
         return;
     }
@@ -1585,14 +1613,14 @@ void App::DrawAppPresetCard()
     // Music first only lets *bound* apps take over from a game: say so
     // when an unbound one plays alongside it, the one case where the
     // setting seems to do nothing.
-    const bool bGameWins = bDeviceGameWins || (WinnerApp && WinnerApp->bGame);
-    if (LastStatus.bHasPlaybackPriority && LastStatus.Priority == PlaybackPriority::MusicFirst && bGameWins)
+    if (LastStatus.bHasPlaybackPriority && LastStatus.Priority == PlaybackPriority::MusicFirst &&
+        LastStatus.bContestWinnerIsGame)
     {
-        auto Unbound = std::find_if(Apps.begin(), Apps.end(),
-                                    [&](const AppEntry& E) { return E.bPlaying && !E.bGame && !IsBound(E); });
+        auto Unbound = std::find_if(Apps.begin(), Apps.end(), [](const AppEntry& E)
+                                    { return E.bPlaying && !E.bGame && E.BoundPreset.empty() && !E.bAutoDetect; });
         if (Unbound != Apps.end())
         {
-            AppLink(*Unbound, palette::WarningV4);
+            AppLink(Unbound->Name, palette::WarningV4);
             ImGui::SameLine();
             ImGui::TextColored(palette::TextMutedV4, "isn't bound: bind it to beat the game");
         }
@@ -1609,7 +1637,7 @@ struct PlaybackPriorityChoice
 constexpr PlaybackPriorityChoice PlaybackPriorityChoices[] = {
     {PlaybackPriority::GameFirst, "While a game is open, its preset plays. Bound music and video apps wait."},
     {PlaybackPriority::MusicFirst, "A bound app that plays (Spotify, say) takes over from the game. The game's "
-                                   "preset comes back 2 s after it stops."},
+                                   "preset comes back once it stops."},
     {PlaybackPriority::Latest, "Whichever app started playing most recently wins."},
 };
 constexpr const char* PlaybackPriorityHelp = "Only one EQ curve plays at a time. This decides whose it is when a "
@@ -1635,8 +1663,10 @@ void App::DrawPlaybackPriorityCombo(const char* Id, float Width)
     const bool bUsable = bConnected && LastStatus.bHasPlaybackPriority;
     ImGui::BeginDisabled(!bUsable);
     ImGui::SetNextItemWidth(Width);
-    const char* Current = bUsable ? PlaybackPriorityLabel(LastStatus.Priority) : nullptr;
-    if (ImGui::BeginCombo(Id, Current ? Current : "-"))
+    // A value from a newer daemon has no label here: none of the choices
+    // is shown as current, so each can still be picked.
+    const char* Current = bUsable ? PlaybackPriorityLabel(LastStatus.Priority) : "-";
+    if (ImGui::BeginCombo(Id, Current ? Current : "Unknown"))
     {
         for (const PlaybackPriorityChoice& Entry : PlaybackPriorityChoices)
         {

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <optional>
 #include <vector>
 
@@ -86,9 +87,15 @@ public:
     void SetPlaybackPriority(PlaybackPriority Priority);
 
 private:
-    // Connects to the daemon and fetches everything the UI shows; false
-    // (and still disconnected) if the daemon isn't there.
+    // Connects to the daemon and fetches its status; false (and still
+    // disconnected) if the daemon isn't there. The rest of what the UI
+    // shows is left to FetchFullState (bFullRefreshPending).
     bool Connect();
+    void FetchFullState();
+    // A fresh status for the tray, which works while nothing is polled:
+    // reconnects once if the connection turns out to be dead. False if
+    // the daemon can't be reached.
+    bool RefreshStatusOnDemand();
     void DrawUI();
     void DrawSettingsPopup();
     void DrawSpatialTab();
@@ -131,6 +138,11 @@ private:
     std::vector<AudioDeviceInfo> Devices;
     std::vector<std::string> HrtfCatalog;
     bool bConnected = false;
+    // Connected, but devices, HRTFs, EQ, bass and presets not yet fetched
+    // (a connect or refresh made from the tray): Tick() fetches them.
+    bool bFullRefreshPending = false;
+    // When the tray last asked for a status (RefreshForTray).
+    std::chrono::steady_clock::time_point LastTrayRefresh;
 
     float ReconnectTimerSeconds = 0.0f;
     float StatusPollTimerSeconds = 0.0f;

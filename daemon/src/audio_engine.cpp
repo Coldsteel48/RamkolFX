@@ -1127,7 +1127,7 @@ std::vector<uint8> AudioEngine::HandleControlCommand(const Command& InCommand)
         }
         if (bPersistedStateChanged)
         {
-            fprintf(stderr, "[ramkolfxd] auto-switch: priority set to %s\n", PlaybackPriorityKey(Priority));
+            fprintf(stderr, "[ramkolfxd] auto-switch: priority set to %s\n", PlaybackPriorityKey(InCommand.PriorityValue));
             // The winner may change right away, not on the next tick.
             bReevaluateAutoSwitch = true;
         }
@@ -1177,6 +1177,10 @@ Status AudioEngine::BuildStatus()
         OutStatus.DetectTiming = DetectTiming;
         OutStatus.bHasPlaybackPriority = true;
         OutStatus.Priority = Priority;
+        OutStatus.bHasContest = true;
+        OutStatus.ContestWinnerApp = LastContest.WinnerApp;
+        OutStatus.bContestWinnerIsGame = LastContest.bWinnerIsGame;
+        OutStatus.WaitingApps = LastContest.Waiting;
     }
     {
         std::lock_guard<std::mutex> Lock(PresetMutex);
@@ -1400,7 +1404,7 @@ AutoSwitchTarget AudioEngine::ResolveCurrentTarget(int64_t NowMs)
     // it can't, they count as unbound and the rule falls through.
     const bool bDetectionAvailable = Detector->Availability() == AutoDetectAvailability::Ok;
     const ResolvedBinding Binding =
-        ResolveBinding(AppActivity, PresetCatalog, Output->GetTargetNodeName(), bDetectionAvailable, GameApps, Priority);
+        ResolveBinding(AppActivity, PresetCatalog, Output->GetTargetNodeName(), bDetectionAvailable, Priority, &LastContest);
     const AutoSwitchTarget Target = AutoDetect.Update(Binding, PresetCatalog);
     // Paused before SetActive, which may wake the worker: it must not see
     // a new spell with the old pause flag. While held, the worker stays
@@ -1562,7 +1566,7 @@ bool AudioEngine::EvaluateAutoSwitch()
     std::lock_guard<std::mutex> AutoLock(AutoSwitchMutex);
 
     std::vector<std::string> PlayingApps;
-    GameApps.clear();
+    std::set<std::string> GameApps;
     for (const ContentStreamInfo& Stream : Devices->GetContentStreams())
     {
         // A game counts as playing for as long as its stream is open, not
@@ -1579,7 +1583,7 @@ bool AudioEngine::EvaluateAutoSwitch()
         }
     }
     const int64_t NowMs = SteadyNowMs();
-    AppActivity.Update(PlayingApps, NowMs);
+    AppActivity.Update(PlayingApps, NowMs, GameApps);
 
     // What the classifier heard since the last tick. Fed before resolving:
     // if the binding changed, Update() below starts detection afresh

@@ -181,22 +181,28 @@ frame padding so the row keeps its height.
 ## Protocol and storage
 
 - **Enum.** Add `enum class PlaybackPriority : uint8_t { GameFirst = 0,
-  MusicFirst = 1, Latest = 2 }` to `protocol.hpp`. An unknown value
-  decodes as GameFirst.
+  MusicFirst = 1, Latest = 2 }` to `protocol.hpp`. A value from a newer
+  daemon is kept as sent: the GUI shows it as "Unknown", checks no
+  choice, and lets the user pick any of them.
 - **Storage.** `settings.conf` gets `auto_switch.priority=game|music|latest`,
   next to the `auto_detect.*` timing values. If the key is missing or
   unknown, the value is `game`.
 - **Wire.**
   - A new opcode, `SetPlaybackPriority [u8]`.
-  - The state reply gets one more trailing byte, with the usual
-    `bHasPlaybackPriority` flag so a GUI can tell when a daemon is too
-    old to have the setting. The GUI then hides the row.
-  - An older GUI ignores the trailing byte. An older daemon doesn't
-    send it.
-- **GUI data.** The GUI builds the "Waiting:" line from data it already
-  has: the stream list (`bPlaying`, `bGame`, `bAutoDetect`), the app
-  bindings and the winner's key. It doesn't need to reimplement the
-  rule: losers are just the playing contenders minus the winner.
+  - The state reply gets two more trailing blocks, each with the usual
+    `bHas...` flag so a GUI can tell when a daemon is too old to send
+    it:
+    - the priority byte (`bHasPlaybackPriority`); without it the GUI
+      hides the card's combo and disables the Settings one;
+    - the contest (`bHasContest`): the winning contender's app name, whether
+      it's a game, and the waiting contenders' names.
+  - An older GUI ignores the trailing blocks. An older daemon doesn't
+    send them.
+- **GUI data.** The "Waiting:" line and the Music-first hint come from
+  the contest block: the daemon reports who won and who waits, so the
+  GUI never repeats the rule (the grace period, which apps are bound,
+  Auto-detect being available). Only the hint's "is this playing app
+  unbound?" is read from the stream list.
 
 ## Code
 
@@ -205,6 +211,13 @@ frame padding so the row keeps its height.
   - It builds the contender list, then picks one with a single
     comparator: (kind rank by priority, `StartedAtMs`, name).
   - The device-Auto game contender uses the game's `StartedAtMs`.
+  - Whether an app is a game is kept on its `AppActivityTracker` entry
+    and lasts through the grace period, like its playing state. A game
+    whose stream closes for a moment still ranks as a game, rather than
+    losing to music for the length of the gap.
+  - It also reports the contest (`BindingContest`: winner, whether it's
+    a game, the losers). This is kept apart from `ResolvedBinding`, whose
+    equality is the binding's identity.
   - Bound winners resolve exactly as today. The device-Auto game
     contender resolves to the device binding with `bGame`.
 - **Session and switcher.** `AutoDetectSession` and the switcher don't
@@ -234,9 +247,15 @@ frame padding so the row keeps its height.
    choices as dbusmenu radio items.
    - The GUI doesn't talk to the daemon while hidden, and one started
      hidden has never connected. So opening the menu (`AboutToShow`)
-     connects if needed and refreshes the status; changes go out as
-     `LayoutUpdated`. Until the daemon has been heard from, the submenu
-     shows with nothing checked, and a click connects first.
+     requests the status alone, at most once a second (hosts send
+     `AboutToShow` per submenu too), connecting first if needed; the
+     rest of the UI's state is fetched once the window draws again.
+     Changes go out as `LayoutUpdated`. Until the daemon has been heard
+     from, the submenu shows with nothing checked, and a click connects
+     first.
+   - Nothing polls while hidden, so the connection may be dead (the
+     daemon restarted): a failed request reconnects once and retries.
+   - Against a daemon too old for the setting, a click sends nothing.
    - Hidden only for a daemon known to predate the setting.
 
 **Later, if asked for:**

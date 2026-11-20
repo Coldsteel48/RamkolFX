@@ -20,6 +20,20 @@ using namespace ramkolfx;
 
 namespace
 {
+// Wire size of Status's contest block (the last one).
+size_t ContestBytes(const Status& In = {})
+{
+    size_t Bytes = 2 + In.ContestWinnerApp.size() + 1 + 2;
+    for (const std::string& App : In.WaitingApps)
+    {
+        Bytes += 2 + App.size();
+    }
+    return Bytes;
+}
+} // namespace
+
+namespace
+{
 // Payload pointer/length of an encoded message (skipping the header).
 const uint8* Payload(const std::vector<uint8>& Message)
 {
@@ -80,9 +94,13 @@ TEST(StatusRoundTrip)
     CHECK(Out->PresetSourceApp == "Firefox");
     CHECK(Out->bHasAutoDetect && Out->AutoDetect == AutoDetectAvailability::Ok && !Out->bAutoDetectActive);
 
-    // Two bytes short cuts into the timing block (one short is a daemon
-    // without the priority byte, which is valid).
-    CHECK(!DecodeStatusResponse(Payload(Message), PayloadLength(Message) - 2));
+    // Cutting into the contest block is malformed; dropping all of it, or
+    // the priority byte too, is an older daemon; cutting into the timing
+    // block is malformed again.
+    CHECK(!DecodeStatusResponse(Payload(Message), PayloadLength(Message) - 1));
+    CHECK(DecodeStatusResponse(Payload(Message), PayloadLength(Message) - ContestBytes()));
+    CHECK(DecodeStatusResponse(Payload(Message), PayloadLength(Message) - ContestBytes() - 1));
+    CHECK(!DecodeStatusResponse(Payload(Message), PayloadLength(Message) - ContestBytes() - 2));
 }
 
 TEST(StatusAutoDetectFields)
@@ -110,7 +128,8 @@ TEST(StatusAutoDetectFields)
 
     // A daemon from before the timing settings: Auto-detect, no timing.
     const auto NoTiming =
-        DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectTimingWireSize - 1));
+        DecodeStatusResponse(Payload(Message),
+                             static_cast<uint16>(PayloadLength(Message) - AutoDetectTimingWireSize - 1 - ContestBytes()));
     REQUIRE(NoTiming);
     CHECK(NoTiming->bHasAutoDetect && NoTiming->DetectedTableRevision == 7);
     CHECK(!NoTiming->bHasAutoDetectTiming && NoTiming->DetectTiming == AutoDetectTiming{});
@@ -118,7 +137,7 @@ TEST(StatusAutoDetectFields)
 
     // An older daemon's Status stops right after PresetSourceApp: still
     // decodes, with the defaults.
-    const size_t AutoDetectBytes = 7 + 2 + In.InferenceDeviceLabel.size() + 4 + AutoDetectTimingWireSize + 1;
+    const size_t AutoDetectBytes = 7 + 2 + In.InferenceDeviceLabel.size() + 4 + AutoDetectTimingWireSize + 1 + ContestBytes();
     const auto Old = DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - AutoDetectBytes));
     REQUIRE(Old);
     CHECK(Old->PresetSource == EqPresetSource::Device && !Old->bAutoDetectActive && !Old->bHasAutoDetect);
@@ -147,16 +166,41 @@ TEST(StatusCarriesPlaybackPriority)
     CHECK(Out->bHasPlaybackPriority && Out->Priority == PlaybackPriority::Latest);
 
     // A daemon from before the priority: timing, no priority.
-    Out = DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - 1));
+    Out = DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - 1 - ContestBytes()));
     REQUIRE(Out);
     CHECK(Out->bHasAutoDetectTiming && !Out->bHasPlaybackPriority);
     CHECK(Out->Priority == PlaybackPriority::GameFirst);
 
-    // A newer daemon's value this build doesn't know: the default.
-    Message.back() = static_cast<uint8>(PlaybackPriority::Count);
+    // A newer daemon's value this build doesn't know: kept as sent, so the
+    // GUI can tell it apart from Game first.
+    Message[Message.size() - 1 - ContestBytes()] = static_cast<uint8>(PlaybackPriority::Count);
     Out = DecodeStatusResponse(Payload(Message), PayloadLength(Message));
     REQUIRE(Out);
-    CHECK(Out->bHasPlaybackPriority && Out->Priority == PlaybackPriority::GameFirst);
+    CHECK(Out->bHasPlaybackPriority && Out->Priority == PlaybackPriority::Count);
+    CHECK(PlaybackPriorityLabel(Out->Priority) == nullptr);
+}
+
+TEST(StatusCarriesTheContest)
+{
+    Status In;
+    In.ContestWinnerApp = "Game.exe";
+    In.bContestWinnerIsGame = true;
+    In.WaitingApps = {"Spotify", "Firefox"};
+    const auto Message = EncodeStatusResponse(In);
+    auto Out = DecodeStatusResponse(Payload(Message), PayloadLength(Message));
+    REQUIRE(Out);
+    CHECK(Out->bHasContest && Out->ContestWinnerApp == "Game.exe" && Out->bContestWinnerIsGame);
+    CHECK(Out->WaitingApps == In.WaitingApps);
+
+    // A daemon from before it: no contest. Cut inside it: malformed.
+    const size_t Block = ContestBytes(In);
+    Out = DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - Block));
+    REQUIRE(Out);
+    CHECK(!Out->bHasContest && Out->WaitingApps.empty() && Out->bHasPlaybackPriority);
+    for (size_t Cut = 1; Cut < Block; ++Cut)
+    {
+        CHECK(!DecodeStatusResponse(Payload(Message), static_cast<uint16>(PayloadLength(Message) - Cut)));
+    }
 }
 
 TEST(SetPlaybackPriorityRoundTrip)

@@ -13,7 +13,8 @@
 namespace ramkolfx
 {
 
-void AppActivityTracker::Update(const std::vector<std::string>& PlayingApps, int64_t NowMs, int64_t GraceMs)
+void AppActivityTracker::Update(const std::vector<std::string>& PlayingApps, int64_t NowMs,
+                                const std::set<std::string>& GameApps, int64_t GraceMs)
 {
     for (const std::string& App : PlayingApps)
     {
@@ -23,6 +24,7 @@ void AppActivityTracker::Update(const std::vector<std::string>& PlayingApps, int
             It->second.StartedAtMs = NowMs;
         }
         It->second.LastPlayingAtMs = NowMs;
+        It->second.bGame = GameApps.contains(App);
     }
     std::erase_if(Activities,
                   [&](const auto& Entry) { return NowMs - Entry.second.LastPlayingAtMs > GraceMs; });
@@ -47,7 +49,7 @@ int KindRank(PlaybackPriority Priority, bool bGame)
 
 ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPresetCatalog& Catalog,
                                const std::string& OutputDevice, bool bAutoDetectAvailable,
-                               const std::set<std::string>& GameApps, PlaybackPriority Priority)
+                               PlaybackPriority Priority, BindingContest* OutContest)
 {
     const PresetBindingMap& AppBindings = Catalog.AppBindings();
     const std::string DevicePreset = OutputDevice.empty() ? std::string() : Catalog.DeviceBinding(OutputDevice);
@@ -58,19 +60,21 @@ ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPrese
     const AppActivityTracker::Activity* WinnerState = nullptr;
     bool bWinnerBound = false;
     int WinnerRank = 0;
+    std::vector<const std::string*> Contenders;
     // Activity.Apps() iterates in name order, so on equal rank and start
     // time the alphabetically first app wins - strict '>' keeps the
     // earlier one.
     for (const auto& [App, State] : Activity.Apps())
     {
         const bool bBound = AppBindings.contains(App) || (bAutoDetectAvailable && Catalog.IsAppAutoDetect(App));
-        const bool bGame = GameApps.contains(App);
+        const bool bGame = State.bGame;
         // If you're gaming under a device Auto binding, the game takes part
         // even unbound: it stands for the device binding.
         if (!bBound && !(bGame && bDeviceAuto))
         {
             continue;
         }
+        Contenders.push_back(&App);
         const int Rank = KindRank(Priority, bGame);
         if (!WinnerApp || Rank < WinnerRank || (Rank == WinnerRank && State.StartedAtMs > WinnerState->StartedAtMs))
         {
@@ -80,12 +84,27 @@ ResolvedBinding ResolveBinding(const AppActivityTracker& Activity, const EqPrese
             WinnerRank = Rank;
         }
     }
+    if (OutContest)
+    {
+        *OutContest = {};
+        if (WinnerApp)
+        {
+            OutContest->WinnerApp = *WinnerApp;
+            OutContest->bWinnerIsGame = WinnerState->bGame;
+            for (const std::string* App : Contenders)
+            {
+                if (App != WinnerApp)
+                {
+                    OutContest->Waiting.push_back(*App);
+                }
+            }
+        }
+    }
     if (WinnerApp && bWinnerBound)
     {
         const std::string Preset = Catalog.AppBinding(*WinnerApp);
         const bool bAuto = Preset.empty();
-        return {EqPresetSource::App, *WinnerApp, Preset, bAuto, WinnerState->StartedAtMs,
-                bAuto && GameApps.contains(*WinnerApp)};
+        return {EqPresetSource::App, *WinnerApp, Preset, bAuto, WinnerState->StartedAtMs, bAuto && WinnerState->bGame};
     }
     if (WinnerApp)
     {
