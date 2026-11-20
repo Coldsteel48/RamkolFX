@@ -16,8 +16,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <span>
 
 namespace ramkolfx
 {
@@ -51,6 +53,61 @@ std::string ReadLine(const std::filesystem::path& Path)
     return Line;
 }
 
+// Debug aid (RAMKOLFX_DETECT_DUMP): the window as a 32-bit float WAV,
+// and the top labels on one log line.
+void DumpRun(const std::string& Dir, uint64_t Run, std::span<const float> Samples, uint32_t Rate,
+             const std::vector<float>& Scores, const std::vector<std::string>& Names, const ClassScores& Folded)
+{
+    const std::string Path = Dir + "/window-" + std::to_string(Run % 20) + ".wav";
+    std::ofstream File(Path, std::ios::binary | std::ios::trunc);
+    const auto Put32 = [&](uint32_t V) { File.write(reinterpret_cast<const char*>(&V), 4); };
+    const auto Put16 = [&](uint16_t V) { File.write(reinterpret_cast<const char*>(&V), 2); };
+    const auto Bytes = static_cast<uint32_t>(Samples.size() * sizeof(float));
+    File.write("RIFF", 4);
+    Put32(36 + Bytes);
+    File.write("WAVEfmt ", 8);
+    Put32(16);
+    Put16(3); // IEEE float
+    Put16(1);
+    Put32(Rate);
+    Put32(Rate * 4);
+    Put16(4);
+    Put16(32);
+    File.write("data", 4);
+    Put32(Bytes);
+    File.write(reinterpret_cast<const char*>(Samples.data()), Bytes);
+
+    std::vector<size_t> Order(Scores.size());
+    for (size_t i = 0; i < Order.size(); ++i)
+    {
+        Order[i] = i;
+    }
+    const size_t Top = std::min<size_t>(8, Order.size());
+    std::partial_sort(Order.begin(), Order.begin() + static_cast<std::ptrdiff_t>(Top), Order.end(),
+                      [&](size_t A, size_t B) { return Scores[A] > Scores[B]; });
+    std::string Line;
+    for (size_t i = 0; i < Top; ++i)
+    {
+        char Item[96];
+        std::snprintf(Item, sizeof(Item), "%s%s %.2f", i ? ", " : "",
+                      Order[i] < Names.size() ? Names[Order[i]].c_str() : "?", static_cast<double>(Scores[Order[i]]));
+        Line += Item;
+    }
+    std::string Classes;
+    for (size_t i = 1; i < DetectedClassCount; ++i)
+    {
+        if (Folded[i] >= 0.05f)
+        {
+            char Item[64];
+            std::snprintf(Item, sizeof(Item), " %s=%.2f", DetectedClassLabel(static_cast<DetectedClass>(i)),
+                          static_cast<double>(Folded[i]));
+            Classes += Item;
+        }
+    }
+    fprintf(stderr, "[ramkolfxd] auto-detect run %llu (%s): %s |%s\n", static_cast<unsigned long long>(Run),
+            Path.c_str(), Line.c_str(), Classes.c_str());
+}
+
 void LowerOwnPriority()
 {
     // Only CPU nobody else wants: under load detection stalls and the
@@ -78,6 +135,10 @@ bool IsOnBattery()
 ContentDetector::ContentDetector(ClassifierBackend InBackend, ContentDetectorTuning InTuning)
     : Backend(std::move(InBackend)), Tuning(InTuning), Scheduler(InTuning.Scheduler), Silence(InTuning.Silence)
 {
+    if (const char* Dump = std::getenv("RAMKOLFX_DETECT_DUMP"); Dump && *Dump)
+    {
+        DumpDir = Dump;
+    }
     CurrentAvailability = Backend.Probe ? Backend.Probe() : AutoDetectAvailability::Ok;
     Chunk.resize(static_cast<size_t>(Tuning.InputRate * Tuning.ChunkMs / 1000));
     Drained.resize(Chunk.size());
@@ -410,6 +471,11 @@ void ContentDetector::Step(std::unique_lock<std::mutex>& Lock)
             Folded = Labels.Fold(RawScores);
             CpuUs = ThreadCpuTimeUs() - CpuStart;
             bRan = true;
+            if (!DumpDir.empty())
+            {
+                DumpRun(DumpDir, DumpRuns++, ModelInput, Classifier->SampleRate(), RawScores, Classifier->Labels(),
+                        Folded);
+            }
         }
         else
         {

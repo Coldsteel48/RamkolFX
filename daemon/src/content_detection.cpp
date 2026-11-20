@@ -36,7 +36,7 @@ const std::initializer_list<ClassFold> DefaultFold = {
      {"Rock music", "Rock and roll", "Punk rock", "Grunge", "Progressive rock", "Psychedelic rock"}},
     {DetectedClass::Metal, {"Heavy metal"}},
     {DetectedClass::Pop, {"Pop music", "Disco"}},
-    {DetectedClass::HipHop, {"Hip hop music"}},
+    {DetectedClass::HipHop, {"Hip hop music", "Rapping"}},
     {DetectedClass::RnB, {"Rhythm and blues", "Soul music", "Funk", "Gospel music"}},
     {DetectedClass::Electronic,
      {"Electronic music", "House music", "Techno", "Dubstep", "Drum and bass", "Trance music",
@@ -106,9 +106,9 @@ DetectedClass DetectionSmoother::Decide() const
     }
     const float H = Tuning.Hysteresis;
     const auto Bias = [&](bool bIsCurrent) { return bIsCurrent ? H : 0.0f; };
-    const float Speech = ScoreOf(Ema, DetectedClass::Speech);
-    const float Music = ScoreOf(Ema, DetectedClass::Music);
-    const float Cues = ScoreOf(Ema, DetectedClass::Movie);
+    const float Speech = ScoreOf(Evidence, DetectedClass::Speech);
+    const float Music = ScoreOf(Evidence, DetectedClass::Music);
+    const float Cues = ScoreOf(Evidence, DetectedClass::Movie);
 
     // Anything detected at all? Lowered while holding a class, so a quiet
     // passage doesn't drop it.
@@ -125,21 +125,22 @@ DetectedClass DetectionSmoother::Decide() const
         return DetectedClass::Speech;
     }
 
+    // Music gets the genre with the best average. The current genre's
+    // score is scaled up by the hysteresis factor, so a rival has to beat
+    // it clearly.
     DetectedClass BestGenre = DetectedClass::None;
     float BestScore = 0.0f;
     for (size_t i = static_cast<size_t>(DetectedClass::Rock); i < DetectedClassCount; ++i)
     {
         const DetectedClass Genre = static_cast<DetectedClass>(i);
-        const float Score = Ema[i] + Bias(Genre == CurrentClass);
+        const float Score = Evidence[i] * (Genre == CurrentClass ? Tuning.GenreHysteresis : 1.0f);
         if (BestGenre == DetectedClass::None || Score > BestScore)
         {
             BestGenre = Genre;
             BestScore = Score;
         }
     }
-    // BestScore already carries the current genre's bias, which is the
-    // same as lowering its threshold by it.
-    return BestScore >= Tuning.GenreThreshold ? BestGenre : DetectedClass::Music;
+    return BestScore >= Tuning.GenreFloor ? BestGenre : DetectedClass::Music;
 }
 
 namespace
@@ -160,6 +161,8 @@ bool IsRival(DetectedClass Candidate, DetectedClass Current)
 void DetectionSmoother::AddTrackBoundary(int64_t NowMs)
 {
     bHaveEma = false;
+    GenreSum = {};
+    GenreWeight = 0.0f;
     Candidate = DetectedClass::None;
     CandidateSinceMs = NowMs;
     BoundaryAtMs = NowMs;
@@ -167,6 +170,7 @@ void DetectionSmoother::AddTrackBoundary(int64_t NowMs)
 
 void DetectionSmoother::AddScores(const ClassScores& Scores, int64_t NowMs)
 {
+    const double ElapsedMs = bHaveEma ? static_cast<double>(std::max<int64_t>(0, NowMs - LastSampleMs)) : 0.0;
     if (!bHaveEma)
     {
         Ema = Scores;
@@ -174,7 +178,6 @@ void DetectionSmoother::AddScores(const ClassScores& Scores, int64_t NowMs)
     }
     else
     {
-        const double ElapsedMs = static_cast<double>(std::max<int64_t>(0, NowMs - LastSampleMs));
         const float Alpha = static_cast<float>(1.0 - std::exp(-ElapsedMs / static_cast<double>(Tuning.EmaTauMs)));
         for (size_t i = 0; i < Ema.size(); ++i)
         {
@@ -182,6 +185,17 @@ void DetectionSmoother::AddScores(const ClassScores& Scores, int64_t NowMs)
         }
     }
     LastSampleMs = NowMs;
+
+    // Genres: a weighted mean, so right after a boundary it's the plain
+    // mean of the windows so far, and later it forgets with GenreTauMs.
+    const auto Decay = static_cast<float>(std::exp(-ElapsedMs / static_cast<double>(Tuning.GenreTauMs)));
+    GenreWeight = GenreWeight * Decay + 1.0f;
+    Evidence = Ema;
+    for (size_t i = static_cast<size_t>(DetectedClass::Rock); i < DetectedClassCount; ++i)
+    {
+        GenreSum[i] = GenreSum[i] * Decay + Scores[i];
+        Evidence[i] = GenreSum[i] / GenreWeight;
+    }
 
     const DetectedClass Decided = Decide();
     if (Decided != Candidate)
@@ -210,7 +224,7 @@ float DetectionSmoother::Confidence() const
     {
         return 0.0f;
     }
-    return std::clamp(ScoreOf(Ema, CurrentClass), 0.0f, 1.0f);
+    return std::clamp(ScoreOf(Evidence, CurrentClass), 0.0f, 1.0f);
 }
 
 bool DetectionSmoother::IsSettled(int64_t NowMs) const

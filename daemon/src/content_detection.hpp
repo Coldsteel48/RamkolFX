@@ -76,13 +76,22 @@ struct DetectionTuning
     float CoarseThreshold = 0.5f;
     // Film-cue strength that turns Speech/Music into Movie.
     float MovieThreshold = 0.25f;
-    // A genre must reach this (higher than coarse: a wrong genre is worse
-    // than plain Music, which doesn't switch).
-    float GenreThreshold = 0.35f;
+    // Genre evidence is a track-long average rather than the short EMA:
+    // genre is a property of the track, and one window's genre scores
+    // are noisy and low (AudioSet's genre labels are sparse; on real
+    // music they mostly read 0.02-0.1). Weighted mean with this time
+    // constant, restarted at track boundaries.
+    int64_t GenreTauMs = 10000;
+    // Music always gets a genre: the one with the best average, as long
+    // as any genre registers at all (above this floor).
+    float GenreFloor = 0.01f;
     // The current class keeps its place until a rival leads by this much
     // (and its thresholds are lowered by it), so scores hovering near a
     // boundary don't flip the class.
     float Hysteresis = 0.1f;
+    // The same for the current genre, relative since genre scores are
+    // small: a rival genre must beat it by this factor.
+    float GenreHysteresis = 1.25f;
     // A new candidate must stay the candidate this long before it's
     // adopted - so the first class lands ~4 s into a spell.
     int64_t ConfirmMs = 4000;
@@ -124,9 +133,11 @@ public:
     // Current class confirmed and unchallenged for MinDwellMs, and no
     // track boundary just passed - inference can slow down.
     bool IsSettled(int64_t NowMs) const;
+    // The evidence Decide() works on: the short EMA for Speech, Music and
+    // Movie, the track-long genre average for genres.
     const ClassScores& Smoothed() const
     {
-        return Ema;
+        return Evidence;
     }
 
     // The class the smoothed scores point at right now, before confirm
@@ -136,6 +147,9 @@ public:
 private:
     DetectionTuning Tuning;
     ClassScores Ema{};
+    ClassScores GenreSum{}; // decayed sums; mean = GenreSum / GenreWeight
+    float GenreWeight = 0.0f;
+    ClassScores Evidence{};
     bool bHaveEma = false;
     int64_t LastSampleMs = 0;
 

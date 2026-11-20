@@ -163,7 +163,24 @@ device or to an app: the daemon tracks which apps are playing into the
 virtual sink and auto-switches to the bound preset, restoring the
 previous sound when they stop - see
 [docs/eq-presets-plan.md](docs/eq-presets-plan.md) for the exact rules.
-Genre auto-detect is still a disabled placeholder.
+
+An app or device can also be bound to **Auto-detect (AI)** (experimental).
+A local audio classifier listens to what's playing and picks the preset
+through an editable class -> preset table: Speech, Movie, Music, and for
+music the best-scoring genre. Details are in
+[docs/content-detect-plan.md](docs/content-detect-plan.md).
+
+- **Runtime:** it needs ONNX Runtime 1.17 or newer (`onnxruntime` /
+  `onnxruntime-cpu` from your distribution). Without it, Auto-detect shows
+  as unavailable and nothing else changes. RamkolFX loads ONNX Runtime at
+  run time, so it doesn't need it to build.
+- **Model:** EfficientAT `mn10_as` (MIT, see
+  [data/models/README.md](data/models/README.md)).
+- **Cost:** about 11 ms of CPU per 3 s window. It's capped at 1% of a
+  core, runs at the lowest scheduling priority, and does nothing when no
+  Auto binding is in effect.
+- **Limit:** speech/music/film detection is solid; genre picks are still
+  a weak guess.
 
 Virtual speaker positions are live-repositionable both at the API level
 (`SetSpeakerAzimuth`/`GetSpeakerAzimuth`, lock-free) and over the control
@@ -278,8 +295,8 @@ touching the rest of the pipeline.
 5. ~~Switchable HRTF catalog (MIT KEMAR + full SADIE II/HUTUBS/SONICOM databases + a license-free synthetic spherical-head model) with live, crossfaded switching via `HrtfDeck` and the GUI's HRTF dropdown~~
 6. ~~Parametric EQ: 10-band graphic EQ + psychoacoustic bass enhancer, both live-adjustable from the GUI's Equalizer & Bass tab~~
 7. ~~Named EQ presets with per-device and per-app auto-switching~~
-8. ONNX-based automatic EQ preset selection / genre auto-detect (also a
-   disabled placeholder in the GUI today)
+8. ONNX-based automatic EQ preset selection / genre auto-detect: Auto-detect
+   bindings landed (experimental); genre accuracy needs a music-tagging model
 9. GUI polish aimed at non-audio-engineer users — two-tab layout
    (Spatial Audio & Speakers / Equalizer & Bass) and the preset cards have
    landed; ongoing refinement

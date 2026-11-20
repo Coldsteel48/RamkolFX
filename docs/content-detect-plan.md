@@ -268,6 +268,28 @@ license. Phase 0 picks one on measured accuracy/size/CPU time. Shipped
 in `data/models/` with its license, installed to
 `share/ramkolfx/models` (like the HRTFs, behind an install option).
 
+**Phase 0a export (mn10_as, done; tuning still open):**
+
+- **Format:** 24 MB fp32 at opset 17. The input is a 3 s, 32 kHz mono waveform `[1, 96000]`; the output is 527 sigmoid probabilities.
+- **Front end:** EfficientAT's eval-mode mel front end runs in the graph as plain ops: pre-emphasis, a reflect-padded DFT as a strided conv, the Kaldi mel banks, log and `(x + 4.5) / 5`. It matches `AugmentMelSTFT` to 3e-5, and the scores match to 1e-6.
+- **Minimum context:**
+  - *Problem:* mn10 was trained on 10 s clips. Below ~400 mel frames (4 s) the zero-padded borders dominate its last feature map, and the head saturates: every logit goes positive, so random labels come out at 1.0.
+  - *Fix:* the graph tiles the window's 300 frames to 500 (`ramkolfx.context_frames`). That agrees with 10 s predictions about as well as a real 5 s window, costs the same, and answers after 3 s of sound instead of 5 s.
+  - *Rule:* don't export a window that ends up under ~400 frames.
+- **Cost on the dev machine (single thread):**
+  - CPU per run: 10.5 ms (p95 10.8 ms).
+  - Duty cycle: 0.53% at the 2 s cadence, 0.18% settled.
+  - Session load: 43 ms.
+  - RSS added: 49 MB.
+  - Still to do: measure on the old reference machine.
+- **Labels:** all 42 LabelMap names are present.
+- **Genre scores are low** in absolute terms (AudioSet genre labels are sparse).
+  - *Evidence:* on real music in 3 s windows, `Music` sits around 0.65–0.75, while even a clear genre peaks at ~0.3 and typically reads 0.1–0.2.
+  - *Consequence:* the original absolute genre bar (0.35) was never reached, so Music always won.
+  - *Rule now:* when it's music, the genre with the best track-long average (`GenreTauMs` 10 s, restarted at track boundaries) wins. There's no absolute bar, only a 0.01 floor. A rival genre must beat the current one by 1.25×. `Rapping` counts toward Hip-Hop.
+  - *Measured limit:* on the user's music, mn10 keeps every genre at ≤ 0.11 even with 10–20 s windows (Music reaches 0.8–0.87). The pick is a weak signal: it's the best of small scores. A dedicated music-tagging model is the real fix.
+  - *Known gap:* mn10 gave "Hip hop music" ≤ 0.05 on a 50 Cent track, which it heard as Pop/Dance/Electronic. Phase 0b decides whether that's this model's limit.
+
 ## Protocol changes
 
 - New `BindAppAutoDetect` / `BindDeviceAutoDetect` (raw target name)

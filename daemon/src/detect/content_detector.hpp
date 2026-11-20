@@ -176,6 +176,10 @@ private:
     std::atomic<bool> bOnBattery{false};
     int64_t BatteryCheckedAtMs = -1;
     bool bGovernorStretching = false;
+    // RAMKOLFX_DETECT_DUMP=<dir>: log each run's top labels and save the
+    // window the model saw - for tuning and debugging, off by default.
+    std::string DumpDir;
+    uint64_t DumpRuns = 0;
 };
 
 // True when a system battery (not a mouse's or headset's) is discharging.

@@ -85,15 +85,15 @@ TEST(NothingDetectedUntilConfirmed)
     CHECK(Smoother.Confidence() > 0.7f);
 }
 
-TEST(CoarseClassesAndGenreThreshold)
+TEST(CoarseClassesAndGenreFloor)
 {
     DetectionSmoother Talk;
     Feed(Talk, Speech, 0, 4000);
     CHECK(Talk.Current() == DetectedClass::Speech);
 
-    // Music with no genre over the genre threshold: plain Music.
+    // Music with no genre signal at all: plain Music.
     DetectionSmoother Unsure;
-    Feed(Unsure, Scores({{DetectedClass::Music, 0.9f}, {DetectedClass::Pop, 0.2f}}), 0, 4000);
+    Feed(Unsure, Scores({{DetectedClass::Music, 0.9f}, {DetectedClass::Pop, 0.005f}}), 0, 4000);
     CHECK(Unsure.Current() == DetectedClass::Music);
 
     // Below the coarse threshold: nothing.
@@ -135,13 +135,86 @@ TEST(GaplessChangeWaitsForTheDwellTime)
     CHECK(Smoother.Current() == DetectedClass::Rock);
 }
 
-TEST(GaplessChangeOnASettledClassTakesSeconds)
+TEST(GaplessGenreChangeOnASettledTrackTakesAboutFifteenSeconds)
 {
+    // No gap to restart the genre average: Rock has to outweigh a
+    // minute of Jazz in it (GenreTauMs) by GenreHysteresis, then confirm.
     DetectionSmoother Smoother;
     Feed(Smoother, Jazz, 0, 60000);
-    Feed(Smoother, Rock, 62000, 66000);
+    Feed(Smoother, Rock, 62000, 70000);
     CHECK(Smoother.Current() == DetectedClass::Jazz);
-    Feed(Smoother, Rock, 68000, 68000); // ~6 s after the change
+    Feed(Smoother, Rock, 72000, 76000);
+    CHECK(Smoother.Current() == DetectedClass::Rock);
+}
+
+TEST(GaplessSwitchBetweenCoarseClassesTakesSeconds)
+{
+    DetectionSmoother Smoother;
+    Feed(Smoother, Speech, 0, 60000);
+    Feed(Smoother, Jazz, 62000, 66000);
+    CHECK(Smoother.Current() == DetectedClass::Speech);
+    Feed(Smoother, Jazz, 68000, 70000); // ~8 s after the change
+    CHECK(Smoother.Current() == DetectedClass::Jazz);
+}
+
+// Real genre scores (EfficientAT on 3 s windows) are low: a clear genre
+// often scores 0.15-0.3, with the others near zero.
+TEST(LowButClearGenreIsDetected)
+{
+    DetectionSmoother Smoother;
+    Feed(Smoother, Scores({{DetectedClass::Music, 0.7f}, {DetectedClass::HipHop, 0.2f}, {DetectedClass::Pop, 0.06f}}),
+         0, 4000);
+    CHECK(Smoother.Current() == DetectedClass::HipHop);
+    CHECK(Smoother.Confidence() > 0.15f);
+}
+
+TEST(MusicAlwaysGetsTheBestGenre)
+{
+    // Real genre scores are tiny and close; the best one still wins.
+    DetectionSmoother Smoother;
+    Feed(Smoother,
+         Scores({{DetectedClass::Music, 0.7f}, {DetectedClass::RnB, 0.06f}, {DetectedClass::Pop, 0.05f},
+                 {DetectedClass::Electronic, 0.04f}}),
+         0, 4000);
+    CHECK(Smoother.Current() == DetectedClass::RnB);
+}
+
+TEST(ARivalGenreMustClearlyBeatTheCurrentOne)
+{
+    DetectionSmoother Smoother;
+    Feed(Smoother, Scores({{DetectedClass::Music, 0.7f}, {DetectedClass::RnB, 0.06f}, {DetectedClass::Pop, 0.03f}}), 0,
+         30000);
+    CHECK(Smoother.Current() == DetectedClass::RnB);
+    // Pop edges ahead, by less than the hysteresis factor: no change.
+    Feed(Smoother, Scores({{DetectedClass::Music, 0.7f}, {DetectedClass::RnB, 0.06f}, {DetectedClass::Pop, 0.07f}}),
+         32000, 120000);
+    CHECK(Smoother.Current() == DetectedClass::RnB);
+    // Pop pulls clearly ahead: it takes over.
+    Feed(Smoother, Scores({{DetectedClass::Music, 0.7f}, {DetectedClass::RnB, 0.04f}, {DetectedClass::Pop, 0.08f}}),
+         122000, 160000);
+    CHECK(Smoother.Current() == DetectedClass::Pop);
+}
+
+TEST(NoisyGenreWindowsAverageOut)
+{
+    // Window by window the lead flips; over the track Electronic is clear.
+    const ClassScores A = Scores({{DetectedClass::Music, 0.7f}, {DetectedClass::Electronic, 0.31f}, {DetectedClass::Pop, 0.05f}});
+    const ClassScores B = Scores({{DetectedClass::Music, 0.7f}, {DetectedClass::Electronic, 0.09f}, {DetectedClass::Pop, 0.11f}});
+    DetectionSmoother Smoother;
+    for (int64_t T = 0; T <= 20000; T += 4000)
+    {
+        Smoother.AddScores(A, T);
+        Smoother.AddScores(B, T + 2000);
+    }
+    CHECK(Smoother.Current() == DetectedClass::Electronic);
+}
+
+TEST(TrackBoundaryRestartsTheGenreAverage)
+{
+    DetectionSmoother Smoother;
+    Feed(Smoother, Jazz, 0, 120000);
+    Smoother.AddTrackBoundary(121000);
+    Feed(Smoother, Rock, 122000, 126000); // a minute of Jazz doesn't hold it back
     CHECK(Smoother.Current() == DetectedClass::Rock);
 }
 

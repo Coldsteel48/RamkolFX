@@ -100,6 +100,9 @@ target_link_libraries(ramkolfx_presets PUBLIC ramkolfx_common)
 # thread and the ONNX Runtime classifier. ORT is dlopened at runtime, not
 # linked - only its (vendored, MIT) C API header is needed to build - so
 # builds and CI need no ORT and the daemon runs without it.
+# Distro packages pass -DRAMKOLFX_MODEL_DATA_DIR=/usr/share/ramkolfx/models
+# (like RAMKOLFX_HRTF_DATA_DIR); RAMKOLFX_MODEL_DIR in the environment
+# overrides it at run time.
 set(RAMKOLFX_MODEL_DATA_DIR "${CMAKE_SOURCE_DIR}/data/models" CACHE PATH
     "Runtime directory holding the Auto-detect classifier model")
 add_library(ramkolfx_detect STATIC

@@ -28,8 +28,10 @@ endif()
 add_compile_options(-Wall -Wextra)
 
 # Installed layout: bin/ramkolfxd, bin/ramkolfx-gui (if built),
-# share/ramkolfx/hrtf/*, a systemd *user* unit for the daemon, docs/licenses.
+# share/ramkolfx/hrtf/*, share/ramkolfx/models/*, a systemd *user* unit for
+# the daemon, docs/licenses.
 option(RAMKOLFX_INSTALL_HRTF_DATA "Install the bundled HRTF .sofa files" ON)
+option(RAMKOLFX_INSTALL_MODEL_DATA "Install the bundled Auto-detect classifier model" ON)
 set(RAMKOLFX_SYSTEMD_USER_UNIT_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user" CACHE PATH
     "Where to install the ramkolfxd systemd user unit")
 
@@ -50,6 +52,11 @@ endif()
 if(RAMKOLFX_INSTALL_HRTF_DATA)
     install(DIRECTORY data/hrtf/
             DESTINATION ${CMAKE_INSTALL_DATADIR}/ramkolfx/hrtf
+            COMPONENT ramkolfx)
+endif()
+if(RAMKOLFX_INSTALL_MODEL_DATA)
+    install(DIRECTORY data/models/
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/ramkolfx/models
             COMPONENT ramkolfx)
 endif()
 configure_file(packaging/common/ramkolfxd.service.in
