@@ -66,8 +66,12 @@ The recipes live in [`packaging/`](packaging) and are built by
 `pkg-config`, PipeWire dev headers (`libpipewire-0.3`), zlib dev headers,
 pthreads. GUI (optional, `-DRAMKOLFX_BUILD_GUI=ON`): SDL2 >= 2.0.18 dev headers,
 OpenGL dev headers/libs, fontconfig, libdbus-1 and libX11 dev headers. Network access is needed on first configure —
-CMake `FetchContent` pulls libmysofa + KissFFT (daemon) and Dear ImGui
-(GUI), none of which are common distro packages.
+CMake `FetchContent` pulls pinned versions of libmysofa + KissFFT (daemon)
+and Dear ImGui (GUI). To link your distro's libmysofa and KissFFT (float)
+instead, as distro packages do, pass `-DRAMKOLFX_SYSTEM_MYSOFA=ON` and
+`-DRAMKOLFX_SYSTEM_KISSFFT=ON` (pkg-config modules `libmysofa` and
+`kissfft-float`). Dear ImGui is always compiled in: the GUI targets one
+exact version.
 
 On a fresh machine, run `./FetchDependencies.sh` to install the right
 packages for your distro (Debian/Ubuntu, Fedora, Arch, openSUSE detected
