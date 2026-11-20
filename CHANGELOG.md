@@ -7,6 +7,20 @@ follows [Semantic Versioning](https://semver.org/) — see
 
 ## [Unreleased]
 
+### Added
+
+- **Man pages** for `ramkolfxd` and `ramkolfx-gui` (`man ramkolfxd`).
+- **AppStream metadata,** so software centres such as GNOME Software and
+  KDE Discover can list RamkolFX with its description and screenshots.
+
+### Changed
+
+- **The Arch, Debian and Gentoo packages use your distro's libmysofa and
+  KissFFT,** and the Fedora package its libmysofa, instead of copies built
+  into RamkolFX, so they get your distro's security fixes. Building from
+  source still uses the pinned copies unless you pass
+  `-DRAMKOLFX_SYSTEM_MYSOFA=ON` / `-DRAMKOLFX_SYSTEM_KISSFFT=ON`.
+
 ## [0.2.2] - 2026-11-20
 
 ### Changed

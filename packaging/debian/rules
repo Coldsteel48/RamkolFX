@@ -1,23 +1,30 @@
 #!/usr/bin/make -f
-B = $(CURDIR)/debian/build
-D = $(CURDIR)/debian/ramkolfx
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 %:
-	dh $@
+	dh $@ --buildsystem=cmake+ninja --builddir=debian/build
+
+# libmysofa and KissFFT come from Debian. Dear ImGui is compiled in: the GUI
+# targets 1.91.6 and uses imgui_internal.h, and Debian's libimgui-dev is a
+# different version. Upstream's own builds download it here; an upload to
+# Debian would carry it as an orig-imgui component tarball instead, unpacked
+# at imgui/ (see debian/copyright), and this falls back to that.
+IMGUI_DIR = $(if $(wildcard imgui/imgui.h),$(CURDIR)/imgui,$(CURDIR)/debian/deps/imgui-1.91.6)
 
 override_dh_auto_configure:
-	sh packaging/ci/fetch-deps.sh $(CURDIR)/debian/deps
-	cmake -S . -B $(B) -G Ninja \
-	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+	[ -f imgui/imgui.h ] || sh packaging/ci/fetch-deps.sh $(CURDIR)/debian/deps imgui
+	dh_auto_configure -- \
+	  -DCMAKE_INSTALL_DOCDIR=share/doc/ramkolfx \
 	  -DRAMKOLFX_HRTF_DATA_DIR=/usr/share/ramkolfx/hrtf \
 	  -DRAMKOLFX_MODEL_DATA_DIR=/usr/share/ramkolfx/models \
-	  -DRAMKOLFX_BUILD_GUI=ON -DRAMKOLFX_BUILD_TESTS=OFF \
-	  $$(sh packaging/ci/vendor-flags.sh $(CURDIR)/debian/deps)
-
-override_dh_auto_build:
-	cmake --build $(B)
-
-override_dh_auto_test:
+	  -DRAMKOLFX_SYSTEM_MYSOFA=ON \
+	  -DRAMKOLFX_SYSTEM_KISSFFT=ON \
+	  -DRAMKOLFX_BUILD_GUI=ON \
+	  -DRAMKOLFX_BUILD_TESTS=$(if $(filter nocheck,$(DEB_BUILD_OPTIONS)),OFF,ON) \
+	  -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+	  -DFETCHCONTENT_SOURCE_DIR_IMGUI=$(IMGUI_DIR)
 
 override_dh_auto_install:
-	DESTDIR=$(D) cmake --install $(B) --component ramkolfx
+	DESTDIR=$(CURDIR)/debian/ramkolfx cmake --install debian/build --component ramkolfx
+	# debian/copyright carries the license; Debian doesn't ship a second copy.
+	rm -f debian/ramkolfx/usr/share/doc/ramkolfx/LICENSE

@@ -3,10 +3,12 @@
 # (checksum-verified). Used by the Debian build, which has no declarative
 # multi-source mechanism like the other recipes.
 #
-# usage: fetch-deps.sh <dir>
+# usage: fetch-deps.sh <dir> [mysofa] [kissfft] [imgui]   (default: all three)
 set -eu
-d="$1"; mkdir -p "$d"; cd "$d"
+d="$1"; shift; mkdir -p "$d"; cd "$d"
+want="${*:-mysofa kissfft imgui}"
 get() { # name url sha256
+    case " $want " in *" $(echo "$1" | sed -E 's/^(lib)?([a-z]+)-.*/\2/') "*) ;; *) return 0 ;; esac
     [ -d "${1%.tar.gz}" ] && return 0
     curl -fsSL -o "$1" "$2"
     echo "$3  $1" | sha256sum -c -

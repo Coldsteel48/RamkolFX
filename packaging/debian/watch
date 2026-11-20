@@ -1,0 +1,3 @@
+version=4
+opts="filenamemangle=s%(?:.*?)?v?(\d[\d.]*)\.tar\.gz%ramkolfx-$1.tar.gz%" \
+  https://github.com/Coldsteel48/RamkolFX/tags (?:.*?/)?v?(\d[\d.]*)\.tar\.gz
