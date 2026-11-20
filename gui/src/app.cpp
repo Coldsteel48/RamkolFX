@@ -34,8 +34,10 @@ constexpr float LevelPollIntervalSeconds = 1.0f / 30.0f; // smooth enough for th
 // Channel-activity display mapping: peaks are shown on a dB scale from
 // ActivityFloorDb (0) to full scale (1), rise instantly and fall by
 // ActivityReleasePerSecond of that range per second - fast enough that
-// beats read as separate pulses.
-constexpr float ActivityFloorDb = -48.0f;
+// beats read as separate pulses. The floor is low enough that quiet game
+// audio still shows: a game menu peaking around -40 dBFS lights a speaker
+// at a third of full (at a -48 dB floor it was 17%, easy to read as off).
+constexpr float ActivityFloorDb = -60.0f;
 constexpr float ActivityReleasePerSecond = 1.8f;
 
 float PeakToActivity(float Peak)
