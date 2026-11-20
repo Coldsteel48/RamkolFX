@@ -11,7 +11,8 @@ Rules-Requires-Root: no
 
 Package: ramkolfx
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends},
+ libonnxruntime1.21 | libonnxruntime1.23
 Recommends: pipewire, wireplumber
 Description: 3D spatial audio, EQ and bass enhancer for PipeWire
  RamkolFX creates a virtual PipeWire sink, processes whatever is played into

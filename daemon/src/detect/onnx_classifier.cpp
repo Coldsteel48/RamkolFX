@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -26,9 +27,107 @@
 #ifndef RAMKOLFX_MODEL_DIR
 #define RAMKOLFX_MODEL_DIR "/usr/share/ramkolfx/models"
 #endif
+// Full path of libonnxruntime to try first, for distros whose dynamic
+// linker can't find it by name (Nix); empty to search.
+#ifndef RAMKOLFX_ORT_LIBRARY
+#define RAMKOLFX_ORT_LIBRARY ""
+#endif
 
 namespace ramkolfx
 {
+
+namespace
+{
+bool FileExists(const std::string& Path)
+{
+    struct stat St{};
+    return !Path.empty() && stat(Path.c_str(), &St) == 0 && S_ISREG(St.st_mode);
+}
+
+// "libonnxruntime.so" -> {}, "libonnxruntime.so.1.21.0" -> {1, 21, 0};
+// false for anything else (libonnxruntime_providers_shared.so, ...).
+bool OrtLibraryVersion(std::string_view Name, std::vector<int>& OutVersion)
+{
+    constexpr std::string_view Base = "libonnxruntime.so";
+    if (Name.substr(0, Base.size()) != Base)
+    {
+        return false;
+    }
+    OutVersion.clear();
+    std::string_view Rest = Name.substr(Base.size());
+    while (!Rest.empty())
+    {
+        if (Rest.front() != '.' || Rest.size() < 2)
+        {
+            return false;
+        }
+        Rest.remove_prefix(1);
+        int Part = 0;
+        size_t Digits = 0;
+        while (Digits < Rest.size() && Rest[Digits] >= '0' && Rest[Digits] <= '9' && Digits < 6)
+        {
+            Part = Part * 10 + (Rest[Digits] - '0');
+            ++Digits;
+        }
+        if (Digits == 0)
+        {
+            return false;
+        }
+        OutVersion.push_back(Part);
+        Rest.remove_prefix(Digits);
+    }
+    return true;
+}
+} // namespace
+
+std::vector<std::string> FindOnnxRuntimeLibraries(const std::vector<std::string>& Dirs, std::string_view LdSoCache)
+{
+    struct Found
+    {
+        std::vector<int> Version;
+        std::string Name;
+    };
+    std::vector<Found> All;
+    std::vector<int> Version;
+    for (const std::string& Dir : Dirs)
+    {
+        std::error_code Error;
+        for (const auto& Entry : std::filesystem::directory_iterator(Dir, Error))
+        {
+            const std::string Name = Entry.path().filename().string();
+            if (OrtLibraryVersion(Name, Version) && FileExists(Entry.path().string()))
+            {
+                All.push_back({Version, Entry.path().string()});
+            }
+        }
+    }
+    // The cache holds library names as NUL-terminated strings; the
+    // dynamic linker resolves them by name.
+    constexpr std::string_view Base = "libonnxruntime.so";
+    for (size_t At = LdSoCache.find(Base); At != std::string_view::npos; At = LdSoCache.find(Base, At + 1))
+    {
+        size_t End = At;
+        while (End < LdSoCache.size() && LdSoCache[End] != '\0' && End - At < 64)
+        {
+            ++End;
+        }
+        const std::string_view Name = LdSoCache.substr(At, End - At);
+        if ((At == 0 || LdSoCache[At - 1] == '\0' || LdSoCache[At - 1] == '/') && OrtLibraryVersion(Name, Version))
+        {
+            All.push_back({Version, std::string(Name)});
+        }
+    }
+    std::stable_sort(All.begin(), All.end(), [](const Found& A, const Found& B) { return A.Version > B.Version; });
+    std::vector<std::string> Out;
+    for (Found& F : All)
+    {
+        if (std::find(Out.begin(), Out.end(), F.Name) == Out.end())
+        {
+            Out.push_back(std::move(F.Name));
+        }
+    }
+    return Out;
+}
 
 namespace
 {
@@ -38,12 +137,6 @@ namespace
 // being the newest), and requesting 17 lets any runtime from 1.17 on load
 // us - newer runtimes serve older API versions unchanged.
 constexpr uint32_t RequestedOrtApiVersion = 17;
-
-bool FileExists(const std::string& Path)
-{
-    struct stat St{};
-    return !Path.empty() && stat(Path.c_str(), &St) == 0 && S_ISREG(St.st_mode);
-}
 
 // --- The runtime: dlopened once, kept for the process' lifetime -------------
 //
@@ -69,6 +162,62 @@ const char* LibraryOverride()
     return Path && *Path ? Path : nullptr;
 }
 
+// Where to look for libonnxruntime: LD_LIBRARY_PATH, then the usual
+// library directories.
+std::vector<std::string> LibrarySearchDirs()
+{
+    std::vector<std::string> Dirs;
+    if (const char* LdPath = std::getenv("LD_LIBRARY_PATH"))
+    {
+        std::stringstream Stream(LdPath);
+        std::string Dir;
+        while (std::getline(Stream, Dir, ':'))
+        {
+            if (!Dir.empty())
+            {
+                Dirs.push_back(Dir);
+            }
+        }
+    }
+    for (const char* Dir : {"/usr/lib", "/usr/lib64", "/usr/local/lib", "/usr/local/lib64", "/lib", "/lib64",
+                            "/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib/riscv64-linux-gnu"})
+    {
+        Dirs.emplace_back(Dir);
+    }
+    return Dirs;
+}
+
+std::string ReadLdSoCache()
+{
+    std::ifstream Cache("/etc/ld.so.cache", std::ios::binary);
+    return {std::istreambuf_iterator<char>(Cache), std::istreambuf_iterator<char>()};
+}
+
+// What to dlopen, best first. RAMKOLFX_ORT_LIB, if set, is the only
+// choice; otherwise the build's fixed path, every runtime found on disk
+// or in the linker cache (newest first - Debian ships only the versioned
+// libonnxruntime.so.1.21), then the generic names for whatever else the
+// dynamic linker knows.
+std::vector<std::string> LibraryCandidates()
+{
+    if (const char* Override = LibraryOverride())
+    {
+        return {Override};
+    }
+    std::vector<std::string> Out;
+    if (*RAMKOLFX_ORT_LIBRARY)
+    {
+        Out.emplace_back(RAMKOLFX_ORT_LIBRARY);
+    }
+    for (std::string& Found : FindOnnxRuntimeLibraries(LibrarySearchDirs(), ReadLdSoCache()))
+    {
+        Out.push_back(std::move(Found));
+    }
+    Out.emplace_back("libonnxruntime.so.1");
+    Out.emplace_back("libonnxruntime.so");
+    return Out;
+}
+
 // Takes ownership of S; true if it's null (success).
 bool Ok(OrtStatus* S, std::string& OutError, const char* What)
 {
@@ -89,15 +238,7 @@ const OrtRuntime* GetRuntime(std::string& OutError)
         return &Runtime;
     }
 
-    std::vector<std::string> Candidates;
-    if (const char* Override = LibraryOverride())
-    {
-        Candidates.emplace_back(Override);
-    }
-    else
-    {
-        Candidates = {"libonnxruntime.so.1", "libonnxruntime.so"};
-    }
+    const std::vector<std::string> Candidates = LibraryCandidates();
     void* Handle = nullptr;
     std::string Errors;
     for (const std::string& Name : Candidates)
@@ -142,7 +283,8 @@ const OrtRuntime* GetRuntime(std::string& OutError)
 }
 
 // Is libonnxruntime findable without loading it? Checks the override,
-// LD_LIBRARY_PATH, the dynamic linker's cache and the usual directories.
+// the build's fixed path, LD_LIBRARY_PATH, the usual directories and the
+// dynamic linker's cache.
 bool RuntimeLooksInstalled()
 {
     {
@@ -156,35 +298,7 @@ bool RuntimeLooksInstalled()
     {
         return FileExists(Override);
     }
-    std::vector<std::string> Dirs;
-    if (const char* LdPath = std::getenv("LD_LIBRARY_PATH"))
-    {
-        std::stringstream Stream(LdPath);
-        std::string Dir;
-        while (std::getline(Stream, Dir, ':'))
-        {
-            if (!Dir.empty())
-            {
-                Dirs.push_back(Dir);
-            }
-        }
-    }
-    for (const char* Dir : {"/usr/lib", "/usr/lib64", "/usr/local/lib", "/usr/local/lib64", "/lib", "/lib64",
-                            "/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib/riscv64-linux-gnu"})
-    {
-        Dirs.emplace_back(Dir);
-    }
-    for (const std::string& Dir : Dirs)
-    {
-        if (FileExists(Dir + "/libonnxruntime.so.1") || FileExists(Dir + "/libonnxruntime.so"))
-        {
-            return true;
-        }
-    }
-    // ld.so.cache lists every library ldconfig knows, by name.
-    std::ifstream Cache("/etc/ld.so.cache", std::ios::binary);
-    const std::string Contents((std::istreambuf_iterator<char>(Cache)), std::istreambuf_iterator<char>());
-    return Contents.find("libonnxruntime.so") != std::string::npos;
+    return FileExists(RAMKOLFX_ORT_LIBRARY) || !FindOnnxRuntimeLibraries(LibrarySearchDirs(), ReadLdSoCache()).empty();
 }
 
 // --- RAII for ORT objects -----------------------------------------------------

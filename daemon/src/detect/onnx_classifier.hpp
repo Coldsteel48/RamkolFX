@@ -10,6 +10,8 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "detect/content_classifier.hpp"
 
@@ -19,7 +21,7 @@ namespace ramkolfx
 // ContentClassifier on ONNX Runtime, which is dlopened rather than linked
 // (docs/content-detect-plan.md): builds need no ORT, and the daemon runs
 // without it, with Auto-detect unavailable. RAMKOLFX_ORT_LIB overrides
-// the library path.
+// the library path; the build can fix one with -DRAMKOLFX_ORT_LIBRARY.
 //
 // The model is self-describing, so the exported model can change without
 // a code change. It takes one float input - a mono waveform, shape [N] or
@@ -53,6 +55,12 @@ ClassifierBackend MakeOnnxClassifierBackend(ClassifierModelPaths Paths);
 // policy and validation - for tools and tests. Provider: "cpu", "cuda",
 // "openvino-gpu", "openvino-npu".
 ClassifierLoadResult LoadOnnxClassifier(const std::string& ModelPath, const std::string& Provider);
+
+// ONNX Runtime libraries (libonnxruntime.so, or .so.<version> - Debian
+// ships only libonnxruntime.so.1.21) in Dirs, as full paths, and in the
+// dynamic linker's cache (the contents of /etc/ld.so.cache), as names;
+// newest version first. For the loader and its tests.
+std::vector<std::string> FindOnnxRuntimeLibraries(const std::vector<std::string>& Dirs, std::string_view LdSoCache);
 
 // The execution providers the loaded runtime offers (e.g.
 // "CPUExecutionProvider"), for tools; empty if it doesn't load.

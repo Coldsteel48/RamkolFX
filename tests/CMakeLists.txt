@@ -25,6 +25,8 @@ ramkolfx_add_test(content_detector_tests ramkolfx_detect)
 # Needs ONNX Runtime at run time (dlopened); exits 77 = skipped without it.
 ramkolfx_add_test(onnx_classifier_tests ramkolfx_detect)
 set_tests_properties(onnx_classifier_tests PROPERTIES SKIP_RETURN_CODE 77)
+# Finding the runtime's library file; runs without ONNX Runtime.
+ramkolfx_add_test(ort_library_lookup_tests ramkolfx_detect)
 
 # The GUI's autostart Exec= quoting. Pure string code with no GUI
 # dependencies, compiled straight in so it's tested even when the GUI

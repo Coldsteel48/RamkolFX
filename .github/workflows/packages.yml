@@ -44,7 +44,8 @@ jobs:
           # build on the oldest distro releases that ship it.
           - { name: deb,  image: 'debian:13',        script: build-deb.sh }
           - { name: rpm,  image: 'fedora:latest',    script: build-rpm.sh }
-          - { name: apk,  image: 'alpine:3.22',      script: build-apk.sh }
+          # Alpine: 3.23 is the first with onnxruntime (Auto-detect).
+          - { name: apk,  image: 'alpine:3.23',      script: build-apk.sh }
           - { name: arch, image: 'archlinux:latest', script: build-arch.sh }
     steps:
       - uses: actions/checkout@v4

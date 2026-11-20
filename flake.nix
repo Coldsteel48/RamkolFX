@@ -23,6 +23,7 @@
             url = "https://github.com/ocornut/imgui/archive/refs/tags/v1.91.6.tar.gz";
             sha256 = "c5fbc5dcab1d46064001c3b84d7a88812985cde7e0e9ced03f5677bec1ba502a";
           };
+          ortLib = "${pkgs.lib.getLib pkgs.onnxruntime}/lib/libonnxruntime.so";
           ramkolfx = pkgs.stdenv.mkDerivation {
             pname = "ramkolfx";
             version = "0.2.0";
@@ -34,7 +35,7 @@
             };
 
             nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
-            buildInputs = with pkgs; [ pipewire zlib SDL2 fontconfig dbus libGL libx11 ];
+            buildInputs = with pkgs; [ pipewire zlib SDL2 fontconfig dbus libGL libx11 onnxruntime ];
 
             # No network in the sandbox: unpack the pinned deps up front and
             # point FetchContent at them.
@@ -44,12 +45,15 @@
               tar -xzf ${kissfft} -C $TMPDIR/deps
               tar -xzf ${imgui} -C $TMPDIR/deps
               cmakeFlagsArray+=($(sh packaging/ci/vendor-flags.sh $TMPDIR/deps))
+              # Auto-detect dlopens ONNX Runtime; Nix's linker can't find it by name.
+              test -e ${ortLib} || { echo "missing ${ortLib}" >&2; exit 1; }
             '';
             cmakeFlags = [
               "-DRAMKOLFX_BUILD_GUI=ON"
               "-DRAMKOLFX_BUILD_TESTS=OFF"
               "-DRAMKOLFX_HRTF_DATA_DIR=${placeholder "out"}/share/ramkolfx/hrtf"
               "-DRAMKOLFX_MODEL_DATA_DIR=${placeholder "out"}/share/ramkolfx/models"
+              "-DRAMKOLFX_ORT_LIBRARY=${ortLib}"
               "-DRAMKOLFX_SYSTEMD_USER_UNIT_DIR=${placeholder "out"}/lib/systemd/user"
             ];
             # Skip the statically-linked dependencies' own install rules.

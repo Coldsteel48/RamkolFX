@@ -59,4 +59,6 @@ src_install() {
 pkg_postinst() {
 	xdg_pkg_postinst
 	elog "Enable the daemon with: systemctl --user enable --now ramkolfxd"
+	elog "Auto-detect (content-aware EQ presets) needs ONNX Runtime >= 1.17,"
+	elog "which is not in ::gentoo; without it Auto-detect shows as unavailable."
 }

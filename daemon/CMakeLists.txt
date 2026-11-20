@@ -111,7 +111,12 @@ add_library(ramkolfx_detect STATIC
     src/detect/wav_file.cpp # bench + tests only; never linked into ramkolfxd
 )
 target_include_directories(ramkolfx_detect SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime)
-target_compile_definitions(ramkolfx_detect PRIVATE RAMKOLFX_MODEL_DIR="${RAMKOLFX_MODEL_DATA_DIR}")
+# Normally empty: the daemon searches for libonnxruntime itself. Set it
+# where the dynamic linker can't find the library by name (Nix).
+set(RAMKOLFX_ORT_LIBRARY "" CACHE STRING
+    "Full path of the ONNX Runtime library to load first (empty: search)")
+target_compile_definitions(ramkolfx_detect PRIVATE RAMKOLFX_MODEL_DIR="${RAMKOLFX_MODEL_DATA_DIR}"
+                           RAMKOLFX_ORT_LIBRARY="${RAMKOLFX_ORT_LIBRARY}")
 target_link_libraries(ramkolfx_detect PUBLIC ramkolfx_presets Threads::Threads ${CMAKE_DL_LIBS})
 
 add_executable(ramkolfxd

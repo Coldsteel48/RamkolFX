@@ -170,10 +170,11 @@ through an editable class -> preset table: Speech, Movie, Music, and for
 music the best-scoring genre. Details are in
 [docs/content-detect-plan.md](docs/content-detect-plan.md).
 
-- **Runtime:** it needs ONNX Runtime 1.17 or newer (`onnxruntime` /
-  `onnxruntime-cpu` from your distribution). Without it, Auto-detect shows
-  as unavailable and nothing else changes. RamkolFX loads ONNX Runtime at
-  run time, so it doesn't need it to build.
+- **Runtime:** it runs on ONNX Runtime 1.17 or newer, which the packages
+  depend on. Gentoo is the exception: there it's a manual install, as
+  ::gentoo has no ONNX Runtime. Without it, Auto-detect shows as
+  unavailable and nothing else changes. RamkolFX loads ONNX Runtime at run
+  time, so it doesn't need it to build.
 - **Model:** EfficientAT `mn10_as` (MIT, see
   [data/models/README.md](data/models/README.md)).
 - **Cost:** about 11 ms of CPU per 3 s window. It's capped at 1% of a

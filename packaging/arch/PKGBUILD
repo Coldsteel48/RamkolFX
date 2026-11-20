@@ -8,8 +8,9 @@ pkgdesc='3D spatial audio (HRTF binaural / ambisonics), EQ and bass enhancer for
 arch=('x86_64' 'aarch64')
 url='https://github.com/Coldsteel48/RamkolFX'
 license=('GPL-3.0-only')
-depends=('pipewire' 'sdl2' 'fontconfig' 'zlib' 'libgl' 'dbus')
-optdepends=('onnxruntime-cpu: Auto-detect (content-aware EQ presets)')
+# onnxruntime (onnxruntime-cpu, -cuda or -rocm) runs Auto-detect; it is
+# dlopened, so namcap may call it unused.
+depends=('pipewire' 'sdl2' 'fontconfig' 'zlib' 'libgl' 'dbus' 'onnxruntime')
 makedepends=('cmake' 'ninja' 'libx11')
 options=('!debug')
 source=("RamkolFX-$_semver.tar.gz::$url/archive/v$_semver.tar.gz"

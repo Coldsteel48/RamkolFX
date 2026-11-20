@@ -3,8 +3,8 @@
 `audio_classifier.onnx` is the audio classifier behind Auto-detect, the
 content-aware choice of EQ preset (see
 [docs/content-detect-plan.md](../../docs/content-detect-plan.md)). The
-daemon loads it through ONNX Runtime, which is not bundled: install
-`onnxruntime` from your distribution (1.17 or newer). Without it,
+daemon loads it through ONNX Runtime 1.17 or newer. ONNX Runtime comes
+from your distribution, and the packages depend on it. Without it,
 Auto-detect shows as unavailable and everything else works as before.
 
 ## Source and license

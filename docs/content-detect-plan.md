@@ -386,7 +386,17 @@ in `data/models/` with its license, installed to
    combos, live "auto: Jazz (82%)" readout, the class -> preset table
    (replacing the "Genre auto-detect" placeholder row), "Run detection
    on" dropdown, unavailable/warning states.
-5. **Packaging + e2e.** Model install, optional ORT dependency in every
-   recipe, e2e: `pw-play` speech and music into an Auto-bound app, check
-   switch and restore. README/CHANGELOG.
+5. **Packaging + e2e.** *(Partly done.)*
+   - *Done:* the model is installed to `share/ramkolfx/models`.
+   - *ORT is a dependency:*
+     - Arch: `onnxruntime`.
+     - Debian 13: `libonnxruntime1.21`.
+     - Fedora: `onnxruntime`.
+     - Alpine (3.23+): `onnxruntime`.
+     - Nix: the flake passes `-DRAMKOLFX_ORT_LIBRARY` with its store path.
+     - Gentoo: manual install; ::gentoo has no ORT.
+   - *Library lookup:* the loader also finds versioned sonames, such as
+     Debian's `libonnxruntime.so.1.21`.
+   - *To do:* an e2e test that runs `pw-play` speech and music into an
+     Auto-bound app, then checks the switch and the restore.
 6. **(Follow-up) Game detection** from stream metadata.

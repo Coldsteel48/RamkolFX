@@ -23,6 +23,8 @@ BuildRequires:  pkgconfig(fontconfig)
 BuildRequires:  pkgconfig(dbus-1)
 BuildRequires:  pkgconfig(gl)
 BuildRequires:  zlib-devel
+# Auto-detect's classifier; dlopened, so not found by the automatic deps.
+Requires:       onnxruntime
 Recommends:     pipewire
 Recommends:     wireplumber
 
